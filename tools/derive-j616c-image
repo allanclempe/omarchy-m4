@@ -319,7 +319,10 @@ EOF
   stale=$(trial_state)
   if [[ -n $stale ]]; then
     log "removing Stage 2 trial state left by the build: $(tr '\n' ' ' <<<"$stale")"
-    while IFS= read -r p; do rm -rf -- "${T:?}/$p"; done <<<"$stale"
+    while IFS= read -r p; do
+      [[ -n $p && $p != /* && $p != *..* ]] || continue # never the image root or outside it
+      rm -rf -- "${T:?}/$p"
+    done <<<"$stale"
   fi
   [[ -z $(trial_state) ]] || fail "Stage 2 trial state remains in the image: $(trial_state | tr '\n' ' ')"
   python3 - "$T/boot/efi/m1n1/boot-ctxr-j616c.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
