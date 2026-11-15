@@ -1,5 +1,5 @@
 diff --git a/Engine/overlay/src/omarchy_asahi.py b/Engine/overlay/src/omarchy_asahi.py
-index a085304..cc860a0 100644
+index a085304..48abcd4 100644
 --- a/Engine/overlay/src/omarchy_asahi.py
 +++ b/Engine/overlay/src/omarchy_asahi.py
 @@ -448,7 +448,116 @@ BOARD_STAGE1 = {
@@ -18,9 +18,9 @@ index a085304..cc860a0 100644
 +}
 +
 +
-+# Boards that enroll aura's Mach-O boot object, padded by Recovery for the
-+# execute window that M4-class chips (T8132, T6040/T6041, T8140 and later)
-+# confine EL2 code to, instead of the raw Stage 1. The object carries the
++# Boards that enroll aura's Mach-O boot object instead of the raw Stage 1, for
++# the execute window that M4-class chips (T8132, T6040/T6041, T8140 and later)
++# confine EL2 code to. The object carries the
 +# filled raw Stage 1, which chainloads the confined Stage 2 at next_object
 +# (aurora-silicon/aura docs/macho-boot-object.md, "Which Stage 2 a Stage 1
 +# loads"; aurora-silicon/aurora-installer Recovery/README.md).
@@ -28,8 +28,8 @@ index a085304..cc860a0 100644
 +# 128 MiB execute window, "macho-unpadded" enrolls it as it is.
 +MachOStage1 = collections.namedtuple("MachOStage1", "object stage2 next_object recovery_mode")
 +BOARD_MACHO_STAGE1 = {
-+    # On the J616c (T6041) the padded object never starts: iBoot reboots before
-+    # aura runs, every ~10 s. The unpadded object boots the confined Stage 2,
++    # On the J616c (T6041) the padded object never starts: the Mac reboots about
++    # every 10 s before aura shows anything (in iBoot or at aura's entry). The unpadded object boots the confined Stage 2,
 +    # whose embedded U-Boot starts Linux, and Linux brings up all 14 cores.
 +    # Measured on a J616c with Stage 1 from aura 1.0.0b13, Stage 2 from aura
 +    # 94d8e6e4 and linux-aurora 7.3.0.aurora1-36. aura's docs say a Stage 2
@@ -910,7 +910,7 @@ index 2f4ed8c..41f25d5 100644
           p_warning("If you need to file a bug report, please attach the log file:")
           p_warning(f"  {os.getcwd()}/installer.log")
 diff --git a/Engine/source-lock.json b/Engine/source-lock.json
-index 9588ec9..0b99378 100644
+index 9588ec9..b2a15ad 100644
 --- a/Engine/source-lock.json
 +++ b/Engine/source-lock.json
 @@ -141,7 +141,7 @@
@@ -918,7 +918,7 @@ index 9588ec9..0b99378 100644
    },
    "downstream_overlay": {
 -    "version": "v0.9.2-omarchy.20261110.fb337ca4e5a0",
-+    "version": "v0.9.2-omarchy.20261115.964f26de4720",
++    "version": "v0.9.2-omarchy.20261115.f6112d89ebf1",
      "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
      "minimum_app_version": "2.3.0",
      "engine_modes": [
@@ -936,7 +936,7 @@ index 9588ec9..0b99378 100644
          "path": "overlay/src/omarchy_asahi.py",
          "destination": "src/omarchy_asahi.py",
 -        "sha256": "dd74b3799a889d446099bb7fa1f4115518acda26c9fc8c0c516d49f1fe57dc25"
-+        "sha256": "9ac53446028b90873226e0c707c584a82b22f035aefcb97e88cd12d89d8de48e"
++        "sha256": "816254d1b360e25d37db2ff9a4ded4b5bb06683f4ea6a373bc1045a7f276a953"
        },
        {
          "path": "overlay/src/omarchy_contract.py",
@@ -995,7 +995,7 @@ index 9588ec9..0b99378 100644
 -    "filename": "installer-v0.9.2-omarchy.20261110.fb337ca4e5a0.tar.gz",
 -    "size_bytes": 17908690,
 -    "sha256": "1c762ce473573b01b34ab1dafc13ec742d25d5f4ebb38645c0260a0cce1714a9",
-+    "filename": "installer-v0.9.2-omarchy.20261115.964f26de4720.tar.gz",
++    "filename": "installer-v0.9.2-omarchy.20261115.f6112d89ebf1.tar.gz",
 +    "size_bytes": 17911578,
 +    "sha256": "6f9176afa0ffe2ccef98526b0f3f9b65f794fb08aaa733fc636411344b794c8a",
      "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
@@ -1088,10 +1088,10 @@ index 8ebc0a5..d4c96cb 100644
      }
      var verified: [String: Data] = [:]
 diff --git a/Recovery/Sources/BootSelection.swift b/Recovery/Sources/BootSelection.swift
-index 4e1b996..04f9305 100644
+index 4e1b996..c772a23 100644
 --- a/Recovery/Sources/BootSelection.swift
 +++ b/Recovery/Sources/BootSelection.swift
-@@ -3,19 +3,59 @@ import Foundation
+@@ -3,19 +3,60 @@ import Foundation
  enum AuraBootMode: String, Codable {
    case raw
    case macho
@@ -1103,9 +1103,10 @@ index 4e1b996..04f9305 100644
 +  /// and enrolls it with `--compress` (aurora-silicon/aurora-installer's flow).
 +  case machoCtxr = "macho-ctxr"
 +  /// The same filled boot object enrolled unpadded, still with `--compress`, for
-+  /// chips where the padded object doesn't start: on the J616c (T6041) iBoot
-+  /// reboots before aura runs with the padded object, while the unpadded one
-+  /// boots the confined Stage 2, whose U-Boot starts Linux on every core. Recovery checks
++  /// chips where the padded object doesn't start: on the J616c (T6041) the Mac
++  /// reboots about every 10 s before aura shows anything (in iBoot or at aura's
++  /// entry), while the unpadded one boots the confined Stage 2, whose U-Boot
++  /// starts Linux, which brings up every core. Recovery checks
 +  /// what kmutil derives for the unpadded size and enrolls it as it is.
 +  case machoUnpadded = "macho-unpadded"
  
@@ -1154,7 +1155,7 @@ index 4e1b996..04f9305 100644
      }
      return arguments
    }
-@@ -29,6 +69,17 @@ struct BootSelection: Codable {
+@@ -29,6 +70,17 @@ struct BootSelection: Codable {
      mode = machoEnabled ? .macho : .raw
      self.nestedVirtualization = machoEnabled && nestedVirtualization
    }
@@ -1193,10 +1194,10 @@ index f185ccc..347c01c 100644
        config.volumeName.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
 diff --git a/Recovery/Sources/MachOStage1.swift b/Recovery/Sources/MachOStage1.swift
 new file mode 100644
-index 0000000..37cd7cf
+index 0000000..fce23e1
 --- /dev/null
 +++ b/Recovery/Sources/MachOStage1.swift
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,587 @@
 +// SPDX-License-Identifier: MIT
 +// Mach-O Stage 1 checks and execute-window padding for M4-class Macs.
 +//
@@ -1227,7 +1228,8 @@ index 0000000..37cd7cf
 +    (0x8130...0x8FFF).contains(chipID) || (0x6040...0x6FFF).contains(chipID)
 +  }
 +
-+  /// The ESP file an unpadded Stage 1 loads.
++  /// The ESP file an unpadded Stage 1 loads (the J616c's unpadded object is
++  /// filled for the confined path instead).
 +  static let standardStage2Path = "m1n1/boot.bin"
 +  /// The ESP file a padded Stage 1 loads. Package updates on execute-window
 +  /// chips write this one.
@@ -1471,7 +1473,7 @@ index 0000000..37cd7cf
 +    bootProperty("kcbz", fromInspection: output)
 +  }
 +
-+  /// Checks what kmutil derives from a padded object before it is enrolled, and
++  /// Checks what kmutil derives from a Mach-O object, padded or not, before it is enrolled, and
 +  /// returns what it relied on. kcrz is what iBoot sizes the window from. Without
 +  /// kcrz only an exact kcwf, the first writable offset, is accepted, and anything
 +  /// else refuses, so an unverified object never reaches the boot policy.
@@ -1957,14 +1959,14 @@ index 4436edc..349b067 100644
        }
        print("Stage 2 and device firmware restored.")
 diff --git a/Recovery/Sources/RecoveryBaseline.swift b/Recovery/Sources/RecoveryBaseline.swift
-index 1ca3bed..3a1b2a8 100644
+index 1ca3bed..4ec82c8 100644
 --- a/Recovery/Sources/RecoveryBaseline.swift
 +++ b/Recovery/Sources/RecoveryBaseline.swift
 @@ -11,6 +11,8 @@ enum RecoveryBaseline {
      "vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt",
    ]
    static let stage2Path = "m1n1/boot.bin"
-+  /// Where a padded Mach-O Stage 1 (M4-class Macs) chainloads from instead.
++  /// Where a Mach-O Stage 1 (M4-class Macs, padded or not) chainloads from instead.
 +  static let confinedStage2Path = "m1n1/boot-ctxr.bin"
    static let optionalVendorPath = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
  
@@ -1985,7 +1987,7 @@ index 1ca3bed..3a1b2a8 100644
      guard required.isSubset(of: Set(names)),
        Set(names).isSubset(of: required.union([optionalVendorPath]))
 diff --git a/Recovery/Sources/main.swift b/Recovery/Sources/main.swift
-index 0e642cd..3e14e70 100644
+index 0e642cd..a3ad6c6 100644
 --- a/Recovery/Sources/main.swift
 +++ b/Recovery/Sources/main.swift
 @@ -320,7 +320,13 @@ final class InstallerModel {
@@ -1993,8 +1995,8 @@ index 0e642cd..3e14e70 100644
  
    private var installationTask: Task<Void, Never>?
 -  var bootSelection: BootSelection { BootSelection() }
-+  // The installation's configuration names its mode: raw, or the padded
-+  // Mach-O mode of M4-class Macs. Previews without one stay raw.
++  // The installation's configuration names its mode: raw, or one of the
++  // Mach-O modes of M4-class Macs. Previews without one stay raw.
 +  var bootSelection: BootSelection {
 +    (try? RecoveryActions.configuration.get()).flatMap {
 +      try? BootSelection(configuredMode: $0.bootMode)
@@ -2049,15 +2051,15 @@ index 2344b16..5fbc115 100644
    }
  }
 diff --git a/Recovery/Tests/InstallConfigurationCheck.swift b/Recovery/Tests/InstallConfigurationCheck.swift
-index af1e077..25d6a71 100644
+index af1e077..e4802f0 100644
 --- a/Recovery/Tests/InstallConfigurationCheck.swift
 +++ b/Recovery/Tests/InstallConfigurationCheck.swift
 @@ -27,6 +27,31 @@ import Foundation
          preconditionFailure("accepted invalid \(key)")
        } catch {}
      }
-+    // The padded Mach-O mode of M4-class Macs boots only the confined Stage 2,
-+    // and raw only the standard one.
++    // The Mach-O modes of M4-class Macs, padded or not, boot only the confined
++    // Stage 2, and raw only the standard one.
 +    var confined = value
 +    confined["bootMode"] = "macho-ctxr"
 +    confined["stage2Path"] = "m1n1/boot-ctxr.bin"
@@ -2089,15 +2091,15 @@ index af1e077..25d6a71 100644
        } catch {}
      }
 -    print("PASS strict per-install configuration, raw-only mode, IDs, paths and missing fields")
-+    print("PASS strict per-install configuration, raw and padded Mach-O modes with their Stage 2 paths, IDs, paths and missing fields")
++    print("PASS strict per-install configuration, raw and both Mach-O modes with their Stage 2 paths, IDs, paths and missing fields")
    }
  }
 diff --git a/Recovery/Tests/MachOBootObjectCheck.swift b/Recovery/Tests/MachOBootObjectCheck.swift
 new file mode 100644
-index 0000000..a64084a
+index 0000000..edcbc1f
 --- /dev/null
 +++ b/Recovery/Tests/MachOBootObjectCheck.swift
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,509 @@
 +// SPDX-License-Identifier: MIT
 +// Ported from aurora-silicon/aurora-installer macOS/Recovery/Tests/MachOBootObjectCheck.swift
 +// at b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT). Ported with AI assistance (Claude Code).
@@ -2363,6 +2365,16 @@ index 0000000..a64084a
 +    refusesExpansion(original, window: 0x100, "a window of part of a page")
 +    refusesExpansion(file, "an object that is already expanded")
 +    refusesExpansion(object(valid), "not aura's object")
++    // Enrolled unpadded, the same object is refused for the same reasons.
++    for (refused, why) in [
++      (auraObject(raw: Data(count: 0x18000)), "no aura load header"),
++      (object(valid), "not aura's object"),
++    ] {
++      do {
++        try MachOBootObject.requireAura(refused)
++        preconditionFailure("accepted unpadded: \(why)")
++      } catch {}
++    }
 +    // A crafted object is refused, never a trap on the arithmetic.
 +    func patched(_ name: String, field: Int, value: UInt64) -> Data {
 +      var data = original
