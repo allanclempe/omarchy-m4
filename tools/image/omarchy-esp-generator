@@ -10,10 +10,11 @@
 # device tree, as omarchy-mac-esp reads it. This writes boot-efi.mount for that
 # partition into the early generator directory, which takes precedence over
 # the unit systemd-fstab-generator makes from fstab. Without that name, it
-# writes nothing and fstab's entry applies as before. It logs one line either
-# way to the kernel log (journalctl -k), as systemd.generator(7) asks of
-# generators, or to stderr where /dev/kmsg isn't writable. Only systemd's mount of /boot/efi changes: a plain
-# `mount /boot/efi` outside systemd still reads fstab.
+# writes nothing and fstab's entry applies as before. Each run (every boot and
+# every daemon-reload) logs one line either way to the kernel log
+# (journalctl -k), as systemd.generator(7) asks of generators, or to stderr
+# where /dev/kmsg isn't writable. Only systemd's mount of /boot/efi changes: a
+# plain `mount /boot/efi` outside systemd still reads fstab.
 #
 #   omarchy-esp-generator NORMAL_DIR EARLY_DIR LATE_DIR
 #

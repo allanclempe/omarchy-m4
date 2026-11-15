@@ -23,10 +23,12 @@ run() {
   mkdir -p "$dir/normal" "$dir/early" "$dir/late"
   # A normal user can't write /dev/kmsg, so the log line lands in stderr.
   if [[ $bytes == - ]]; then
-    OMARCHY_ESP_PARTUUID_FILE=$dir/missing sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log"
+    OMARCHY_ESP_PARTUUID_FILE=$dir/missing sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log" ||
+      { rc=$?; fail "$name: generator exited $rc"; cat "$dir/log" >&2; }
   else
     printf '%b' "$bytes" >"$dir/node"
-    OMARCHY_ESP_PARTUUID_FILE=$dir/node sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log"
+    OMARCHY_ESP_PARTUUID_FILE=$dir/node sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log" ||
+      { rc=$?; fail "$name: generator exited $rc"; cat "$dir/log" >&2; }
   fi
 }
 
