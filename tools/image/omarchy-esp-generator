@@ -15,9 +15,9 @@
 # generator directory, which takes precedence over the unit
 # systemd-fstab-generator makes from fstab. The installer always puts the
 # Boot partition right after the ESP (stub, ESP, Boot, Root), so it then
-# writes boot.mount for the next partition on the same disk, found through
-# sysfs, but only when that partition's ext4 superblock carries the image's
-# Boot UUID. Whatever it can't establish, it leaves to fstab, as before.
+# writes boot.mount for the partition that follows the ESP on the same disk,
+# found by start sector through sysfs, but only when that partition's ext4
+# superblock carries the image's Boot UUID. Whatever it can't establish, it leaves to fstab, as before.
 # Each run (every boot and every daemon-reload) logs one line per mount point
 # to the kernel log (journalctl -k), as systemd.generator(7) asks of
 # generators, or to stderr where /dev/kmsg isn't writable. Only systemd's
@@ -99,18 +99,22 @@ mount_boot() {
     log "$matches partitions have the ESP's PARTUUID $1; /boot is mounted as fstab says"
     return 0
   fi
-  partn=$(uevent_value "$esp_dir/uevent" PARTN)
-  case $partn in '' | *[!0-9]*)
-    log "no partition number for the ESP; /boot is mounted as fstab says"
+  esp_start=$(cat "$esp_dir/start" 2>/dev/null) || esp_start=
+  case $esp_start in '' | *[!0-9]*)
+    log "no start sector for the ESP; /boot is mounted as fstab says"
     return 0 ;;
   esac
+  # The next partition by position on the disk, as the installer lays them
+  # out: partition numbers needn't follow position once slots are reused.
   disk=$(cd -P -- "$esp_dir/.." 2>/dev/null && pwd) || disk=
-  boot_dir=
+  boot_dir= boot_start=
   if [ -n "$disk" ]; then
     for d in "$disk"/*; do
-      if [ -f "$d/partition" ] && [ "$(uevent_value "$d/uevent" PARTN)" = $((partn + 1)) ]; then
-        boot_dir=$d
-        break
+      [ -f "$d/partition" ] || continue
+      start=$(cat "$d/start" 2>/dev/null) || start=
+      case $start in '' | *[!0-9]*) continue ;; esac
+      if [ "$start" -gt "$esp_start" ] && { [ -z "$boot_dir" ] || [ "$start" -lt "$boot_start" ]; }; then
+        boot_dir=$d boot_start=$start
       fi
     done
   fi

@@ -39,44 +39,58 @@ ESP=272043e7-ec24-4890-93d6-545cfbb8329b
 BOOT=3c464bd8-909c-42fb-ac75-d47f02ff8504
 BOOT_FS=4f4d5801424f4f548000000000000001
 
-# disk NAME KIND: the J616c's disk as sysfs shows it, under $work/NAME. The
-# install is nvme0n1p3 (stub), p4 (ESP $ESP), p5 (Boot $BOOT); the first
-# attempt's leftovers are p8 (an ESP with the same serial) and p9, a Boot
-# partition with the same ext4 UUID. KIND sets what p5 is: boot (the image's
-# Boot filesystem), other-fs (ext4 with another UUID), no-magic (the Boot UUID's
-# bytes without ext4's magic), unreadable, not-ext4, or absent. dup-esp adds a second disk,
-# listed first, with a partition that has the ESP's PARTUUID.
+# disk NAME KIND: the J616c's disk as sysfs shows it, under $work/NAME, by
+# start sector: nvme0n1p3 (stub, 1000), p4 (ESP $ESP, 2000), p5 (Boot $BOOT,
+# 3000). The first attempt's leftovers follow: p8 (an ESP with the same
+# serial, 9000) and p9 (10000). On this Mac p9 has no filesystem; here it
+# carries the Boot UUID, standing for a leftover that does. A second disk,
+# mmcblk0, listed first, has a partition 5 with the Boot UUID starting just
+# after the ESP's sector. KIND sets what p5 is: boot (the image's Boot
+# filesystem), other-fs (ext4 with another UUID), no-magic (the Boot UUID's
+# bytes without ext4's magic), unreadable, or not-ext4. absent leaves out p5
+# and the leftovers, so nothing follows the ESP on its disk. reused-slot puts
+# a leftover Boot in slot 5 after the leftovers (9500) and the real Boot in
+# slot 7 at 3000. dup-esp adds a disk, listed first, with a partition that has
+# the ESP's PARTUUID.
 disk() {
   local dir=$work/$1 kind=$2
-  mkdir -p "$dir/sys/block" "$dir/sys/devices/nvme0n1" "$dir/dev"
+  mkdir -p "$dir/sys/block" "$dir/sys/devices/nvme0n1" "$dir/sys/devices/mmcblk0" "$dir/dev"
   printf 'MAJOR=259\nMINOR=0\nDEVNAME=nvme0n1\nDEVTYPE=disk\n' >"$dir/sys/devices/nvme0n1/uevent"
   ln -s ../devices/nvme0n1 "$dir/sys/block/nvme0n1"
-  part "$dir" nvme0n1 nvme0n1p3 3 d6001b4d-94e9-428a-adc6-0cabe562d82c
-  part "$dir" nvme0n1 nvme0n1p4 4 "$ESP"
-  part "$dir" nvme0n1 nvme0n1p8 8 406a9e32-2509-44d1-a557-7433956bef5c
-  part "$dir" nvme0n1 nvme0n1p9 9 e4c1df08-c8b6-49a9-a6b1-1a92d86c8ce2
-  ext4 "$dir/dev/nvme0n1p9" "$BOOT_FS"
+  part "$dir" mmcblk0 mmcblk0p5 5 9f1c2e3d-4b5a-4c6d-8e7f-0a1b2c3d4e5f 2500
+  ext4 "$dir/dev/mmcblk0p5" "$BOOT_FS"
+  part "$dir" nvme0n1 nvme0n1p3 3 d6001b4d-94e9-428a-adc6-0cabe562d82c 1000
+  part "$dir" nvme0n1 nvme0n1p4 4 "$ESP" 2000
+  if [[ $kind != absent ]]; then
+    part "$dir" nvme0n1 nvme0n1p8 8 406a9e32-2509-44d1-a557-7433956bef5c 9000
+    part "$dir" nvme0n1 nvme0n1p9 9 e4c1df08-c8b6-49a9-a6b1-1a92d86c8ce2 10000
+    ext4 "$dir/dev/nvme0n1p9" "$BOOT_FS"
+  fi
   case $kind in
-    boot) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS" ;;
-    other-fs) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; ext4 "$dir/dev/nvme0n1p5" 0123456789abcdef0123456789abcdef ;;
-    not-ext4) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; truncate -s 4096 "$dir/dev/nvme0n1p5" ;;
+    boot) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS" ;;
+    other-fs) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p5" 0123456789abcdef0123456789abcdef ;;
+    not-ext4) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; truncate -s 4096 "$dir/dev/nvme0n1p5" ;;
     no-magic)
-      part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"
+      part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"
       printf '\0\0' | dd of="$dir/dev/nvme0n1p5" bs=1 seek=1080 conv=notrunc status=none ;;
-    unreadable) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"; chmod 000 "$dir/dev/nvme0n1p5" ;;
+    unreadable) part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"; chmod 000 "$dir/dev/nvme0n1p5" ;;
     absent) ;;
+    reused-slot)
+      part "$dir" nvme0n1 nvme0n1p5 5 c0ffee00-1111-4222-8333-444455556666 9500; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"
+      part "$dir" nvme0n1 nvme0n1p7 7 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p7" "$BOOT_FS" ;;
     dup-esp)
-      part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT"; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"
+      part "$dir" nvme0n1 nvme0n1p5 5 "$BOOT" 3000; ext4 "$dir/dev/nvme0n1p5" "$BOOT_FS"
       mkdir -p "$dir/sys/devices/loop0"
-      part "$dir" loop0 loop0p1 1 "$ESP" ;;
+      part "$dir" loop0 loop0p1 1 "$ESP" 2000 ;;
   esac
 }
 
-# part DIR DISK NAME PARTN PARTUUID: a partition's sysfs entry.
+# part DIR DISK NAME PARTN PARTUUID START: a partition's sysfs entry.
 part() {
   local p=$1/sys/devices/$2/$3
   mkdir -p "$p"
   : >"$p/partition"
+  echo "$6" >"$p/start"
   printf 'MAJOR=259\nMINOR=%s\nDEVNAME=%s\nDEVTYPE=partition\nDISKSEQ=1\nPARTN=%s\nPARTUUID=%s\n' \
     "$4" "$3" "$4" "$5" >"$p/uevent"
   ln -s "../devices/$2/$3" "$1/sys/block/$3"
@@ -188,6 +202,12 @@ else
   cat "$work/boot/log" >&2
 fi
 
+# Slot numbers needn't follow position: the partition that starts next wins.
+disk reused-slot reused-slot
+run reused-slot "$ESP\0"
+grep -qx "What=/dev/disk/by-partuuid/$BOOT" "$work/reused-slot/early/boot.mount" 2>/dev/null ||
+  fail "reused-slot: didn't mount the partition that starts right after the ESP"
+
 # Anything else after the ESP leaves /boot to fstab, and still mounts /boot/efi.
 for kind in other-fs no-magic unreadable not-ext4 absent dup-esp; do
   disk "$kind" "$kind"
@@ -196,6 +216,8 @@ for kind in other-fs no-magic unreadable not-ext4 absent dup-esp; do
   [[ -f $work/$kind/early/boot-efi.mount ]] || fail "$kind: no boot-efi.mount"
   grep -q '/boot is mounted as fstab says' "$work/$kind/log" || fail "$kind: didn't log why fstab applies to /boot"
 done
+grep -q 'no partition after the ESP on its disk' "$work/absent/log" ||
+  fail "absent: took a partition from another disk, or didn't say none follows the ESP"
 grep -q "can't read nvme0n1p5" "$work/unreadable/log" || fail "unreadable: didn't say it couldn't read the partition"
 grep -q '2 partitions have the ESP' "$work/dup-esp/log" || fail "dup-esp: didn't refuse an ambiguous ESP"
 # No sysfs at all (the lower and upper runs): the same.
