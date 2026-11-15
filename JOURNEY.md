@@ -505,5 +505,10 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
     - it starts the throwaway timer, checks it comes due 720 s after starting, and stops it;
     - it runs the same `cat-config` check on an image-like tree;
     - it fails for a drop-in using `OnStartupSec` or missing the reset.
-  - Open: whether aura's 178 s boot watchdog (9.19) is still running while Linux waits at the password prompt. If it is, and nothing feeds it, the Mac resets long before 12 minutes and the case fixed here can't happen; the drop-in is then harmless. The Mac has `/sys/class/watchdog/watchdog0`, but its state is root-only (`sudo cat /sys/class/watchdog/watchdog0/{identity,state,timeout,timeleft}`).
+  - Whether aura's 178 s boot watchdog (9.19) would reset the Mac at the password prompt, before 12 minutes could pass:
+    - `watchdog0` is the built-in `apple-watchdog` driver (`50836c000.watchdog`, `CONFIG_APPLE_WATCHDOG=y`).
+    - The kernel has `CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y` and `CONFIG_WATCHDOG_OPEN_TIMEOUT=0`. So a watchdog that is already running when the driver binds is pinged by the kernel until userspace opens it, with no time limit. systemd doesn't open it here (`RuntimeWatchdogUSec=0`).
+    - The driver binds before the initrd asks for the password, so the prompt can last past 12 minutes and the case fixed here can happen. Aurora's own `guard()` comment expects this ("even if Linux feeds the hardware watchdog").
+    - This build has no watchdog sysfs attributes (`CONFIG_WATCHDOG_SYSFS` not set), so whether aura left it running couldn't be read directly. It isn't needed for the conclusion, since either way nothing resets the Mac at the prompt.
+    - Read 2026-11-15: `/sys/class/watchdog/watchdog0`, `/proc/config.gz`.
   - Not yet run: a real trial with a slow password, which needs the image's update policy on the Mac (OMS-14). Aurora question 3 asks whether Aurora takes this upstream. 9.19's "counts from boot" describes Aurora's timer as shipped; this section changes it for the image.
