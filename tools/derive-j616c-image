@@ -30,6 +30,10 @@
 #     reset); it makes sure no Stage 2 trial state ships; and it ships
 #     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
 #     verify a Stage 2 that Aurora's update-m1n1 builds;
+#   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
+#     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
+#     which every Omarchy ESP shares (OMS-12), and /boot from the partition
+#     after it rather than the Boot UUID every install shares (OMS-15);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -370,6 +374,17 @@ PY
 [Service]
 ExecStartPre=/usr/bin/pacman-key --populate aurora
 EOF
+
+  log "mounting /boot/efi and /boot from the install the Mac boots"
+  # fstab stays as the image builder writes it (mac-image-check pins the line);
+  # the generator's units take precedence over fstab's at every boot.
+  # The generator copies these lines' UUIDs, options and fsck pass, so match all of them.
+  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]+umask=0077[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot/efi line isn't the one omarchy-esp-generator replaces (UUID=4F4D-5801, umask=0077, pass 2)"
+  grep -Eq '^UUID=4f4d5801-424f-4f54-8000-000000000001[[:space:]]+/boot[[:space:]]+ext4[[:space:]]+defaults,noatime[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot line isn't the one omarchy-esp-generator replaces (UUID=4f4d5801-424f-…-0001, defaults,noatime, pass 2)"
+  install -D -m 0755 /tools/image/omarchy-esp-generator \
+    "$T/usr/local/lib/systemd/system-generators/omarchy-esp-generator"
 
   log "cleaning up the root"
   rm -rf "$T/etc/pacman.d/gnupg"
