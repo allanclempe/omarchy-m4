@@ -35,7 +35,7 @@
 # Stage 2 flags (RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1
 # BUILTIN_LOGO=aurora); its sha256 must be STAGE2_SHA256.
 # RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
-# the macho-ctxr boot mode; it replaces the edge image's Recovery app, which
+# the macho-unpadded boot mode (OMS-11); it replaces the edge image's Recovery app, which
 # predates that mode and would refuse this Mac's installation configuration.
 set -euo pipefail
 
@@ -319,14 +319,14 @@ EOF
   rm -f "$T/boot/efi/.builder"
   find "$T/etc" -name '*.pacnew' | tee "$W/pacnew.txt"
 
-  log "replacing the Recovery app with the macho-ctxr build"
+  log "replacing the Recovery app with one that knows macho-unpadded"
   local recovery_dir=$T/boot/efi/aurora/recovery
   [[ -d $recovery_dir ]] || fail "the edge image carries no native Recovery app"
   rm -rf -- "$recovery_dir" && mkdir -p "$recovery_dir"
   cp -R "/recovery/Omarchy Installer.app" "$recovery_dir/"
   install -m 0644 /recovery/omarchy-recovery-app.json "$recovery_dir/omarchy-recovery-app.json"
-  grep -aq macho-ctxr "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
-    fail "the Recovery app does not know the macho-ctxr mode"
+  grep -aq macho-unpadded "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
+    fail "the Recovery app does not know the macho-unpadded mode"
 
   log "copying the ESP out"
   rm -rf "$W/payload/esp" && mkdir "$W/payload/esp"
