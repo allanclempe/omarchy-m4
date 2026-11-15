@@ -20,7 +20,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Hand fix on the installed Mac | In the build | Task |
 | --- | --- | --- |
 | Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
-| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | no: the installer enrols the padded object, which loops | OMS-11 |
+| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode for J616c (not yet built; Recovery's Swift checks still to run on macOS) | OMS-11 |
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
 | fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
@@ -41,7 +41,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
   It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
-  `macho-ctxr` Recovery mode, the engine changes and the Wi-Fi `chflags` fix. Apply it to a
+  Recovery boot modes for aura's Mach-O Stage 1 (`macho-unpadded`, which the J616c uses, and
+  the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
