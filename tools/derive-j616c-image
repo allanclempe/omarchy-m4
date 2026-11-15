@@ -12,7 +12,10 @@
 #     aura (raw and Mach-O Stage 1, monitor-free Stage 2 m1n1), uboot-aurora
 #     (T6041-capable) and Aurora's asahi-scripts (bootchain update-m1n1), plus
 #     Aurora's mesa-aurora and vulkan-aurora built for that kernel (the edge
-#     image's older Mesa cannot drive the J616c GPU under it);
+#     image's older Mesa cannot drive the J616c GPU under it), and Aurora's
+#     speakersafetyd profiles: speakersafetyd trims apple,j616c to apple/j616.conf,
+#     which only speakersafetyd-aurora-profiles ships; without it the daemon fails,
+#     the amps stay locked and there is no speaker sink (OMS-1);
 #   - uses a Stage 2 built from aura main with aaec599f (restarts the post-M4
 #     ANS that Stage 1 powers off; no aura release has it yet), installed at
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
@@ -42,6 +45,8 @@ J616C_COMPATIBLE='apple,j616c apple,t6041 apple,arm-platform'
 # Aurora's Mesa for its kernel; the -fex-guest and lavapipe variants only when the image has them.
 AURORA_MESA=(mesa-aurora vulkan-aurora)
 AURORA_MESA_OPTIONAL=(mesa-aurora-fex-guest vulkan-lavapipe-aurora)
+# speakersafetyd looks for apple/j616.conf on a J616c; only this package has it.
+AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles)
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
@@ -206,7 +211,15 @@ PY
       fail "${p#aurora/} is not Aurora's build"
   done
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
-  in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" | tee "$W/versions.txt"
+
+  log "installing Aurora's speakersafetyd profiles"
+  in_chroot pacman -S --noconfirm "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install Aurora's speakersafetyd profiles (pacman.log)"
+  [[ -f $T/usr/share/speakersafetyd/apple/j616.conf ]] || fail "no speakersafetyd profile for J616 (apple/j616.conf)"
+  grep -q 'ATTRS{id}=="AppleJ616"' "$T"/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules ||
+    fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
+  in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
 
