@@ -45,8 +45,9 @@ row below. A task whose fix lives only on the Mac isn't done.
   the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
-- `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, covers a
-  report gap (and which task), Omarchy's own, left out, or opt-in. It also covers the kernel dependency
+- `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
+  for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
+  name collisions `[aurora]` causes by being first. It also covers the kernel dependency
   (Aurora's 7.3 kernel; omacom/linux-aurora has no T604x support yet).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
