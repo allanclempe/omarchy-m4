@@ -2096,10 +2096,10 @@ index af1e077..e4802f0 100644
  }
 diff --git a/Recovery/Tests/MachOBootObjectCheck.swift b/Recovery/Tests/MachOBootObjectCheck.swift
 new file mode 100644
-index 0000000..edcbc1f
+index 0000000..8fa65bc
 --- /dev/null
 +++ b/Recovery/Tests/MachOBootObjectCheck.swift
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,513 @@
 +// SPDX-License-Identifier: MIT
 +// Ported from aurora-silicon/aurora-installer macOS/Recovery/Tests/MachOBootObjectCheck.swift
 +// at b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT). Ported with AI assistance (Claude Code).
@@ -2365,10 +2365,14 @@ index 0000000..edcbc1f
 +    refusesExpansion(original, window: 0x100, "a window of part of a page")
 +    refusesExpansion(file, "an object that is already expanded")
 +    refusesExpansion(object(valid), "not aura's object")
-+    // Enrolled unpadded, the same object is refused for the same reasons.
++    // Enrolled unpadded, the same object is refused for the same reasons. The
++    // last one has aura's load header, so only the entry-point guard refuses it.
++    var wrongEntry = object(valid, entry: 0x10804)
++    wrongEntry.replaceSubrange(0x10808..<0x10810, with: Array("AURALOAD".utf8))
 +    for (refused, why) in [
 +      (auraObject(raw: Data(count: 0x18000)), "no aura load header"),
 +      (object(valid), "not aura's object"),
++      (wrongEntry, "aura entered off its entry point"),
 +    ] {
 +      do {
 +        try MachOBootObject.requireAura(refused)
