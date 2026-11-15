@@ -22,7 +22,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
 | Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode for J616c (not yet built; Recovery's Swift checks still to run on macOS) | OMS-11 |
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
-| fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
+| fstab mounts `/boot/efi` by PARTUUID | derivation installs `omarchy-esp-generator`, which mounts the device-tree ESP (not yet run) | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
 | Update guards; Stage 2 trial disarmed | no | OMS-13 |
@@ -45,6 +45,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
+- `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
+  `tools/tests/` has their tests (plain Bash, run on Linux).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
