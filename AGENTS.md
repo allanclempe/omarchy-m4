@@ -24,9 +24,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
 | fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
-| `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run) | OMS-1 |
+| `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
 | Update guards; Stage 2 trial disarmed | no | OMS-13 |
-| Default sink reset from the stale `RawSpeakers` | not needed: fresh installs have no saved default | — |
+| WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
 
 ## Where things are
