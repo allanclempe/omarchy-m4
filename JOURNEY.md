@@ -484,7 +484,7 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 ### 9.26 Wi-Fi rejoin after a driver reload: a race in the test's unload (OMS-5, 2026-11-15)
 - The report's `network.wifi-first-join` failed: "Wi-Fi didn't associate within 45 s of the driver loading". The check unloads `brcmfmac` while connected (`modprobe -r brcmfmac_wcc brcmfmac`), loads it again and waits for an association.
 - Joins outside the test are quick (BCM4388, firmware 23.50.20.2.41.51.209, iwd 3.12, NetworkManager 1.58.1, a home mesh network with six access points, regulatory domain AU):
-  - After the four cold boots in the journal from 2026-11-14 15:57 to 2026-11-15 16:44, iwd reached `connected` 1.29–1.38 s after the firmware loaded. The final DHCP lease line came 0.16–2.2 s after that.
+  - After the four cold boots in the journal from 2026-11-14 15:57 to 2026-11-15 16:44, iwd reached `connected` 1.29–1.38 s after the firmware loaded. The final DHCP lease line came 0.16–2.3 s after that.
   - The earlier installer boot (2026-11-14 13:45) is left out: it had no known network yet and waited for a manual connect.
   - The report has an IPv4 address again 2.6 s after resume. The live link is 5180 MHz, 160 MHz HE, about −40 to −47 dBm.
 - What happened in the test (boot of 2026-11-14 15:57, 17:14):
