@@ -38,7 +38,8 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
-  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
+  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in, and the update policy:
+  Stage 2 rebuilt from the pin and tried by Aurora's trials). Its header has usage.
   It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
   Recovery boot modes for aura's Mach-O Stage 1 (`macho-unpadded`, which the J616c uses, and
