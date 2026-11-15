@@ -20,7 +20,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Hand fix on the installed Mac | In the build | Task |
 | --- | --- | --- |
 | Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
-| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | no: the installer enrols the padded object, which loops | OMS-11 |
+| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode for J616c (not yet built; Recovery's Swift checks still to run on macOS) | OMS-11 |
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
 | fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
