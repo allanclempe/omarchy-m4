@@ -194,10 +194,10 @@ index 55bbfc7..81cc0fd 100755
    report_running_release
 diff --git a/omarchy-mac-boot/lib/aurora-stage2.py b/omarchy-mac-boot/lib/aurora-stage2.py
 new file mode 100644
-index 0000000..06a90b9
+index 0000000..fc71991
 --- /dev/null
 +++ b/omarchy-mac-boot/lib/aurora-stage2.py
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,61 @@
 +#!/usr/bin/python3
 +"""Ask Aurora's bootchain_arch.py what update-m1n1 would do, changing nothing.
 +
@@ -242,11 +242,12 @@ index 0000000..06a90b9
 +            print(f'path={path}')
 +        else:
 +            # Whether update-m1n1 would arm this candidate again, and commit accept RECEIPT.
-+            _path, recorded = update.attempt(argument)
++            path, recorded = update.attempt(argument)
 +            if recorded is None:
 +                print('recorded=none')
 +            else:
 +                print('recorded=' + ('committed' if recorded.get('result') == 'committed' else 'tried'))
++                print(f'record={path}')
 +            if len(sys.argv) == 6:
 +                details = json.loads(Path(sys.argv[5]).read_text())
 +                print('matches=' + ('yes' if recorded == details else 'no'))
@@ -260,10 +261,10 @@ index 0000000..06a90b9
 +    sys.exit(main())
 diff --git a/omarchy-mac-boot/lib/aurora-stage2.sh b/omarchy-mac-boot/lib/aurora-stage2.sh
 new file mode 100644
-index 0000000..9718998
+index 0000000..f0f694e
 --- /dev/null
 +++ b/omarchy-mac-boot/lib/aurora-stage2.sh
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,258 @@
 +# shellcheck shell=bash
 +# shellcheck disable=SC2154 # root, workdir, esp and the rest are the check's
 +# Sourced by omarchy-apple-silicon-boot-check: Stage 2 where /usr/bin/update-m1n1
@@ -321,20 +322,25 @@ index 0000000..9718998
 +# aurora-stage2.py MODE ARGUMENT..., as root with the environment the wrapper
 +# exports (aurora_environment), as update-m1n1 itself runs.
 +aurora_ask() {
-+  local mode=$1
++  local mode=$1 search=/usr/bin:/bin
 +  shift
-+  sudo env -i "${aurora_environment[@]}" python3 -I -B "$aurora_helper" "$mode" "${root:-/}" "$root$aurora_bootchain" "$@"
++  # A test root's stubs come from the caller's PATH; a live check uses root's own.
++  [[ -z $root ]] || search=$PATH
++  sudo env -i PATH="$search" "${aurora_environment[@]}" python3 -I -B "$aurora_helper" "$mode" "${root:-/}" "$root$aurora_bootchain" "$@"
 +}
 +
-+# bootchain's record of trying the image just built: none, tried or committed.
-+aurora_recorded() {
-+  aurora_ask attempt "$aurora_sha" 2>/dev/null | sed -n 's/^recorded=//p'
-+}
-+
-+# What to do about a live Stage 2 that is not the current build.
++# What to do about a live Stage 2 that is not the current build, given what
++# update-m1n1 would do: refuse beside another aura-try, skip an image it tried.
 +aurora_remedy() {
-+  if [[ $(aurora_recorded) == "tried" ]]; then
-+    printf '%s' "update-m1n1 has already tried this image (/var/lib/aurora-stage2/attempts/$aurora_sha) and does not arm it again; find out why that trial did not commit"
++  local answer record
++  if [[ -n $aurora_foreign_marker ]]; then
++    printf '%s' "update-m1n1 stages no trial while aura-try on the system ESP names $aurora_foreign_marker; deal with that trial first"
++    return 0
++  fi
++  answer=$(aurora_ask attempt "$aurora_sha" 2>/dev/null) || answer=""
++  if [[ $answer == *"recorded=tried"* ]]; then
++    record=$(sed -n 's/^record=//p' <<<"$answer")
++    printf '%s' "update-m1n1 has already tried this image (${record#"$root"}) and does not arm it again; find out why that trial did not commit"
 +  else
 +    printf '%s' "run sudo update-m1n1, then omarchy update"
 +  fi
@@ -440,7 +446,7 @@ index 0000000..9718998
 +  aurora_helper=$(dirname -- "$(realpath -- "$0")")/../lib/omarchy-mac/boot/aurora-stage2.py
 +  [[ -r $aurora_helper ]] || aurora_helper=$(dirname -- "$(realpath -- "$0")")/../lib/aurora-stage2.py
 +  aurora_bootchain=$AURORA_BOOTCHAIN
-+  aurora_environment=(PATH="$PATH" M1N1="$M1N1" U_BOOT="$U_BOOT" CONFIG="$CONFIG"
++  aurora_environment=(M1N1="$M1N1" U_BOOT="$U_BOOT" CONFIG="$CONFIG"
 +    AURORA_DEVICE_TREE_COMPATIBLE="$AURORA_DEVICE_TREE_COMPATIBLE" AURORA_MONITOR_FREE_MARKER="$AURORA_MONITOR_FREE_MARKER"
 +    AURORA_KERNEL_ACTION=refresh AURORA_KERNEL_VERSION= TARGET=/m1n1/boot.bin)
 +  [[ -z $dtbs_set ]] || aurora_environment+=(DTBS="$DTBS")
@@ -474,6 +480,7 @@ index 0000000..9718998
 +aurora_check_trial() {
 +  local stage2=$1 live=$mountpoint/$1 relative=$1.next marker=$mountpoint/aura-try
 +  local built=$workdir/aurora-stage2.bin live_matches=0 state="" named="" answer trial
++  aurora_foreign_marker=""
 +  sudo cmp -s "$built" "$live" && live_matches=1
 +  if sudo test -e "$marker"; then
 +    # shellcheck disable=SC2024 # the copy is the check's own
@@ -503,8 +510,10 @@ index 0000000..9718998
 +    echo "Apple Silicon boot check: warning: an earlier Stage 2 trial of $relative fell back; $stage2 is current and the candidate is kept on the system ESP for inspection" >&2
 +    return 0
 +  fi
-+  [[ $state != "spent" ]] ||
++  if [[ $state == "spent" ]]; then
++    aurora_foreign_marker=$named
 +    echo "Apple Silicon boot check: warning: aura-try on the system ESP ($esp) names $named, a trial Aurora's update-m1n1 does not manage" >&2
++  fi
 +  if (( live_matches )); then
 +    ! sudo test -e "$live.next" ||
 +      echo "Apple Silicon boot check: warning: $relative is on the system ESP ($esp) with no aura-try marker arming it, an orphaned Stage 2 trial that no boot reads" >&2
@@ -515,7 +524,7 @@ index 0000000..9718998
 +  fail "$stage2 on the system ESP ($esp) is not aura, $kernel $kver's device trees, U-Boot and $CONFIG as Aurora's update-m1n1 builds them; $(aurora_remedy)"
 +}
 diff --git a/omarchy-mac-boot/test/apple-silicon-boot-check-test.sh b/omarchy-mac-boot/test/apple-silicon-boot-check-test.sh
-index 9f0db4a..8a34a6b 100644
+index 9f0db4a..c5fb5fd 100644
 --- a/omarchy-mac-boot/test/apple-silicon-boot-check-test.sh
 +++ b/omarchy-mac-boot/test/apple-silicon-boot-check-test.sh
 @@ -7,13 +7,17 @@ source "$(dirname "$0")/base-test.sh"
@@ -560,7 +569,7 @@ index 9f0db4a..8a34a6b 100644
  SH
  chmod +x "$stub_bin"/*
  
-@@ -927,3 +935,311 @@ printf 'GRUB\n' >"$existing/EFI/BOOT/BOOTAA64.EFI"
+@@ -927,3 +935,319 @@ printf 'GRUB\n' >"$existing/EFI/BOOT/BOOTAA64.EFI"
  TEST_EXISTING_MOUNT="$existing" run_check --boot-chain
  expect_fail "an m1n1 left to its owner beside another loader on the system ESP" "/boot/efi/EFI/BOOT/BOOTAA64.EFI is not the one on the system ESP"
  pass "a Limine Mac boots the Limine, menu and UKI on the system ESP"
@@ -871,6 +880,14 @@ index 9f0db4a..8a34a6b 100644
 +expect_pass "a spent aura-try of another image beside the current Stage 2"
 +grep -Fq "warning: aura-try on the system ESP (/boot/efi) names m1n1/other.bin.next, a trial Aurora's update-m1n1 does not manage" "$test_tmp/err" ||
 +  fail "a spent aura-try of another image is reported" "$(cat "$test_tmp/err")"
++cp "$test_tmp/aurora-previous.bin" "$esp/m1n1/boot-ctxr.bin"
++run_check --boot-chain
++expect_fail "a spent aura-try of another image beside a stale Stage 2" "update-m1n1 stages no trial while aura-try on the system ESP names m1n1/other.bin.next"
++aurora_system
++aurora_trial ""
++mv "$root/var/lib/aurora-stage2/attempts/${sha%% *}" "$root/var/lib/aurora-stage2/attempts/$kver"
++run_check --boot-chain
++expect_fail "an orphaned trial with a kernel-named attempt record" "update-m1n1 has already tried this image (/var/lib/aurora-stage2/attempts/$kver)"
 +pass "a configured DTBS reaches bootchain.py, kernel-named attempt records count, and an image update-m1n1 already tried is not advised a rebuild"
 diff --git a/omarchy-mac-boot/test/fixtures/aurora/bootchain.py b/omarchy-mac-boot/test/fixtures/aurora/bootchain.py
 new file mode 100644
