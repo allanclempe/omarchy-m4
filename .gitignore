@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Sums up private team discussion; stays local (AGENTS.md, Working rules).
+docs/questions-for-the-team.md

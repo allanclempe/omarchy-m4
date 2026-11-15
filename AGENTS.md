@@ -51,6 +51,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   back into this patch, so the repo stays the source.
 - `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
   `tools/tests/` has their tests (plain Bash, run on Linux).
+- `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
+  stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
@@ -85,6 +87,12 @@ PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT seria
 
 ## Working rules
 
+- **This repo is public.** Anyone can read every file, every commit on every branch, and every
+  PR's text, and a commit stays in the history after the file is changed. Keep out of all of
+  them: Wi-Fi network names (write "a home mesh network"), addresses on the home network, where
+  Allan lives, device serial numbers, credentials and tokens, other people's private details, and
+  anything from the team's private Basecamp beyond what its authors made public. If something
+  private gets committed, stop and tell Allan: taking it out means rewriting history (OMS-21).
 - Anything that writes to the Mac's disk, ESP, boot policy or 1TR needs Allan's approval first,
   with a backup and an undo path stated.
 - Copy identifiers (PARTUUIDs, hashes, serials) from command output, character for character.
@@ -93,7 +101,9 @@ PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT seria
   expected output stated.
 - Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
 - Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
-  with enough context to ask them cold. Move a question to **Answered** when it's settled.
+  with enough context to ask them cold. Move a question to **Answered** when it's settled. That
+  file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
+  Never commit it, and don't quote it in public files.
 - Any commit or PR from this work says it was made with AI assistance (Aurora's contributing guide
   requires it).
 
