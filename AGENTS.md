@@ -25,7 +25,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | fstab mounts `/boot/efi` by PARTUUID | derivation installs `omarchy-esp-generator`, which mounts the device-tree ESP (not yet run) | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
-| Update guards; Stage 2 trial disarmed | no | OMS-13 |
+| Update guards; Stage 2 trial disarmed | derivation: Stage 2 rebuilt from the pin, tried once by Aurora's trial, `owner-boot-chain` marker; kernel and Mesa update (not yet run) | OMS-13 |
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
 
@@ -38,7 +38,8 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
-  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
+  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in, and the update policy:
+  Stage 2 rebuilt from the pin and tried by Aurora's trials). Its header has usage.
   It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
   Recovery boot modes for aura's Mach-O Stage 1 (`macho-unpadded`, which the J616c uses, and
