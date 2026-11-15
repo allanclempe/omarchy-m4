@@ -236,9 +236,9 @@ PY
   log "installing Realtek firmware for USB dongles"
   in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Realtek dongle firmware (pacman.log)"
-  # The kernel loads zstd-compressed firmware (CONFIG_FW_LOADER_COMPRESS_ZSTD=y).
-  [[ -s $T/usr/lib/firmware/rtl_nic/rtl8153b-2.fw.zst || -s $T/usr/lib/firmware/rtl_nic/rtl8153b-2.fw ]] ||
-    fail "no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
+  # Arch Linux ARM ships it plain, x86 Arch zstd-compressed; the kernel loads either.
+  in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
+    fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
