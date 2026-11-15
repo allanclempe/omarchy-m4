@@ -9,6 +9,26 @@ As of 2026-11-14 one J616c runs Omarchy end to end: aura, U-Boot, Limine, Linux 
 Aurora's GPU driver, Hyprland and Wi-Fi. It took several hand fixes. The week of 2026-11-16 is a
 **soak test**: Allan uses the machine for real daily work, and we record how the OS behaves.
 
+## Done means a clean reinstall
+
+The build is done when a fresh install from it boots to a working desktop with **zero hand steps**:
+no typed commands, no extra packages, no edits, through install, first boot and the first
+`omarchy update`. OMS-14 is that acceptance run. So every fix found on the Mac goes into the build
+(`tools/derive-j616c-image` or `patches/j616c-installer.patch`) as part of the same task, and gets a
+row below. A task whose fix lives only on the Mac isn't done.
+
+| Hand fix on the installed Mac | In the build | Task |
+| --- | --- | --- |
+| Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
+| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | no: the installer enrols the padded object, which loops | OMS-11 |
+| `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
+| fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
+| Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
+| `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run) | OMS-1 |
+| Update guards; Stage 2 trial disarmed | no | OMS-13 |
+| Default sink reset from the stale `RawSpeakers` | not needed: fresh installs have no saved default | — |
+| First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
+
 ## Where things are
 
 - `JOURNEY.md` is the running log and the single source of truth for what happened and why. Read
