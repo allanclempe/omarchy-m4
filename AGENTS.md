@@ -35,6 +35,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   section 9 onward before acting on the boot chain. Add new findings as the next numbered section
   (`### 9.N Title (date)`). Record corrections there, never by rewriting history.
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
+- `tools/wifi-reload-timing.sh` times Wi-Fi's rejoin after a `brcmfmac` reload, plain and with the
+  radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot

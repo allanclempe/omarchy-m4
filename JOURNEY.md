@@ -484,21 +484,23 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 ### 9.26 Wi-Fi rejoin after a driver reload: a race in the test's unload (OMS-5, 2026-11-15)
 - The report's `network.wifi-first-join` failed: "Wi-Fi didn't associate within 45 s of the driver loading". The check unloads `brcmfmac` while connected (`modprobe -r brcmfmac_wcc brcmfmac`), loads it again and waits for an association.
 - Joins outside the test are quick (BCM4388, firmware 23.50.20.2.41.51.209, iwd 3.12, NetworkManager 1.58.1, a home mesh network with six access points, regulatory domain AU):
-  - After the four cold boots in the journal (2026-11-14 15:57 to 2026-11-15 16:44), iwd connected about 1.1–1.4 s after the firmware loaded, with a DHCP lease 0.2–2.2 s later.
-  - Resume took 2.6 s (the report).
-  - The live link is 5180 MHz, 160 MHz HE, −40 dBm.
+  - After the four cold boots in the journal from 2026-11-14 15:57 to 2026-11-15 16:44, iwd reached `connected` 1.29–1.38 s after the firmware loaded. The final DHCP lease line came 0.16–2.2 s after that.
+  - The earlier installer boot (2026-11-14 13:45) is left out: it had no known network yet and waited for a manual connect.
+  - The report has an IPv4 address again 2.6 s after resume. The live link is 5180 MHz, 160 MHz HE, about −40 to −47 dBm.
 - What happened in the test (boot of 2026-11-14 15:57, 17:14):
-  - 13.654 `modprobe -r`.
-  - 13.666 iwd got the deauthentication (reason 1) and went to `autoconnect_quick`.
-  - 14.172 it moved on to `autoconnect_full`, its scans failed ("CMD_TRIGGER_SCAN: Input/output error"), and from its cached results it tried all six access points in under 2 ms. Every one ended `connect-failed, status: 1`, on a radio already going away.
-  - 14.178 iwd removed its scan context; 14.270 the driver was gone.
-  - 16.714 the firmware was back, and iwd sat in `autoconnect_full` with no connect attempt.
-  - 17:15:00 the check's retry (`modprobe brcmfmac` again) came with a new NetworkManager activation, and iwd connected in 0.3 s.
-  - The 43 s of silence fits iwd's block on access points that failed to connect (`[Blacklist] InitialTimeout`, 60 s by default; the Mac has no `/etc/iwd/main.conf`). All six were blocked by the failures at 14.172.
+  - 13.654 `modprobe -r`. 13.666 iwd got the deauthentication (reason 1) and went to `autoconnect_quick`.
+  - 14.172, 0.52 s after the unload began, the quick scan's trigger failed ("CMD_TRIGGER_SCAN: Input/output error"), and iwd moved to `autoconnect_full`. From its cached results it tried all six access points within 1.5 ms, and every one ended `connect-failed, status: 1` on a radio already going away.
+  - 14.178 iwd dropped its scan context, 6 ms after the failed trigger. 14.270 the driver was gone.
+  - 16.714 the firmware was back, and 17.398 iwd went from `autoconnect_quick` to `autoconnect_full` without a connect attempt.
+  - At 17:15:00, 45 s after the load, the check's retry ran (`modprobe brcmfmac` again, then a NetworkManager activation from `nmcli`), and iwd connected in 0.3 s.
+- Why iwd didn't reconnect by itself, from iwd 3.12's source:
+  - A failed connect with status 1 goes through `station_retry_with_status`, which blocks that access point (`blacklist_add_bss`, `[Blacklist] InitialTimeout` 60 s by default; the Mac has no `/etc/iwd/main.conf`).
+  - Autoconnect skips blocked access points, while an explicit connect, like the activation at 17:15:00, doesn't.
+  - So the stall is consistent with all six being blocked, but not shown: iwd's debug log was off, and the check's retry ended the stall before the block would have expired (17:15:14). The first periodic scan after that would likely have come later still.
 - Repeated on purpose (2026-11-15 21:18, `tools/wifi-reload-timing.sh`, run by Allan at the Mac):
   - A plain reload, as the check does it, rejoined in 2.6 s from the `modprobe` that loads the driver.
   - A clean reload, radio off first and on after, also rejoined in 2.6 s.
-  - In the plain run, iwd removed its scan context 0.52 s after the deauthentication, before its `autoconnect_full` step, so it never tried to connect on the dying radio and nothing was blocked.
-  - On 2026-11-14 that step won by about 7 ms (14.172 against 14.178).
-- So the failure is a race in how the check unloads the driver, not slow joining on this Mac. A reload rejoins in 2.6 s unless iwd's quick-scan timer, about 0.5 s, fires a few milliseconds before the teardown finishes. The 60 s block is the likely reason for the stall when it does. That wasn't reproduced, since the race didn't recur in one plain run.
-- Decision (owner): no change to the image. The check should turn the Wi-Fi radio off before unloading (`nmcli radio wifi off`, reload, `nmcli radio wifi on`), so iwd makes no connect attempts on a radio that's going away; that's noted on OMS-8, the test-tool task. `tools/wifi-reload-timing.sh` stays in the repo to repeat the measurement.
+  - In the plain run, iwd dropped its scan context 0.52 s after the deauthentication with no failed scan trigger before it, so it never tried to connect on the dying radio, and nothing was blocked.
+- So the failure is a race during the unload: whether the driver's error reply to iwd's quick scan arrives a few milliseconds before iwd drops its scan context. A reload that misses the race rejoins in 2.6 s. The failure itself wasn't reproduced (one plain run), so the race is narrowed, not proven, and how often it hits isn't known. The script now takes a number of plain runs and reports for each whether the race hit (failed connects before the load).
+- Decision (owner): no change to the image for the test. The check should turn the Wi-Fi radio off before unloading (`nmcli radio wifi off`, reload, `nmcli radio wifi on`), so iwd makes no connect attempts on a radio that's going away; that's noted on OMS-8, the test-tool task. Whether radio-off avoids the race was also not shown, since the plain run missed it.
+- Found in review: Omarchy's own `omarchy-wifi-resume-fix` (`omarchy-mac` 0.2.3-2) reloads `brcmfmac` the same plain way, after a resume where Wi-Fi didn't come back, and gives up after 30 s. It can meet the same race, possibly with access points already blocked from failed associations before the reload. Every run in these journals said "no reload needed", so there's no field data. Filed as OMS-20.

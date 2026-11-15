@@ -2,26 +2,38 @@
 # wifi-reload-timing.sh: time how long Wi-Fi takes to rejoin after the
 # brcmfmac driver is reloaded, two ways (omarchy-m4 OMS-5, JOURNEY 9.26).
 #
-#   sudo bash wifi-reload-timing.sh [OUTPUT]      (default /tmp/oms5-result.txt)
+#   sudo bash wifi-reload-timing.sh [OUTPUT] [PLAIN_RUNS]
+#     OUTPUT      default /tmp/oms5-result.txt
+#     PLAIN_RUNS  how many plain reloads to time, default 1
 #
 # 1. plain: modprobe -r brcmfmac_wcc brcmfmac, then modprobe brcmfmac, as
-#    omarchy-m-test's network.wifi-first-join does while connected.
-# 2. clean: the same with the Wi-Fi radio turned off first (nmcli radio wifi
-#    off) and on again after the reload, so iwd makes no connect attempts on
-#    the radio while it goes away.
+#    omarchy-m-test's network.wifi-first-join (and omarchy-wifi-resume-fix) do
+#    while connected. Each plain run also records whether iwd reached
+#    autoconnect_full and tried to connect before the radio went away, the
+#    race seen on 2026-11-14.
+# 2. clean: once, the same with the Wi-Fi radio turned off first (nmcli radio
+#    wifi off) and on again after the reload, so iwd makes no connect attempts
+#    on the radio while it goes away.
 #
-# Each run is timed from the modprobe that loads the driver to wlan0 being
-# connected with an IPv4 address, giving up after 120 s. Between the runs it
-# waits 70 s once connected, past iwd's 60 s block on failed access points, so
-# the second run doesn't inherit the first's. It needs no network while it
-# runs: run it at the Mac, since Wi-Fi (and an SSH session over it) drops.
-# Whatever happens, it loads the driver and turns the radio back on at exit.
+# Each run is timed from the modprobe that loads the driver to the Wi-Fi
+# device being connected with a routable IPv4 address, giving up after 120 s.
+# Before every run it waits until joined and then 70 s more, past iwd's 60 s
+# block on access points that failed to connect, so a run doesn't inherit the
+# last one's; a run that never joins stops the script. It needs no network
+# while it runs: run it at the Mac, since Wi-Fi (and an SSH session over it)
+# drops. Whatever happens, it loads the driver and turns the radio back on at
+# exit.
 set -uo pipefail
 out=${1:-/tmp/oms5-result.txt}
+plain_runs=${2:-1}
+[[ $plain_runs =~ ^[1-9][0-9]*$ ]] || { echo "PLAIN_RUNS must be a positive number" >&2; exit 2; }
 [[ $(id -u) == 0 ]] || { echo "run it with sudo" >&2; exit 1; }
-for tool in modprobe nmcli iw ip journalctl logger; do
+for tool in modprobe nmcli iw ip journalctl logger awk pacman; do
   command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }
 done
+
+dev=$(iw dev | awk '$1 == "Interface" { print $2; exit }')
+[[ -n $dev ]] || { echo "no Wi-Fi interface" >&2; exit 1; }
 
 restore() {
   modprobe brcmfmac 2>/dev/null || :
@@ -31,11 +43,12 @@ trap restore EXIT
 
 now() { date +%s.%N; }
 say() { echo "$*" | tee -a "$out"; logger -t oms5 "$*"; }
+elapsed() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
 
-# joined: wlan0 is associated and has an IPv4 address.
+# joined: the Wi-Fi device is associated and has a routable IPv4 address.
 joined() {
-  iw dev wlan0 link 2>/dev/null | grep -q '^Connected to' &&
-    ip -4 -br addr show wlan0 2>/dev/null | grep -q '[0-9]\.[0-9]'
+  iw dev "$dev" link 2>/dev/null | grep -q '^Connected to' &&
+    ip -4 -br addr show "$dev" 2>/dev/null | awk '{ for (i = 3; i <= NF; i++) if ($i !~ /^169\.254\./) found = 1 } END { exit !found }'
 }
 
 # wait_join LABEL START: wait up to 120 s for joined, report seconds since START.
@@ -44,7 +57,7 @@ wait_join() {
   while :; do
     t=$(now)
     if joined; then
-      say "$label: joined after $(awk -v a="$start" -v b="$t" 'BEGIN { printf "%.1f", b - a }') s ($(iw dev wlan0 link | sed -n 's/^\tSSID: //p'), $(iw dev wlan0 link | sed -n 's/^\tfreq: //p') MHz)"
+      say "$label: joined after $(elapsed "$start" "$t") s ($(iw dev "$dev" link | sed -n 's/^\tSSID: //p'), $(iw dev "$dev" link | sed -n 's/^\tfreq: //p') MHz)"
       return 0
     fi
     if awk -v a="$start" -v b="$t" 'BEGIN { exit !(b - a > 120) }'; then
@@ -55,52 +68,68 @@ wait_join() {
   done
 }
 
-# journal LABEL SINCE: iwd, NetworkManager's wlan0 lines and brcmfmac since SINCE.
-journal() {
-  {
-    echo "---- $1: journal"
-    journalctl --no-pager -o short-precise --since "@${2%.*}" |
-      grep -E 'iwd\[|brcmf|NetworkManager.*(wlan0|iwd)' |
-      grep -vE 'iwd\[[0-9]+\]: {2,}|Wiphy:|Bitrates|Capabilit|Band:|Mbps|Ciphers|iftypes|Short GI|MCS|0-15|Mhz operation' |
-      cut -c1-220
-  } >>"$out"
-}
-
-: >"$out"
-say "oms5: start $(date -Is), $(uname -r), $(pacman -Q iwd networkmanager | tr '\n' ' ')"
-joined || say "oms5: warning: wlan0 isn't joined before the first run"
-
-# 1. plain reload while connected.
-since=$(now)
-say "plain: modprobe -r brcmfmac_wcc brcmfmac"
-modprobe -r brcmfmac_wcc brcmfmac
-sleep 1
-start=$(now)
-say "plain: modprobe brcmfmac"
-modprobe brcmfmac
-wait_join plain "$start"
-journal plain "$since"
-
-if joined; then
+# settle: joined now, then 70 s for iwd's blocks to expire.
+settle() {
+  joined || { say "not joined before the next run; stopping"; exit 1; }
   say "waiting 70 s for iwd's blocks to expire"
   sleep 70
-else
-  wait_join "plain (still waiting)" "$start" || :
-  sleep 70
-fi
+}
+
+# unload LABEL: remove the driver, and stop if it's still loaded.
+unload() {
+  modprobe -r brcmfmac_wcc brcmfmac || { say "$1: modprobe -r failed; stopping"; exit 1; }
+  [[ ! -d /sys/module/brcmfmac ]] || { say "$1: brcmfmac is still loaded; stopping"; exit 1; }
+}
+
+# journal LABEL SINCE: this script's markers, iwd, NetworkManager's Wi-Fi lines
+# and brcmfmac since SINCE.
+journal() {
+  journalctl --no-pager -o short-precise --since "@${2%.*}" |
+    grep -E "oms5\[|iwd\[|brcmf|NetworkManager.*($dev|iwd)" |
+    grep -vE 'iwd\[[0-9]+\]: {2,}|Wiphy:|Bitrates|Capabilit|Band:|Mbps|Ciphers|iftypes|Short GI|MCS|0-15|Mhz operation' |
+    cut -c1-220 >"$work/$1.journal"
+  { echo "---- $1: journal"; cat "$work/$1.journal"; } >>"$out"
+}
+
+work=$(mktemp -d)
+: >"$out"
+say "oms5: start $(date -Is), $(uname -r), $(pacman -Q iwd networkmanager | tr '\n' ' '), device $dev, $plain_runs plain run(s)"
+joined || { say "oms5: $dev isn't joined; join a network first"; exit 1; }
+
+# 1. plain reloads while connected.
+for ((n = 1; n <= plain_runs; n++)); do
+  ((n == 1)) || settle
+  label=plain$n
+  since=$(now)
+  say "$label: modprobe -r brcmfmac_wcc brcmfmac"
+  unload "$label"
+  sleep 1
+  start=$(now)
+  say "$label: modprobe brcmfmac"
+  modprobe brcmfmac || { say "$label: modprobe failed; stopping"; exit 1; }
+  wait_join "$label" "$start"
+  joined_ok=$?
+  journal "$label" "$since"
+  # The race: iwd tried to connect before the driver load (connect-failed lines).
+  failed=$(awk -v t="$(date -d "@${start%.*}" '+%H:%M:%S')" '$3 < t && /connect-failed/' "$work/$label.journal" | wc -l)
+  say "$label: race $( ((failed > 0)) && echo "hit ($failed failed connects before the load)" || echo "missed")"
+  ((joined_ok == 0)) || { say "$label: stopping: Wi-Fi didn't rejoin"; exit 1; }
+done
 
 # 2. clean reload: radio off first, on after.
+settle
 since=$(now)
 say "clean: nmcli radio wifi off"
-nmcli radio wifi off
+nmcli radio wifi off || { say "clean: nmcli radio wifi off failed; stopping"; exit 1; }
 sleep 2
-modprobe -r brcmfmac_wcc brcmfmac
+unload clean
 sleep 1
 start=$(now)
 say "clean: modprobe brcmfmac, nmcli radio wifi on"
-modprobe brcmfmac
+modprobe brcmfmac || { say "clean: modprobe failed; stopping"; exit 1; }
 nmcli radio wifi on
 wait_join clean "$start"
 journal clean "$since"
 
 say "oms5: done $(date -Is); result in $out"
+rm -rf "$work"
