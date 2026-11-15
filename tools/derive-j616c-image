@@ -295,11 +295,20 @@ PY
   # use them up before the commit service runs (OMS-17). The drop-in counts them
   # from the timer's activation in the unlocked system instead. It replaces this
   # exact trigger, so stop if Aurora's timer has changed.
-  guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer
-  [[ $(grep -E '^On[A-Za-z]+Sec=' "$guard_timer" 2>/dev/null) == "OnBootSec=12min" ]] ||
+  local guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer triggers
+  [[ -f $guard_timer ]] || fail "asahi-scripts no longer ships aurora-stage2-guard.timer; recheck its OMS-17 drop-in"
+  # Every trigger, OnCalendar= included: the drop-in's empty OnBootSec= resets them all.
+  [[ $(grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' "$guard_timer") == "OnBootSec=12min" ]] ||
     fail "Aurora's aurora-stage2-guard.timer no longer triggers on OnBootSec=12min alone; recheck its OMS-17 drop-in"
   install -D -m 0644 /tools/image/aurora-stage2-guard-from-unlock.conf \
     "$T/usr/local/lib/systemd/system/aurora-stage2-guard.timer.d/aurora-stage2-guard-from-unlock.conf"
+  # What systemd will merge, in order: Aurora's trigger, then the drop-in's reset
+  # and its own, with nothing from another unit file or drop-in in between or after.
+  triggers=$(in_chroot systemd-analyze cat-config systemd/system/aurora-stage2-guard.timer |
+    grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' | tr '\n' ' ') ||
+    fail "systemd-analyze could not read aurora-stage2-guard.timer"
+  [[ $triggers == "OnBootSec=12min OnBootSec= OnActiveSec=12min " ]] ||
+    fail "aurora-stage2-guard.timer's merged triggers aren't Aurora's plus the OMS-17 drop-in: $triggers"
   install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
 aurora-silicon aura-$STAGE2_COMMIT
 Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by
