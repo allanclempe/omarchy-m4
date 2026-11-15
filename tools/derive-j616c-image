@@ -30,6 +30,9 @@
 #     reset); it makes sure no Stage 2 trial state ships; and it ships
 #     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
 #     verify a Stage 2 that Aurora's update-m1n1 builds;
+#   - makes the trial guard count its 12 minutes from when the unlocked system
+#     starts, not from kernel start, so time at the disk password doesn't roll
+#     back a good trial (OMS-17);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -282,11 +285,21 @@ PY
   groups=$(in_chroot pacman-conf IgnoreGroup | tr '\n' ' ') || fail "pacman-conf could not read IgnoreGroup"
   [[ -z $groups ]] || fail "pacman ignores package groups: $groups"
   # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
-  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes.
+  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes
+  # (counted from unlock, below).
   in_chroot systemctl enable aurora-stage2-commit.service aurora-stage2-guard.timer >>"$W/pacman.log" 2>&1 ||
     fail "could not enable Aurora's Stage 2 trial units"
   [[ $(in_chroot systemctl is-enabled aurora-stage2-commit.service aurora-stage2-guard.timer | tr '\n' ' ') == "enabled enabled " ]] ||
     fail "Aurora's Stage 2 trial units are not enabled"
+  # The guard's 12 minutes count from kernel start, so a slow disk password can
+  # use them up before the commit service runs (OMS-17). The drop-in counts them
+  # from the timer's activation in the unlocked system instead. It replaces this
+  # exact trigger, so stop if Aurora's timer has changed.
+  guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer
+  [[ $(grep -E '^On[A-Za-z]+Sec=' "$guard_timer" 2>/dev/null) == "OnBootSec=12min" ]] ||
+    fail "Aurora's aurora-stage2-guard.timer no longer triggers on OnBootSec=12min alone; recheck its OMS-17 drop-in"
+  install -D -m 0644 /tools/image/aurora-stage2-guard-from-unlock.conf \
+    "$T/usr/local/lib/systemd/system/aurora-stage2-guard.timer.d/aurora-stage2-guard-from-unlock.conf"
   install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
 aurora-silicon aura-$STAGE2_COMMIT
 Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by
