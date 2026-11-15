@@ -27,6 +27,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
 | Update guards; Stage 2 trial disarmed | derivation: Stage 2 rebuilt from the pin, tried once by Aurora's trial, `owner-boot-chain` marker; kernel and Mesa update (not yet run) | OMS-13 |
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
+| `linux-firmware-realtek` installed (USB Ethernet firmware) | derivation, PR #12 (not yet run) | OMS-7 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
 
 ## Where things are

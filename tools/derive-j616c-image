@@ -18,6 +18,9 @@
 #     the amps stay locked and there is no speaker sink (OMS-1). Also Aurora's
 #     aurora-audio: the edge image's build (4.1.aurora3-3) has no J616 speaker or
 #     mic graph, Aurora's (4.1.aurora2-16) does, though its pkgrel sorts lower;
+#   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
+#     split, so USB-C Ethernet dongles on RTL8153B (and Realtek USB Wi-Fi and
+#     Bluetooth) ran without their firmware (OMS-7);
 #   - uses a Stage 2 built from aura main with aaec599f (restarts the post-M4
 #     ANS that Stage 1 powers off; no aura release has it yet), installed at
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
@@ -64,6 +67,10 @@ AURORA_MESA_OPTIONAL=(mesa-aurora-fex-guest vulkan-lavapipe-aurora)
 # speakersafetyd looks for apple/j616.conf on a J616c; only this package has it.
 # aurora-audio: the J616 speaker and mic DSP graphs (asahi-audio/j616).
 AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles aurora/aurora-audio)
+# Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
+# rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
+# linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
+DONGLE_FIRMWARE=(core/linux-firmware-realtek)
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
@@ -240,9 +247,16 @@ PY
   grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
 
+  log "installing Realtek firmware for USB dongles"
+  in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install the Realtek dongle firmware (pacman.log)"
+  # Arch Linux ARM ships it plain, x86 Arch zstd-compressed; the kernel loads either.
+  in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
+    fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
+
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" | tee "$W/versions.txt"
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
 
