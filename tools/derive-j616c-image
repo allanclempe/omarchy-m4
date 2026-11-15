@@ -30,6 +30,9 @@
 #     reset); it makes sure no Stage 2 trial state ships; and it ships
 #     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
 #     verify a Stage 2 that Aurora's update-m1n1 builds;
+#   - makes the trial guard count its 12 minutes from when the unlocked system
+#     starts, not from kernel start, so time at the disk password doesn't roll
+#     back a good trial (OMS-17);
 #   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
 #     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
 #     which every Omarchy ESP shares (OMS-12), and /boot from the partition
@@ -286,11 +289,30 @@ PY
   groups=$(in_chroot pacman-conf IgnoreGroup | tr '\n' ' ') || fail "pacman-conf could not read IgnoreGroup"
   [[ -z $groups ]] || fail "pacman ignores package groups: $groups"
   # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
-  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes.
+  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes
+  # (counted from unlock, below).
   in_chroot systemctl enable aurora-stage2-commit.service aurora-stage2-guard.timer >>"$W/pacman.log" 2>&1 ||
     fail "could not enable Aurora's Stage 2 trial units"
   [[ $(in_chroot systemctl is-enabled aurora-stage2-commit.service aurora-stage2-guard.timer | tr '\n' ' ') == "enabled enabled " ]] ||
     fail "Aurora's Stage 2 trial units are not enabled"
+  # The guard's 12 minutes count from kernel start, so a slow disk password can
+  # use them up before the commit service runs (OMS-17). The drop-in counts them
+  # from the timer's activation in the unlocked system instead. It replaces this
+  # exact trigger, so stop if Aurora's timer has changed.
+  local guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer triggers
+  [[ -f $guard_timer ]] || fail "asahi-scripts no longer ships aurora-stage2-guard.timer; recheck its OMS-17 drop-in"
+  # Every trigger, OnCalendar= included: the drop-in's empty OnBootSec= resets them all.
+  [[ $(grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' "$guard_timer") == "OnBootSec=12min" ]] ||
+    fail "Aurora's aurora-stage2-guard.timer no longer triggers on OnBootSec=12min alone; recheck its OMS-17 drop-in"
+  install -D -m 0644 /tools/image/aurora-stage2-guard-from-unlock.conf \
+    "$T/usr/local/lib/systemd/system/aurora-stage2-guard.timer.d/aurora-stage2-guard-from-unlock.conf"
+  # What systemd will merge, in order: Aurora's trigger, then the drop-in's reset
+  # and its own, with nothing from another unit file or drop-in in between or after.
+  triggers=$(in_chroot systemd-analyze cat-config systemd/system/aurora-stage2-guard.timer |
+    grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' | tr '\n' ' ') ||
+    fail "systemd-analyze could not read aurora-stage2-guard.timer"
+  [[ $triggers == "OnBootSec=12min OnBootSec= OnActiveSec=12min " ]] ||
+    fail "aurora-stage2-guard.timer's merged triggers aren't Aurora's plus the OMS-17 drop-in: $triggers"
   install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
 aurora-silicon aura-$STAGE2_COMMIT
 Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by
