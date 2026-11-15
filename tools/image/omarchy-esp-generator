@@ -17,7 +17,8 @@
 # Boot partition right after the ESP (stub, ESP, Boot, Root), so it then
 # writes boot.mount for the partition that follows the ESP on the same disk,
 # found by start sector through sysfs, but only when that partition's ext4
-# superblock carries the image's Boot UUID. Whatever it can't establish, it leaves to fstab, as before.
+# superblock carries the image's Boot UUID. Whatever it can't establish, it
+# leaves to fstab, as before.
 # Each run (every boot and every daemon-reload) logs one line per mount point
 # to the kernel log (journalctl -k), as systemd.generator(7) asks of
 # generators, or to stderr where /dev/kmsg isn't writable. Only systemd's
