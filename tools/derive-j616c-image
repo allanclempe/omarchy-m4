@@ -23,6 +23,20 @@
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
 #     kernel, U-Boot or aura update rebuilds boot-ctxr.bin with it;
 #   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura;
+#   - keeps updates safe without hand guards (OMS-13): the kernel, Mesa, U-Boot
+#     and aura update from [aurora]; every boot-chain change rebuilds Stage 2
+#     from the pinned aura Stage 2 and Aurora's trial boots it once (committed
+#     when Linux comes up; a trial that never gets there falls back after a
+#     reset); it makes sure no Stage 2 trial state ships; and it ships
+#     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
+#     verify a Stage 2 that Aurora's update-m1n1 builds;
+#   - makes the trial guard count its 12 minutes from when the unlocked system
+#     starts, not from kernel start, so time at the disk password doesn't roll
+#     back a good trial (OMS-17);
+#   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
+#     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
+#     which every Omarchy ESP shares (OMS-12), and /boot from the partition
+#     after it rather than the Boot UUID every install shares (OMS-15);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -256,6 +270,59 @@ PY
     "$STAGE2_PATH" >>"$T/etc/default/update-m1n1"
   echo "aura Stage 2 $STAGE2_COMMIT $STAGE2_SHA256" >>"$W/versions.txt"
 
+  log "updates: Stage 2 rebuilt from the pin and tried once (OMS-13)"
+  # The pacman hook must keep rebuilding Stage 2, and nothing may hold the kernel
+  # or Mesa back: those are the hand guards this image replaces.
+  ! grep -q '^[[:space:]]*M1N1_UPDATE_DISABLED' "$T/etc/default/update-m1n1" ||
+    fail "/etc/default/update-m1n1 disables Stage 2 rebuilds"
+  [[ -f $T/usr/share/libalpm/hooks/95-m1n1-install.hook ]] || fail "Aurora's Stage 2 pacman hook is missing"
+  # pacman's resolved configuration, Include= files and all.
+  local ignored groups hookdirs dir
+  hookdirs=$(in_chroot pacman-conf HookDir) || fail "pacman-conf could not read pacman's configuration"
+  for dir in /etc/pacman.d/hooks $hookdirs; do
+    [[ $dir == /usr/share/libalpm/hooks || $dir == /usr/share/libalpm/hooks/ ]] && continue
+    [[ ! -e $T$dir/95-m1n1-install.hook && ! -L $T$dir/95-m1n1-install.hook ]] ||
+      fail "$dir overrides Aurora's Stage 2 pacman hook"
+  done
+  ignored=$(in_chroot pacman-conf IgnorePkg | sort -u | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
+  [[ $ignored == "m1n1-aurora " ]] || fail "pacman's IgnorePkg is not exactly m1n1-aurora: ${ignored:-(none)}"
+  groups=$(in_chroot pacman-conf IgnoreGroup | tr '\n' ' ') || fail "pacman-conf could not read IgnoreGroup"
+  [[ -z $groups ]] || fail "pacman ignores package groups: $groups"
+  # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
+  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes
+  # (counted from unlock, below).
+  in_chroot systemctl enable aurora-stage2-commit.service aurora-stage2-guard.timer >>"$W/pacman.log" 2>&1 ||
+    fail "could not enable Aurora's Stage 2 trial units"
+  [[ $(in_chroot systemctl is-enabled aurora-stage2-commit.service aurora-stage2-guard.timer | tr '\n' ' ') == "enabled enabled " ]] ||
+    fail "Aurora's Stage 2 trial units are not enabled"
+  # The guard's 12 minutes count from kernel start, so a slow disk password can
+  # use them up before the commit service runs (OMS-17). The drop-in counts them
+  # from the timer's activation in the unlocked system instead. It replaces this
+  # exact trigger, so stop if Aurora's timer has changed.
+  local guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer triggers
+  [[ -f $guard_timer ]] || fail "asahi-scripts no longer ships aurora-stage2-guard.timer; recheck its OMS-17 drop-in"
+  # Every trigger, OnCalendar= included: the drop-in's empty OnBootSec= resets them all.
+  [[ $(grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' "$guard_timer") == "OnBootSec=12min" ]] ||
+    fail "Aurora's aurora-stage2-guard.timer no longer triggers on OnBootSec=12min alone; recheck its OMS-17 drop-in"
+  install -D -m 0644 /tools/image/aurora-stage2-guard-from-unlock.conf \
+    "$T/usr/local/lib/systemd/system/aurora-stage2-guard.timer.d/aurora-stage2-guard-from-unlock.conf"
+  # What systemd will merge, in order: Aurora's trigger, then the drop-in's reset
+  # and its own, with nothing from another unit file or drop-in in between or after.
+  triggers=$(in_chroot systemd-analyze cat-config systemd/system/aurora-stage2-guard.timer |
+    grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' | tr '\n' ' ') ||
+    fail "systemd-analyze could not read aurora-stage2-guard.timer"
+  [[ $triggers == "OnBootSec=12min OnBootSec= OnActiveSec=12min " ]] ||
+    fail "aurora-stage2-guard.timer's merged triggers aren't Aurora's plus the OMS-17 drop-in: $triggers"
+  install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
+aurora-silicon aura-$STAGE2_COMMIT
+Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by
+Aurora's update-m1n1 into m1n1/boot-ctxr.bin. Omarchy's boot check rebuilds Stage 2 the stock way and can't verify this one, so
+omarchy update warns instead of refusing (omarchy-mac-boot update-verify). Aurora's
+Stage 2 trial checks each rebuilt Stage 2 at the next boot instead. Remove this file
+and the M1N1= line once the boot check understands Aurora's chain and an aura release
+contains aaec599f (omarchy-m4 OMS-13).
+EOF
+
   log "Stage 2: standard and J616c confined"
   printf '%s\0' $J616C_COMPATIBLE >"$T/tmp/j616c-compatible"
   [[ -f $T/usr/share/aura/monitor-free ]] || fail "aura ships no monitor-free marker"
@@ -265,6 +332,25 @@ PY
     /usr/bin/update-m1n1 >>"$W/update-m1n1.log" 2>&1 || fail "update-m1n1 for J616c failed (update-m1n1.log)"
   [[ -s $T/boot/efi/m1n1/boot.bin && -s $T/boot/efi/m1n1/boot-ctxr-j616c.bin ]] || fail "no Stage 2 written"
   rm -f "$T/boot/efi/m1n1/boot-ctxr.bin" "$T/boot/efi/m1n1/boot.bin.old"
+  # Defensive: the pacman hook can't arm a Stage 2 trial in this build (its
+  # device tree names no Apple board and no aura Stage 1), but should it ever,
+  # a fresh install must not commit a candidate built before the pin, or carry
+  # its receipt, displaced candidates or attempt records.
+  trial_state() {
+    (cd "$T" && find boot/efi -maxdepth 1 -name 'aura-try*' -print 2>/dev/null
+      find boot/efi/m1n1 \( -name '*.next' -o -name '*.next.json' -o -name '*.failed-*' \) -print 2>/dev/null
+      find var/lib/aurora-stage2/attempts -mindepth 1 -maxdepth 1 -print 2>/dev/null) || true
+  }
+  local stale
+  stale=$(trial_state)
+  if [[ -n $stale ]]; then
+    log "removing Stage 2 trial state left by the build: $(tr '\n' ' ' <<<"$stale")"
+    while IFS= read -r p; do
+      [[ -n $p && $p != /* && $p != *..* ]] || continue # never the image root or outside it
+      rm -rf -- "${T:?}/$p"
+    done <<<"$stale"
+  fi
+  [[ -z $(trial_state) ]] || fail "Stage 2 trial state remains in the image: $(trial_state | tr '\n' ' ')"
   python3 - "$T/boot/efi/m1n1/boot-ctxr-j616c.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
     "$T/usr/lib/asahi-boot/u-boot-nodtb.bin" <<'PY' || fail "the J616c Stage 2 lacks its tree or U-Boot"
 import gzip, sys
@@ -310,6 +396,17 @@ PY
 [Service]
 ExecStartPre=/usr/bin/pacman-key --populate aurora
 EOF
+
+  log "mounting /boot/efi and /boot from the install the Mac boots"
+  # fstab stays as the image builder writes it (mac-image-check pins the line);
+  # the generator's units take precedence over fstab's at every boot.
+  # The generator copies these lines' UUIDs, options and fsck pass, so match all of them.
+  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]+umask=0077[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot/efi line isn't the one omarchy-esp-generator replaces (UUID=4F4D-5801, umask=0077, pass 2)"
+  grep -Eq '^UUID=4f4d5801-424f-4f54-8000-000000000001[[:space:]]+/boot[[:space:]]+ext4[[:space:]]+defaults,noatime[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot line isn't the one omarchy-esp-generator replaces (UUID=4f4d5801-424f-…-0001, defaults,noatime, pass 2)"
+  install -D -m 0755 /tools/image/omarchy-esp-generator \
+    "$T/usr/local/lib/systemd/system-generators/omarchy-esp-generator"
 
   log "cleaning up the root"
   rm -rf "$T/etc/pacman.d/gnupg"
