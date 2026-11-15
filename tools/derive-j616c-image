@@ -317,8 +317,9 @@ EOF
   log "mounting /boot/efi from the ESP the Mac boots"
   # fstab stays as the image builder writes it (mac-image-check pins the line);
   # the generator's unit takes precedence over fstab's at every boot.
-  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]' "$T/etc/fstab" ||
-    fail "fstab doesn't mount /boot/efi by the shared ESP serial this generator replaces"
+  # The generator copies this line's options and fsck pass, so match all of it.
+  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]+umask=0077[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot/efi line isn't the one omarchy-esp-generator replaces (UUID=4F4D-5801, umask=0077, pass 2)"
   install -D -m 0755 /tools/image/omarchy-esp-generator \
     "$T/usr/local/lib/systemd/system-generators/omarchy-esp-generator"
 

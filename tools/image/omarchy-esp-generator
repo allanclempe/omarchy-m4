@@ -10,7 +10,9 @@
 # device tree, as omarchy-mac-esp reads it. This writes boot-efi.mount for that
 # partition into the early generator directory, which takes precedence over
 # the unit systemd-fstab-generator makes from fstab. Without that name, it
-# writes nothing and fstab's entry applies as before.
+# writes nothing and fstab's entry applies as before. It logs one line to the
+# journal either way. Only systemd's mount of /boot/efi changes: a plain
+# `mount /boot/efi` outside systemd still reads fstab.
 #
 #   omarchy-esp-generator NORMAL_DIR EARLY_DIR LATE_DIR
 #
@@ -22,11 +24,19 @@ early=${2:?usage: omarchy-esp-generator NORMAL_DIR EARLY_DIR LATE_DIR}
 node=/proc/device-tree/chosen/asahi,efi-system-partition
 [ "$(id -u)" -eq 0 ] || node=${OMARCHY_ESP_PARTUUID_FILE:-$node}
 
-[ -r "$node" ] || exit 0
+log() { echo "omarchy-esp-generator: $*" >&2; }
+
+if [ ! -r "$node" ]; then
+  log "no ESP named in the device tree; /boot/efi is mounted as fstab says"
+  exit 0
+fi
 uuid=$(tr -d '\0' <"$node" | tr 'ABCDEF' 'abcdef')
 case $uuid in
   [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-  *) exit 0 ;;
+  *)
+    log "the device tree's ESP is not one PARTUUID; /boot/efi is mounted as fstab says"
+    exit 0
+    ;;
 esac
 
 device=/dev/disk/by-partuuid/$uuid
@@ -52,3 +62,4 @@ Type=vfat
 Options=umask=0077
 EOF
 ln -sf ../boot-efi.mount "$early/local-fs.target.requires/boot-efi.mount"
+log "mounting /boot/efi from PARTUUID $uuid, the ESP this Mac booted from"

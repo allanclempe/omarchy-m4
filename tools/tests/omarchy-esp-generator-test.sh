@@ -8,6 +8,11 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 failures=0
 n=0
+# As root the generator reads the live device tree and ignores the fixtures.
+if [[ $(id -u) == 0 ]]; then
+  echo "SKIP omarchy-esp-generator: run this test as a normal user" >&2
+  exit 0
+fi
 
 fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 
@@ -24,7 +29,10 @@ run() {
   fi
 }
 
-# aura writes the PARTUUID upper-case with a trailing NUL.
+# As read on the J616c: lower case, NUL-terminated. Upper case is accepted too.
+run lower '272043e7-ec24-4890-93d6-545cfbb8329b\0'
+grep -qx 'What=/dev/disk/by-partuuid/272043e7-ec24-4890-93d6-545cfbb8329b' "$work/lower/early/boot-efi.mount" 2>/dev/null ||
+  fail "lower: no unit for the PARTUUID as the J616c reports it"
 run upper '272043E7-EC24-4890-93D6-545CFBB8329B\0'
 unit=$work/upper/early/boot-efi.mount
 if [[ -f $unit ]]; then
@@ -34,6 +42,8 @@ if [[ -f $unit ]]; then
   grep -qx 'Options=umask=0077' "$unit" || fail "upper: Options= differs from fstab's"
   escaped=$(systemd-escape --path /dev/disk/by-partuuid/272043e7-ec24-4890-93d6-545cfbb8329b)
   grep -qxF "Requires=systemd-fsck@$escaped.service" "$unit" || fail "upper: no fsck of the ESP"
+  grep -qxF "After=systemd-fsck@$escaped.service" "$unit" || fail "upper: not ordered after the ESP's fsck"
+  grep -qx 'Before=local-fs.target' "$unit" || fail "upper: not ordered before local-fs.target"
   [[ $(readlink "$work/upper/early/local-fs.target.requires/boot-efi.mount") == ../boot-efi.mount ]] ||
     fail "upper: local-fs.target doesn't require it"
   [[ -z $(ls -A "$work/upper/normal") && -z $(ls -A "$work/upper/late") ]] || fail "upper: wrote outside the early directory"
@@ -44,6 +54,28 @@ if [[ -f $unit ]]; then
   fi
 else
   fail "upper: no boot-efi.mount written"
+fi
+
+# The override only works if it replaces the unit systemd-fstab-generator makes
+# from the image's fstab line: same unit name, mount point, type and options.
+fstab_generator=/usr/lib/systemd/system-generators/systemd-fstab-generator
+if [[ -x $fstab_generator && -f $unit ]]; then
+  mkdir -p "$work/fstab"/{normal,early,late}
+  printf 'UUID=4F4D-5801  /boot/efi  vfat  umask=0077  0 2\n' >"$work/fstab/fstab"
+  SYSTEMD_FSTAB=$work/fstab/fstab SYSTEMD_PROC_CMDLINE= "$fstab_generator" \
+    "$work/fstab/normal" "$work/fstab/early" "$work/fstab/late" 2>/dev/null || true
+  theirs=$work/fstab/normal/boot-efi.mount
+  if [[ -f $theirs ]]; then
+    for key in Where Type Options; do
+      [[ $(grep "^$key=" "$theirs") == $(grep "^$key=" "$unit") ]] || fail "fstab: $key= differs from systemd-fstab-generator's"
+    done
+    grep -q '^Requires=systemd-fsck@' "$theirs" && ! grep -q '^Requires=systemd-fsck@' "$unit" &&
+      fail "fstab: systemd-fstab-generator checks the ESP and this doesn't"
+  else
+    fail "fstab: systemd-fstab-generator made no boot-efi.mount, so nothing is being replaced"
+  fi
+else
+  echo "note: systemd-fstab-generator not found; skipped the comparison with it" >&2
 fi
 
 # No property (not booted through aura): nothing is written, fstab applies.
