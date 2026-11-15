@@ -46,6 +46,9 @@ row below. A task whose fix lives only on the Mac isn't done.
   the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
+- `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
+  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`. `patches/README.md` gives each patch's base
+  and how to apply and test it.
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
