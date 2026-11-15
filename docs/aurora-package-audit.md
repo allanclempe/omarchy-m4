@@ -73,7 +73,7 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
 - **Already swapped to Aurora's build:** `plymouth` (Arch 26.134.222-3), `lsp-plugins-lv2` (Arch
   1.2.37-1), `avd-fw` (Omarchy and asahi-alarm 0.1-1), `aurora-bless` (Omarchy 0.4.4.aurora2-1),
   `speakerguardd` (Omarchy 0.1.0.aurora3-1), `speakersafetyd` and `triforce-lv2` (asahi-alarm).
-  Some came in as `aurora-audio` dependencies; none is in the derivation's lists. (`asahi-scripts`
+  They came in as dependencies or through updates; none is in the derivation's lists. (`asahi-scripts`
   is Aurora's on purpose: the derivation installs it for Aurora's `update-m1n1`.)
 - **Would replace Omarchy's or Arch's on install:** `steam` (Omarchy 1.0.0.87-2), `gtk2` (Omarchy
   2.24.33-5), `mil-hwx-compiler` (Omarchy 0.1.0-1; Aurora's is 0.3.1-1), `firefox` (Arch 160.0-1;
