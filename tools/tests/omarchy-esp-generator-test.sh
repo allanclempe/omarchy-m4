@@ -21,11 +21,12 @@ fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 run() {
   local name=$1 bytes=$2 dir=$work/$1
   mkdir -p "$dir/normal" "$dir/early" "$dir/late"
+  # A normal user can't write /dev/kmsg, so the log line lands in stderr.
   if [[ $bytes == - ]]; then
-    OMARCHY_ESP_PARTUUID_FILE=$dir/missing sh "$generator" "$dir/normal" "$dir/early" "$dir/late"
+    OMARCHY_ESP_PARTUUID_FILE=$dir/missing sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log"
   else
     printf '%b' "$bytes" >"$dir/node"
-    OMARCHY_ESP_PARTUUID_FILE=$dir/node sh "$generator" "$dir/normal" "$dir/early" "$dir/late"
+    OMARCHY_ESP_PARTUUID_FILE=$dir/node sh "$generator" "$dir/normal" "$dir/early" "$dir/late" 2>"$dir/log"
   fi
 }
 
@@ -42,7 +43,11 @@ if [[ -f $unit ]]; then
   grep -qx 'Options=umask=0077' "$unit" || fail "upper: Options= differs from fstab's"
   escaped=$(systemd-escape --path /dev/disk/by-partuuid/272043e7-ec24-4890-93d6-545cfbb8329b)
   grep -qxF "Requires=systemd-fsck@$escaped.service" "$unit" || fail "upper: no fsck of the ESP"
-  grep -qxF "After=systemd-fsck@$escaped.service" "$unit" || fail "upper: not ordered after the ESP's fsck"
+  grep -qxF "After=systemd-fsck@$escaped.service blockdev@$escaped.target" "$unit" ||
+    fail "upper: not ordered after the ESP's fsck and block device"
+  grep -qxF "SourcePath=$work/upper/node" "$unit" || fail "upper: SourcePath= doesn't name the device-tree property"
+  grep -q 'mounting /boot/efi from PARTUUID 272043e7-ec24-4890-93d6-545cfbb8329b' "$work/upper/log" ||
+    fail "upper: didn't log the PARTUUID it mounts"
   grep -qx 'Before=local-fs.target' "$unit" || fail "upper: not ordered before local-fs.target"
   [[ $(readlink "$work/upper/early/local-fs.target.requires/boot-efi.mount") == ../boot-efi.mount ]] ||
     fail "upper: local-fs.target doesn't require it"
@@ -67,20 +72,21 @@ if [[ -x $fstab_generator && -f $unit ]]; then
   theirs=$work/fstab/normal/boot-efi.mount
   if [[ -f $theirs ]]; then
     for key in Where Type Options; do
-      [[ $(grep "^$key=" "$theirs") == $(grep "^$key=" "$unit") ]] || fail "fstab: $key= differs from systemd-fstab-generator's"
+      [[ $(grep "^$key=" "$theirs") == "$(grep "^$key=" "$unit")" ]] || fail "fstab: $key= differs from systemd-fstab-generator's"
     done
     grep -q '^Requires=systemd-fsck@' "$theirs" && ! grep -q '^Requires=systemd-fsck@' "$unit" &&
       fail "fstab: systemd-fstab-generator checks the ESP and this doesn't"
   else
     fail "fstab: systemd-fstab-generator made no boot-efi.mount, so nothing is being replaced"
   fi
-else
+elif [[ ! -x $fstab_generator ]]; then
   echo "note: systemd-fstab-generator not found; skipped the comparison with it" >&2
 fi
 
 # No property (not booted through aura): nothing is written, fstab applies.
 run missing -
 [[ -z $(ls -A "$work/missing/early") ]] || fail "missing: wrote a unit without the property"
+grep -q 'no ESP named in the device tree' "$work/missing/log" || fail "missing: didn't log why fstab applies"
 
 # Anything but one canonical UUID is ignored the same way.
 for bad in 'not-a-uuid\0' '272043e7-ec24-4890-93d6\0' '272043e7-ec24-4890-93d6-545cfbb8329b-x\0' \
@@ -88,6 +94,7 @@ for bad in 'not-a-uuid\0' '272043e7-ec24-4890-93d6\0' '272043e7-ec24-4890-93d6-5
   name=bad$((++n))
   run "$name" "$bad"
   [[ -z $(ls -A "$work/$name/early") ]] || fail "$name: accepted ${bad}"
+  grep -q 'is not one PARTUUID' "$work/$name/log" || fail "$name: didn't log the refusal"
 done
 
 if ((failures)); then

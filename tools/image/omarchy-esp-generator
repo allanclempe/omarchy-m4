@@ -10,8 +10,9 @@
 # device tree, as omarchy-mac-esp reads it. This writes boot-efi.mount for that
 # partition into the early generator directory, which takes precedence over
 # the unit systemd-fstab-generator makes from fstab. Without that name, it
-# writes nothing and fstab's entry applies as before. It logs one line to the
-# journal either way. Only systemd's mount of /boot/efi changes: a plain
+# writes nothing and fstab's entry applies as before. It logs one line either
+# way to the kernel log (journalctl -k), as systemd.generator(7) asks of
+# generators, or to stderr where /dev/kmsg isn't writable. Only systemd's mount of /boot/efi changes: a plain
 # `mount /boot/efi` outside systemd still reads fstab.
 #
 #   omarchy-esp-generator NORMAL_DIR EARLY_DIR LATE_DIR
@@ -24,7 +25,13 @@ early=${2:?usage: omarchy-esp-generator NORMAL_DIR EARLY_DIR LATE_DIR}
 node=/proc/device-tree/chosen/asahi,efi-system-partition
 [ "$(id -u)" -eq 0 ] || node=${OMARCHY_ESP_PARTUUID_FILE:-$node}
 
-log() { echo "omarchy-esp-generator: $*" >&2; }
+log() {
+  if [ -w /dev/kmsg ] && { echo "<5>omarchy-esp-generator: $*" >/dev/kmsg; } 2>/dev/null; then
+    :
+  else
+    echo "omarchy-esp-generator: $*" >&2 || :
+  fi
+}
 
 if [ ! -r "$node" ]; then
   log "no ESP named in the device tree; /boot/efi is mounted as fstab says"
@@ -51,9 +58,10 @@ cat >"$early/boot-efi.mount" <<EOF
 [Unit]
 Description=EFI System Partition this Mac booted from
 Documentation=man:systemd.generator(7)
+SourcePath=$node
 Before=local-fs.target
 Requires=systemd-fsck@$fsck.service
-After=systemd-fsck@$fsck.service
+After=systemd-fsck@$fsck.service blockdev@$fsck.target
 
 [Mount]
 What=$device
