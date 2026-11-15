@@ -23,6 +23,12 @@
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
 #     kernel, U-Boot or aura update rebuilds boot-ctxr.bin with it;
 #   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura;
+#   - keeps updates safe without hand guards (OMS-13): the kernel, Mesa, U-Boot
+#     and aura update from [aurora]; every boot-chain change rebuilds Stage 2
+#     from the pinned aura Stage 2 and Aurora's trial boots it once (committed
+#     when Linux comes up, otherwise the previous Stage 2 stays); and it ships
+#     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
+#     verify a Stage 2 that Aurora's update-m1n1 builds;
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -255,6 +261,30 @@ PY
   printf '\n# J616c: aura releases up to 1.0.0b13.1 leave a post-M4 ANS powered off for\n# U-Boot (fixed in aura aaec599f). Remove once the aura package has that fix.\nM1N1=%s\n' \
     "$STAGE2_PATH" >>"$T/etc/default/update-m1n1"
   echo "aura Stage 2 $STAGE2_COMMIT $STAGE2_SHA256" >>"$W/versions.txt"
+
+  log "updates: Stage 2 rebuilt from the pin and tried once (OMS-13)"
+  # The pacman hook must keep rebuilding Stage 2, and nothing may hold the kernel
+  # or Mesa back: those are the hand guards this image replaces.
+  ! grep -q '^[[:space:]]*M1N1_UPDATE_DISABLED' "$T/etc/default/update-m1n1" ||
+    fail "/etc/default/update-m1n1 disables Stage 2 rebuilds"
+  local ignored
+  ignored=$(sed -n 's/^[[:space:]]*IgnorePkg[[:space:]]*=//p' "$T/etc/pacman.conf" | tr -s ' \t' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')
+  [[ $ignored == "m1n1-aurora " ]] || fail "pacman.conf ignores more than m1n1-aurora: $ignored"
+  # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
+  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes.
+  in_chroot systemctl enable aurora-stage2-commit.service aurora-stage2-guard.timer >>"$W/pacman.log" 2>&1 ||
+    fail "could not enable Aurora's Stage 2 trial units"
+  [[ -L $T/etc/systemd/system/multi-user.target.wants/aurora-stage2-commit.service &&
+    -L $T/etc/systemd/system/timers.target.wants/aurora-stage2-guard.timer ]] ||
+    fail "Aurora's Stage 2 trial units are not enabled"
+  install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
+Aurora Silicon boot chain: Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by Aurora's update-m1n1 into m1n1/boot-ctxr.bin
+Omarchy's boot check rebuilds Stage 2 the stock way and can't verify this one, so
+omarchy update warns instead of refusing (omarchy-mac-boot update-verify). Aurora's
+Stage 2 trial checks each rebuilt Stage 2 at the next boot instead. Remove this file
+and the M1N1= line once the boot check understands Aurora's chain and an aura release
+contains aaec599f (omarchy-m4 OMS-13).
+EOF
 
   log "Stage 2: standard and J616c confined"
   printf '%s\0' $J616C_COMPATIBLE >"$T/tmp/j616c-compatible"
