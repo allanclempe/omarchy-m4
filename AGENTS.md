@@ -86,6 +86,8 @@ PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT seria
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
 - Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
+  with enough context to ask them cold. Move a question to **Answered** when it's settled.
 - Any commit or PR from this work says it was made with AI assistance (Aurora's contributing guide
   requires it).
 
