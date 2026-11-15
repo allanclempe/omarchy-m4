@@ -23,6 +23,9 @@
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
 #     kernel, U-Boot or aura update rebuilds boot-ctxr.bin with it;
 #   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura;
+#   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
+#     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
+#     which every Omarchy ESP shares (OMS-12);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -310,6 +313,14 @@ PY
 [Service]
 ExecStartPre=/usr/bin/pacman-key --populate aurora
 EOF
+
+  log "mounting /boot/efi from the ESP the Mac boots"
+  # fstab stays as the image builder writes it (mac-image-check pins the line);
+  # the generator's unit takes precedence over fstab's at every boot.
+  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]' "$T/etc/fstab" ||
+    fail "fstab doesn't mount /boot/efi by the shared ESP serial this generator replaces"
+  install -D -m 0755 /tools/image/omarchy-esp-generator \
+    "$T/usr/local/lib/systemd/system-generators/omarchy-esp-generator"
 
   log "cleaning up the root"
   rm -rf "$T/etc/pacman.d/gnupg"
