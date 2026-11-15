@@ -21,20 +21,21 @@ Aurora's GPU driver, Hyprland and Wi-Fi. It took several hand fixes. The week of
   and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
   It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
-  `macho-ctxr` Recovery mode, the engine changes and the Wi-Fi `chflags` fix. It applies to
-  omacom/omarchy-mac-installer at `a576543` (PR #212's head). The live branch is
-  `j616c/developer-admission` in `~/aurora-m4/omarchy-mac-installer-git` on the Mac, uncommitted;
-  refresh this patch from it when it changes.
-- Build artefacts (engine, payload, catalog, app, Aurora packages, VM) stay on the Mac in
-  `~/aurora-m4/build`.
+  `macho-ctxr` Recovery mode, the engine changes and the Wi-Fi `chflags` fix. Apply it to a
+  checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
+  back into this patch, so the repo stays the source.
+- `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
+  README has setup, steps and the one thing this path can't test.
+- Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
+  are rebuilt from the patch and the scripts above; JOURNEY section 8 records how.
 
 ## Machines
 
-| Machine | Reach it | What's there |
+| Machine | Reach it | Role |
 | --- | --- | --- |
-| The M4 Max, macOS | `ssh -i ~/.ssh/agent_ed25519 -o IdentitiesOnly=yes allanclempe@allans-macbook-pro` | Build tree `~/aurora-m4` (installer clone, engine, derivation, Lima build VM `omarchy-builder`) |
+| The M4 Max, macOS | `allanclempe@allans-macbook-pro` over SSH | Builds the engine, app and installer package (Xcode), and runs the Lima build VM `omarchy-builder` for the image |
 | The M4 Max, Omarchy | `clempe@dev-machine-macos` over Tailscale | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
-| dev-machine-01 | this repo | `~/aura-tools`: aura proxy client, USB capture over the USB-C cable (`capture.sh`, `UBOOT-TEST.txt`) |
+| dev-machine-01 | local | Linux host on the other end of the USB-C cable for `tools/aura-usb/` |
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
 

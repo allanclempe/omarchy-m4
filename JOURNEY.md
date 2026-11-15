@@ -1,15 +1,17 @@
 # Omarchy on a MacBook Pro 16" M4 Max (J616c): the journey
 
 A running log of getting Omarchy onto this Mac (Mac16,5, board J616c, chip T6041) through
-omacom/omarchy-mac-installer, and of the J616c support written along the way. Everything here
-is local: nothing has been pushed, no PR has been opened and nothing has been written to the
-Mac's disk or boot policy.
+omacom/omarchy-mac-installer, and of the J616c support written along the way. It lives in the
+allanclempe/omarchy-m4 repo with the scripts and patch the work produced (section 10). Paths
+under `build/`, `~/` or a machine name in sections 2 to 9 are working trees on the build Mac or the
+dev machines at the time, not files in the repo. Nothing has gone upstream yet: no PR to omacom or
+aurora-silicon.
 
 AI involvement: the research, code and builds were done with Claude Code (Claude Opus 5.5) at
 the owner's direction. Any commit made from this work must say so (Aurora's contributing guide
 requires it).
 
-Last updated: 2026-11-13.
+Last updated: 2026-11-15.
 
 ---
 
@@ -53,7 +55,8 @@ Last updated: 2026-11-13.
 ## 3. Step 1: a developer-catalog admission for J616c (modelled on PR #133, J713)
 
 - **Branch:** local and uncommitted, `j616c/developer-admission` in `omarchy-mac-installer-git/`.
-- **Patch:** a snapshot is in `j616c-developer-admission.patch`.
+- **Patch:** the whole branch is `patches/j616c-installer.patch` in this repo, against `a576543`
+  (section 7).
 - **Changes:**
   - **Engine patch:** chip `0x6041` (T6041) and device `j616cap`, both pinned to 26.6.2 OS
     firmware.
@@ -268,18 +271,20 @@ The builder's own `mac-image-check payload edge … --profile release` passes on
 
 ## 10. Where things are
 
-| What | Path |
+In this repo:
+
+| What | File |
 | --- | --- |
-| Installer clone (J616c work) | `~/aurora-m4/omarchy-mac-installer-git` |
-| Engine artifact | `~/aurora-m4/build/engine/` (`…20261113.d0241e13f2b5`) |
-| Derivation script | `~/aurora-m4/tools/derive-j616c-image` |
-| J616c payload | VM `~/work/j616c-out/`, copied to `~/aurora-m4/build/dev-catalog/assets/` |
-| Developer catalog inputs and release dir | `~/aurora-m4/build/dev-catalog/` |
-| Recovery build with `macho-ctxr` | `~/aurora-m4/build/recovery-template-ctxr/` |
-| Aurora packages | `~/aurora-m4/build/alarm-pkgs/` |
-| Recovery template | `~/aurora-m4/build/recovery-template/` |
-| Build VM | Lima instance `omarchy-builder` (`~/aurora-m4/toolchain/lima/bin/limactl`), work in `~/work` |
-| Mac data dump | `~/aurora-m4/dump/`; only `redacted/` may be shared |
+| Agent and team context | `AGENTS.md` |
+| Installer changes (admission, `macho-ctxr` Recovery, engine, Wi-Fi fix) | `patches/j616c-installer.patch`, against omarchy-mac-installer `a576543` |
+| J616c image derivation | `tools/derive-j616c-image` |
+| Same-size file overwrite on an unmounted FAT ESP | `tools/esp-overwrite-same-size.py` |
+| Stage 2 over USB with console capture | `tools/aura-usb/` |
+| Team write-up | `j616c-boot-fix.html` |
+
+Not in the repo, because they are build outputs or too large: the engine, payloads, signed
+developer catalog and its key, the app and package, Aurora's packages, the Lima build VM and the
+Mac data dump. They are rebuilt from the files above on the build Mac (sections 3 and 8).
 
 **Attempt 2 (2026-11-13): installed, 1TR enrolment finished, boot loops.**
 

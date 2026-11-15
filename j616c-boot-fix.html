@@ -216,22 +216,23 @@ footer { border-top: 1px solid var(--rule); padding-top: 18px; font-size: 0.85re
   <section>
     <span class="eyebrow">Reference</span>
     <h2>Undo and reproduce</h2>
-    <p class="prose">Backups on the Mac: <code>build/esp-test/boot-ctxr.bin.b13</code> (the original Stage 2 file) and <code>build/esp-test/esp-disk0s4-before.img</code> (the whole ESP before the write). To restore the original, run this from macOS with the two files and the two hashes swapped:</p>
-    <pre>sudo /usr/bin/python3 -I ~/aurora-m4/tools/esp-overwrite-same-size.py /dev/rdisk0s4 \
-  m1n1/boot-ctxr.bin ~/aurora-m4/build/aura-stage2-94d8e6e/boot-ctxr-ansfix.bin \
+    <p class="prose">All paths below are in the <code>allanclempe/omarchy-m4</code> repo. To put the original Stage 2 back, run the overwrite script from macOS on a checkout of the repo. Pass the original file (sha256 <code>b6daef1f…8399</code>, kept as a backup when the fix was written) as the new file, and swap the two hashes:</p>
+    <pre>sudo /usr/bin/python3 -I tools/esp-overwrite-same-size.py /dev/rdisk0s4 \
+  m1n1/boot-ctxr.bin ORIGINAL-boot-ctxr.bin \
   --label "EFI - OMARC" \
-  --expect-old b6daef1f655777fea3ef3f6b62d3c6c7ccad36f8149ee09d433d10fa06898399 \
-  --expect-new a0f493b491a896c32530f18d0d2320bda210881ef3274de5529b78c2ef9ff552 \
-  --backup ~/aurora-m4/build/esp-test/boot-ctxr.bin.b13 --write</pre>
+  --expect-old a0f493b491a896c32530f18d0d2320bda210881ef3274de5529b78c2ef9ff552 \
+  --expect-new b6daef1f655777fea3ef3f6b62d3c6c7ccad36f8149ee09d433d10fa06898399 \
+  --backup boot-ctxr.bin.ansfix --write</pre>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Item</th><th>Where</th></tr></thead>
         <tbody>
-          <tr><td>Stage 2 source and build log</td><td><code>~/aurora-m4/build/aura-stage2-94d8e6e/</code>, <code>build/stage2-94d8e6e-build.log</code></td></tr>
-          <tr><td>New Stage 2 binary</td><td><code>aura.bin</code>, sha256 <code>46fd25ed…d068</code></td></tr>
-          <tr><td>ESP overwrite script</td><td><code>~/aurora-m4/tools/esp-overwrite-same-size.py</code></td></tr>
-          <tr><td>USB capture tools</td><td>dev-machine-01 <code>~/aura-tools/</code></td></tr>
-          <tr><td>Full running log</td><td><code>~/aurora-m4/JOURNEY.md</code>, sections 9.5 to 9.13</td></tr>
+          <tr><td>Stage 2 source</td><td>aurora-silicon/aura <code>94d8e6e</code>, built with the aura PKGBUILD's Stage 2 flags; <code>aura.bin</code> sha256 <code>46fd25ed…d068</code></td></tr>
+          <tr><td>J616c image derivation</td><td><code>tools/derive-j616c-image</code></td></tr>
+          <tr><td>Installer changes</td><td><code>patches/j616c-installer.patch</code>, against omarchy-mac-installer <code>a576543</code></td></tr>
+          <tr><td>ESP overwrite script</td><td><code>tools/esp-overwrite-same-size.py</code></td></tr>
+          <tr><td>USB capture</td><td><code>tools/aura-usb/</code></td></tr>
+          <tr><td>Full running log</td><td><code>JOURNEY.md</code>, section 9</td></tr>
         </tbody>
       </table>
     </div>
