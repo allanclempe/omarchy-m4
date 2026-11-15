@@ -325,7 +325,9 @@ EOF
   rm -rf -- "$recovery_dir" && mkdir -p "$recovery_dir"
   cp -R "/recovery/Omarchy Installer.app" "$recovery_dir/"
   install -m 0644 /recovery/omarchy-recovery-app.json "$recovery_dir/omarchy-recovery-app.json"
-  grep -aq macho-unpadded "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
+  # A 30-byte literal: Swift inlines strings of 15 bytes or fewer, which then
+  # don't appear in the binary as one run of bytes.
+  grep -aq 'macho-unpadded/aura-boot.macho' "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
     fail "the Recovery app does not know the macho-unpadded mode"
 
   log "copying the ESP out"

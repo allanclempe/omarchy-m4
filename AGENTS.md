@@ -41,7 +41,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
   It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
-  `macho-ctxr` Recovery mode, the engine changes and the Wi-Fi `chflags` fix. Apply it to a
+  Recovery boot modes for aura's Mach-O Stage 1 (`macho-unpadded`, which the J616c uses, and
+  the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
