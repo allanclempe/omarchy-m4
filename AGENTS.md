@@ -22,7 +22,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
 | Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode for J616c (not yet built; Recovery's Swift checks still to run on macOS) | OMS-11 |
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
-| fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
+| fstab mounts `/boot/efi` by PARTUUID | derivation installs `omarchy-esp-generator`, which mounts the device-tree ESP (not yet run) | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
 | Update guards; Stage 2 trial disarmed | derivation: Stage 2 rebuilt from the pin, tried once by Aurora's trial, `owner-boot-chain` marker; kernel and Mesa update (not yet run) | OMS-13 |
@@ -46,6 +46,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
+- `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
+  `tools/tests/` has their tests (plain Bash, run on Linux).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
@@ -87,6 +89,8 @@ PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT seria
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
 - Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
+  with enough context to ask them cold. Move a question to **Answered** when it's settled.
 - Any commit or PR from this work says it was made with AI assistance (Aurora's contributing guide
   requires it).
 
