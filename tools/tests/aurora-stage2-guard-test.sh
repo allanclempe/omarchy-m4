@@ -64,17 +64,19 @@ after=$(timers)
 accuracy=$(systemctl --user show -p AccuracyUSec --value "$name.timer")
 [[ $accuracy == 10s ]] || fail "the drop-in changed Aurora's AccuracySec (now $accuracy)"
 
-# Started now, it comes due 12 minutes from now: counted from its activation.
-usec() { systemd-analyze timespan "$1" | sed -n 's/^ *μs: *//p'; }
+# Started now, it comes due 12 minutes after its activation. Both times are
+# CLOCK_MONOTONIC as systemd keeps them (/proc/uptime also counts suspend).
+# timespan's second line is the value in µs; its label depends on the locale.
+usec() { systemd-analyze timespan "$1" | awk 'NR == 2 { print $2 }'; }
 systemctl --user start "$name.timer"
-started=$(awk '{ printf "%d", $1 * 1000000 }' /proc/uptime)
+started=$(systemctl --user show -p InactiveExitTimestampMonotonic --value "$name.timer")
 due=$(usec "$(systemctl --user show -p NextElapseUSecMonotonic --value "$name.timer")")
 systemctl --user stop "$name.timer"
-if [[ -z $due ]]; then
-  fail "the started timer has no monotonic elapse time"
+if [[ ! $due =~ ^[0-9]+$ || ! $started =~ ^[0-9]+$ ]]; then
+  fail "the started timer has no monotonic activation or elapse time (activated ${started:-?}, due ${due:-?})"
 else
   offset=$(( (due - started) / 1000000 ))
-  (( offset >= 690 && offset <= 750 )) || fail "the started timer comes due ${offset}s after it started, not 720s"
+  (( offset >= 715 && offset <= 725 )) || fail "the started timer comes due ${offset}s after it started, not 720s"
 fi
 
 # In the image the drop-in sits under /usr/local/lib and Aurora's timer under
