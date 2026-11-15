@@ -30,8 +30,10 @@ where M4 Pro and Max support is developed (GPU, DCP, ANS, audio). In the M4 Max 
 Basecamp (https://public.app.basecamp.com/p/bLeYEF6QUmZZaSPDHGmBK2Uf, relayed by the owner on
 2026-11-15), Ryan Murray ("Omarchy Borealis at Omacom", comment of 2026-10-29) promised to review
 and merge the M4 Max work and said it will go into Omarchy Mac's kernel trees after the M1–M3 and
-Neo release. So the port is Omarchy's own plan; its timing and branch are still open. Until then
-the J616c image depends on Aurora's kernel and its matching Mesa and audio packages. The M team decides whether an official M4 Max release ships Aurora's
+Neo release. By his account the port is Omarchy's own plan; its timing and branch are still open.
+Until then
+the J616c image depends on Aurora's kernel and its matching Mesa and audio packages. The M team
+decides whether an official M4 Max release ships Aurora's
 kernel or waits for the port (questions file, M team question 1).
 
 ## Already Aurora's build
@@ -70,13 +72,16 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
   them. (`omarchy-power-profiles-daemon` isn't affected: a different package name.)
 - **Already swapped to Aurora's build:** `plymouth` (Arch 26.134.222-3), `lsp-plugins-lv2` (Arch
   1.2.37-1), `avd-fw` (Omarchy and asahi-alarm 0.1-1), `aurora-bless` (Omarchy 0.4.4.aurora2-1),
-  `speakerguardd` (Omarchy 0.1.0.aurora3-1), `speakersafetyd`, `triforce-lv2` and `asahi-scripts`
-  (asahi-alarm). Some came in as `aurora-audio` dependencies; none is in the derivation's lists.
+  `speakerguardd` (Omarchy 0.1.0.aurora3-1), `speakersafetyd` and `triforce-lv2` (asahi-alarm).
+  Some came in as `aurora-audio` dependencies; none is in the derivation's lists. (`asahi-scripts`
+  is Aurora's on purpose: the derivation installs it for Aurora's `update-m1n1`.)
 - **Would replace Omarchy's or Arch's on install:** `steam` (Omarchy 1.0.0.87-2), `gtk2` (Omarchy
   2.24.33-5), `mil-hwx-compiler` (Omarchy 0.1.0-1; Aurora's is 0.3.1-1), `firefox` (Arch 160.0-1;
   Aurora's 160.0-1.2), `kinfocenter` (both 6.8.2-1). None of these is installed on this Mac now,
   but installing one would get Aurora's build.
-- **Replaces, offered by `-Syu` on its own:** `aurora-nvram` replaces `asahi-nvram`, `aurora-btsync`
+- **Replaces that matter here, offered by `-Syu` on its own** (the KDE, GNOME and FEX packages
+  declare Replaces too, harmless on Hyprland): `aurora-nvram` replaces `asahi-nvram`,
+  `aurora-btsync`
   replaces `asahi-btsync`, `vulkan-lavapipe-aurora` replaces `vulkan-swrast`,
   `opencl-rusticl-aurora` replaces `opencl-rusticl` and `opencl-mesa`, `fprintd-aurora` replaces
   `fprintd`, `iio-sensor-proxy-aurora` replaces `iio-sensor-proxy` (the same mechanism the
@@ -137,7 +142,8 @@ test finds a reason (a reboot that hangs for 10 minutes would argue for `aurora-
 `aurora-logos` (KDE and GNOME); `aurora-neo-platform-config` (MacBook Neo); `aurora-secboot`
 (Aurora's secure-boot path); `aurora-speaker-upgrade`, `speakerguardd-v2` (preview, ship
 disabled); `aurora-diag` (development only); `aurora-keep-config` (a dependency, only pulled in by
-`networkmanager-aurora`, `upower-aurora` and `gnome-settings-daemon-aurora`); `aurora-flatpak-gl`, `mesa-aurora-fex-guest`,
+`networkmanager-aurora`, `upower-aurora` and `gnome-settings-daemon-aurora`); `aurora-flatpak-gl`,
+`mesa-aurora-fex-guest`,
 `fex-emu`, `fex-emu-steam`, `aurora-steam-native`, `steam`, `firefox`, `gtk2`, `udisks2-*`,
 `pipewire-*` extras (applications and extras, not hardware support; see name collisions).
 
