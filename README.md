@@ -78,12 +78,14 @@ boot tries each rebuild once before committing it.
 | [`j616c-boot-fix.html`](j616c-boot-fix.html) | The write-up for the Omarchy and Aurora teams: root causes, test log, asks per team. |
 | [`tools/derive-j616c-image`](tools/derive-j616c-image) | Turns an Omarchy edge image into the J616c image: Aurora's boot chain, kernel, Mesa and audio, and the pinned Stage 2. Usage is in its header. |
 | [`patches/j616c-installer.patch`](patches/j616c-installer.patch) | Installer changes: J616c admission, the Mach-O Stage 1 modes, and a Wi-Fi collection fix. Applies to omacom/omarchy-mac-installer at `a576543`. |
+| [`tools/image/`](tools/image) | Files the derivation installs into the image: a systemd generator that mounts `/boot/efi` and `/boot` from the install the Mac booted, and a drop-in that counts the Stage 2 trial guard from disk unlock. |
+| [`tools/tests/`](tools/tests) | Tests for those files. Plain Bash; run them as a normal user on Linux. |
 | [`tools/aura-usb/`](tools/aura-usb) | Sends a Stage 2 to aura over a USB-C cable and records its console, without touching the Mac's disk. |
+| [`tools/wifi-reload-timing.sh`](tools/wifi-reload-timing.sh) | Times Wi-Fi's rejoin after a driver reload, with and without turning the radio off first. Run it at the Mac. |
 | [`tools/esp-overwrite-same-size.py`](tools/esp-overwrite-same-size.py) | Replaces a same-size file on an unmounted FAT ESP, for when macOS can't mount it (macOS 26.7.3 on this Mac couldn't). |
 
-Open pull requests add the partition mounting, safe updates, the trial guard, a patch teaching
-Omarchy's boot check Aurora's Stage 2, the Ethernet firmware, and the light sensor, package and
-Wi-Fi findings.
+Still in review: a patch teaching Omarchy's boot check to verify Aurora's Stage 2, and an audit of
+Aurora's packages for this Mac.
 
 ## Building
 
