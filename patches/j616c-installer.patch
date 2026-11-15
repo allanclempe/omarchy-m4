@@ -1,0 +1,2611 @@
+diff --git a/Engine/overlay/src/omarchy_asahi.py b/Engine/overlay/src/omarchy_asahi.py
+index a085304..e7a2dc6 100644
+--- a/Engine/overlay/src/omarchy_asahi.py
++++ b/Engine/overlay/src/omarchy_asahi.py
+@@ -448,7 +448,108 @@ BOARD_STAGE1 = {
+         "esp/aurora/stage1-j613.bin", 0, "26.6.2",
+         "a 13-inch M3 MacBook Air on macOS 26.6.2",
+     ),
++    # The 16-inch M4 Max installs only 26.6.2 OS firmware (its CHIP_MIN_VER):
++    # Aurora's T6041 GPU, DCP and sleep paths are measured on a J616c booted
++    # at EL2 through aura with a 26.6.2 stub (aurora-silicon/linux #1664). Its
++    # Stage 1 is aura's raw Stage 1, carried in aura's Mach-O boot object
++    # (BOARD_MACHO_STAGE1): an M4-class chip confines EL2 code to an execute
++    # window that only a padded Mach-O object arms.
++    "j616cap": BoardStage1(
++        "esp/aurora/stage1-j616c.bin", 0, "26.6.2",
++        "a 16-inch M4 Max MacBook Pro on macOS 26.6.2",
++    ),
++}
++
++
++# Boards that enroll aura's Mach-O boot object, padded by Recovery for the
++# execute window that M4-class chips (T8132, T6040/T6041, T8140 and later)
++# confine EL2 code to, instead of the raw Stage 1. The object carries the
++# filled raw Stage 1, which chainloads the confined Stage 2 at next_object
++# (aurora-silicon/aura docs/macho-boot-object.md, "Which Stage 2 a Stage 1
++# loads"; aurora-silicon/aurora-installer Recovery/README.md).
++MachOStage1 = collections.namedtuple("MachOStage1", "object stage2 next_object recovery_mode")
++BOARD_MACHO_STAGE1 = {
++    "j616cap": MachOStage1(
++        "esp/aurora/stage1-j616c.macho", "esp/m1n1/boot-ctxr-j616c.bin",
++        "m1n1/boot-ctxr.bin", "macho-ctxr",
++    ),
+ }
++MACHO_RAW_ENTRY = 0x800
++MACHO_REQUIRED = ("__TEXT", "__TEXT_EXEC", "__PRELINK_INFO", "__LINKEDIT")
++
++
++def _macho_layout(data):
++    """aura's fileset boot object: segments file-backed at their virtual
++    offsets, entered in __TEXT_EXEC, with no __TEXT_BOOT_EXEC (iBoot would
++    start SPTM). Port of aurora-installer MachOBootObject.layout (MIT)."""
++    def u32(offset):
++        if offset < 0 or offset + 4 > len(data):
++            raise AsahiAdapterError("Mach-O Stage 1 is truncated")
++        return struct.unpack_from("<I", data, offset)[0]
++
++    def u64(offset):
++        return u32(offset) | u32(offset + 4) << 32
++
++    if u32(0) != 0xFEEDFACF or u32(4) != 0x0100000C:
++        raise AsahiAdapterError("Mach-O Stage 1 is not a 64-bit Arm Mach-O image")
++    if u32(12) != 12:
++        raise AsahiAdapterError("Mach-O Stage 1 is not a fileset boot object")
++    count, size = u32(16), u32(20)
++    if 32 + size > len(data):
++        raise AsahiAdapterError("Mach-O Stage 1 load commands are truncated")
++    segments, entry, offset = {}, None, 32
++    for _ in range(count):
++        command, length = u32(offset), u32(offset + 4)
++        if length < 8 or length % 8 or offset + length > 32 + size:
++            raise AsahiAdapterError("Mach-O Stage 1 has a malformed load command")
++        if command == 0x19:
++            if length < 72:
++                raise AsahiAdapterError("Mach-O Stage 1 has a malformed segment")
++            name = data[offset + 8:offset + 24].split(b"\0", 1)[0].decode("ascii", "replace")
++            if name in segments:
++                raise AsahiAdapterError(f"Mach-O Stage 1 repeats {name}")
++            segments[name] = (u64(offset + 24), u64(offset + 32), u64(offset + 40), u64(offset + 48))
++        elif command == 0x5:
++            if length < 16 + 34 * 8 or u32(offset + 8) != 6:
++                raise AsahiAdapterError("Mach-O Stage 1 has a malformed entry thread")
++            entry = u64(offset + 16 + 32 * 8)
++        offset += length
++    if offset != 32 + size:
++        raise AsahiAdapterError("Mach-O Stage 1 load command sizes disagree")
++    boot = segments.get("__TEXT_BOOT_EXEC")
++    if boot is not None and (boot[1] or boot[3]):
++        raise AsahiAdapterError("Mach-O Stage 1 has __TEXT_BOOT_EXEC, so iBoot would start SPTM")
++    for name in MACHO_REQUIRED:
++        if name not in segments:
++            raise AsahiAdapterError(f"Mach-O Stage 1 has no {name} segment")
++    base = segments["__TEXT"][0]
++    if segments["__TEXT"][2] != 0:
++        raise AsahiAdapterError("Mach-O Stage 1 __TEXT is not at offset 0")
++    for name, (vmaddr, vmsize, fileoff, filesize) in segments.items():
++        if vmsize and (vmaddr < base or fileoff != vmaddr - base or filesize != vmsize
++                       or fileoff + filesize > len(data)):
++            raise AsahiAdapterError(f"Mach-O Stage 1 {name} is not file-backed at its virtual offset")
++    code = segments["__TEXT_EXEC"]
++    if entry is None or not code[0] <= entry < code[0] + code[1]:
++        raise AsahiAdapterError("Mach-O Stage 1 entry point is outside __TEXT_EXEC")
++    return segments, entry
++
++
++def fill_macho_stage1(obj, raw, filled):
++    """aura's boot object for `raw`, carrying `filled` (raw with its config
++    block filled) instead: the raw image sits unchanged at the start of
++    __TEXT_EXEC, then only zeros, entered at the raw entry point. Port of
++    aurora-installer MachOBootObject.fill (MIT)."""
++    segments, entry = _macho_layout(obj)
++    vmaddr, _, fileoff, filesize = segments["__TEXT_EXEC"]
++    if not raw or len(filled) != len(raw) or len(raw) > filesize:
++        raise AsahiAdapterError("Mach-O Stage 1 does not carry this Stage 1")
++    if entry != vmaddr + MACHO_RAW_ENTRY:
++        raise AsahiAdapterError("Mach-O Stage 1 does not enter this Stage 1 at its entry point")
++    start, end = fileoff, fileoff + len(raw)
++    if obj[start:end] != raw or obj[end:fileoff + filesize].count(0) != fileoff + filesize - end:
++        raise AsahiAdapterError("Mach-O Stage 1 does not carry this Stage 1")
++    return obj[:start] + filled + obj[end:]
+ 
+ 
+ def fill_aurora_stage1(image, uuid, path, window_ms):
+@@ -502,13 +603,28 @@ def common_stage1_allowed(template, device_class, os_firmware):
+     return os_firmware in firmware
+ 
+ 
+-def read_board_stage1(board, read_member, next_object="m1n1/boot.bin"):
+-    """The board's Stage 1 image from the payload, refused unless fillable."""
++def board_next_object(device_class, next_object="m1n1/boot.bin"):
++    """The Stage 2 path this board's Stage 1 chainloads."""
++    macho = BOARD_MACHO_STAGE1.get(device_class)
++    return macho.next_object if macho is not None else next_object
++
++
++def read_board_stage1(board, read_member, next_object="m1n1/boot.bin", device_class=None):
++    """The board's Stage 1 image from the payload, refused unless fillable,
++    with its Mach-O boot object when the board enrolls one."""
+     try:
+         image = read_member(board.member)
+     except KeyError as error:
+         raise AsahiAdapterError(f"this image has no {board.member} for {board.macs}") from error
+-    fill_aurora_stage1(image, PLACEHOLDER_UUID, next_object, board.window_ms)
++    next_object = board_next_object(device_class, next_object)
++    filled = fill_aurora_stage1(image, PLACEHOLDER_UUID, next_object, board.window_ms)
++    macho = BOARD_MACHO_STAGE1.get(device_class)
++    if macho is not None:
++        try:
++            obj = read_member(macho.object)
++        except KeyError as error:
++            raise AsahiAdapterError(f"this image has no {macho.object} for {board.macs}") from error
++        fill_macho_stage1(obj, image, filled)
+     return image
+ 
+ 
+@@ -524,11 +640,19 @@ def install_board_stage1(
+     use_common = common_allowed and common_image is not None
+     board = COMMON_STAGE1 if use_common else board_stage1(device_class, os_firmware)
+     if board is None:
+-        return
+-    image = common_image if use_common else read_board_stage1(board, read_member, next_object)
++        return None
++    image = (common_image if use_common
++             else read_board_stage1(board, read_member, next_object, device_class))
++    macho = None if use_common else BOARD_MACHO_STAGE1.get(device_class)
++    if macho is not None:
++        next_object = macho.next_object
+     filled = fill_aurora_stage1(image, esp_uuid.lower(), next_object, board.window_ms)
+     with open(boot_object, "wb") as fd:
+         fd.write(filled)
++    if macho is None:
++        return None
++    # Recovery pads and enrolls this object; the raw image is never enrolled.
++    return fill_macho_stage1(read_member(macho.object), image, filled)
+ 
+ 
+ ESP_SOURCE = "esp"
+@@ -552,14 +676,28 @@ def esp_board_layout(device_class, members, *, common_allowed=False):
+         board = BOARD_STAGE1.get(device_class)
+         macs = board.macs if board is not None else device_class
+         raise AsahiAdapterError(f"this image has no {own} for {macs}")
++    confined = None if common else BOARD_MACHO_STAGE1.get(device_class)
++    if confined is not None:
++        macs = BOARD_STAGE1[device_class].macs
++        for needed in (confined.object, confined.stage2):
++            if needed not in members:
++                raise AsahiAdapterError(f"this image has no {needed} for {macs}")
+     prefix = ESP_SOURCE + "/"
+     layout = {}
+     for member in members:
+         if not member.startswith(prefix):
+             raise AsahiAdapterError("ESP member is outside the ESP source")
++        macho = None if common else BOARD_MACHO_STAGE1.get(device_class)
+         if member == own:
+             layout[member] = ESP_STAGE2[len(prefix):]
++        elif macho is not None and member == macho.stage2:
++            layout[member] = macho.next_object
++        elif macho is not None and member == macho.object:
++            # Recovery stages the filled object; the ESP needs no copy.
++            continue
+         elif (member == COMMON_STAGE1.member and not common
++              or member in {board.stage2 for board in BOARD_MACHO_STAGE1.values()}
++              or member in {board.object for board in BOARD_MACHO_STAGE1.values()}
+               or member in BOARD_STAGE2.values()
+               or (common and member in {board.member for board in BOARD_STAGE1.values()})
+               or (own is not None and member == ESP_STAGE2)):
+@@ -1358,9 +1496,14 @@ class AsahiStage1Adapter:
+         board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members,
+                              common_allowed=self.common_stage1)
+         if board is not None:
+-            read_board_stage1(board, self.osins.pkg.read, self.template["next_object"])
++            read_board_stage1(board, self.osins.pkg.read, self.template["next_object"],
++                              self.installer.sysinfo.device_class)
+         device_class = self.installer.sysinfo.device_class
+         esp_board_layout(device_class, esp_members, common_allowed=self.common_stage1)
++        if (BOARD_MACHO_STAGE1.get(device_class) is not None
++                and not self.common_stage1 and not self.native_recovery_gui):
++            # Only the native Recovery app pads and enrolls a Mach-O Stage 1.
++            raise AsahiAdapterError("this Mac needs an image with the native Recovery app")
+         stage2 = ESP_STAGE2 if self.common_stage1 else BOARD_STAGE2.get(device_class)
+         if stage2 is not None and self.osins.pkg.getinfo(stage2).file_size <= 0:
+             raise AsahiAdapterError(f"this image has an empty {stage2}")
+@@ -1523,7 +1666,7 @@ class AsahiStage1Adapter:
+             self.osins.firmware_package = firmware_package
+ 
+         self.osins.install(self.installer.ins)
+-        install_board_stage1(
++        macho_stage1 = install_board_stage1(
+             self.installer.sysinfo.device_class,
+             self.os_firmware,
+             self.osins.pkg.read,
+@@ -1552,6 +1695,10 @@ class AsahiStage1Adapter:
+                 requirement=self.recovery_requirement if self.use_helper_recovery else None,
+                 authorized_owner=self.authorized_owner if self.use_helper_recovery else None,
+                 expected_bootstrap=self.source_bootstrap if self.use_helper_recovery else None,
++                **({} if macho_stage1 is None else {
++                    "macho_stage1": macho_stage1,
++                    "boot_mode": BOARD_MACHO_STAGE1[self.installer.sysinfo.device_class].recovery_mode,
++                }),
+             )
+         self._record_installation(log_only=True)
+         self._clean_esp()
+diff --git a/Engine/overlay/src/omarchy_recovery.py b/Engine/overlay/src/omarchy_recovery.py
+index 8913f8b..32d8411 100644
+--- a/Engine/overlay/src/omarchy_recovery.py
++++ b/Engine/overlay/src/omarchy_recovery.py
+@@ -25,6 +25,14 @@ INSTALL_DATA_DIRECTORY = "Aurora/Recovery/InstallData"
+ PAYLOAD_DIRECTORY = "aurora/recovery"
+ MANIFEST_NAME = "omarchy-recovery-app.json"
+ STAGE2_PATH = "m1n1/boot.bin"
++# What the native app installs per boot mode: its Stage 1 and Stage 2 payload
++# names and where the Stage 2 goes on the ESP. "macho-ctxr" is aura's Mach-O
++# boot object of an M4-class Mac, which the app pads for the execute window
++# and enrolls with --compress; it chainloads the confined Stage 2.
++BOOT_MODES = {
++    "raw": ("raw/aura-raw.bin", "raw/boot.bin", STAGE2_PATH),
++    "macho-ctxr": ("macho-ctxr/aura-boot.macho", "macho-ctxr/boot-ctxr.bin", "m1n1/boot-ctxr.bin"),
++}
+ VENDOR_FIRMWARE = ("vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt")
+ OPTIONAL_VENDOR_FIRMWARE = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
+ UUID_PATTERN = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\Z")
+@@ -235,7 +243,8 @@ def source_bootstrap(dutil, source_os, authorized_owner=None, target_group=None)
+                  "sourceGroupUUID": source_group, "ownerUUIDs": [selected]}
+ 
+ 
+-def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owner=None, expected_bootstrap=None):
++def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owner=None, expected_bootstrap=None,
++                  boot_mode="raw"):
+     osi = installer.osi
+     system = Path(osi.system)
+     info = installer.dutil.get("info", "-plist", str(system))
+@@ -261,7 +270,7 @@ def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owne
+     return {
+         "schema": 2, "volumeName": name, "systemUUID": identifier(info.get("VolumeUUID")),
+         "groupUUID": group, "prebootUUID": preboot_uuid, "espUUID": esp_uuid,
+-        "bootMode": "raw", "stage2Path": STAGE2_PATH, "bootstrap": bootstrap,
++        "bootMode": boot_mode, "stage2Path": BOOT_MODES[boot_mode][2], "bootstrap": bootstrap,
+         "allowCustomBootArguments": getattr(getattr(installer, "sysinfo", None), "device_class", "") == "j700ap",
+     }
+ 
+@@ -360,7 +369,8 @@ def _payload(path, maximum=256 << 20):
+ 
+ def stage(installer, esp_uuid, esp_root, app_source=None,
+           manifest_path=None, run=subprocess.run, source_os=None,
+-          requirement=None, authorized_owner=None, expected_bootstrap=None):
++          requirement=None, authorized_owner=None, expected_bootstrap=None,
++          macho_stage1=None, boot_mode="raw"):
+     """Called after OS/ESP installation and common stage-1 target patching.
+ 
+     Preserve upstream's Finish Installation resource paths for resume checks;
+@@ -371,11 +381,17 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
+     app_source = Path(app_source) if app_source is not None else template_root / APP_NAME
+     manifest_path = Path(manifest_path) if manifest_path is not None else template_root / MANIFEST_NAME
+     template = validate_source(app_source, manifest_path, run, requirement=requirement)
+-    config = target_config(installer, esp_uuid, esp_root, source_os, authorized_owner, expected_bootstrap)
++    if boot_mode not in BOOT_MODES or (boot_mode == "raw") != (macho_stage1 is None):
++        raise RecoveryError("Recovery boot mode does not match its Stage 1")
++    stage1_name, stage2_name, stage2_path = BOOT_MODES[boot_mode]
++    config = target_config(installer, esp_uuid, esp_root, source_os, authorized_owner, expected_bootstrap,
++                           boot_mode)
+     system = Path(installer.osi.system)
+     esp_root = Path(esp_root)
+-    stage1 = _payload(installer.boot_obj_path)
+-    stage2 = _payload(esp_root / STAGE2_PATH)
++    stage1 = _payload(installer.boot_obj_path) if macho_stage1 is None else bytes(macho_stage1)
++    if not stage1:
++        raise RecoveryError("finalized Stage 1 is empty")
++    stage2 = _payload(esp_root / stage2_path)
+     # Copy only this installation's finalized package. Never put these
+     # per-device inputs in the distributable application template.
+     firmware = {
+@@ -404,11 +420,11 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
+         'resources=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+         'exec "$resources/../../../Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" "$@"\n'
+     )
+-    files = {"raw/aura-raw.bin": stage1, "raw/boot.bin": stage2, **firmware}
++    files = {stage1_name: stage1, stage2_name: stage2, **firmware}
+     install_data = _install_data_root(system)
+     payload_manifest = {
+-        "schema": 2, "defaultMode": "raw", "nestedVirtualization": False,
+-        "modes": {"raw": {"espPath": STAGE2_PATH}},
++        "schema": 2, "defaultMode": boot_mode, "nestedVirtualization": False,
++        "modes": {boot_mode: {"espPath": stage2_path}},
+         "vendorFirmware": sorted(firmware),
+         "files": {name: {"sha256": digest(data), "bytes": len(data)} for name, data in files.items()},
+     }
+diff --git a/Engine/overlay/src/omarchy_wifi.py b/Engine/overlay/src/omarchy_wifi.py
+index bc8c722..f7cd91e 100644
+--- a/Engine/overlay/src/omarchy_wifi.py
++++ b/Engine/overlay/src/omarchy_wifi.py
+@@ -230,6 +230,38 @@ def missing_bluetooth(outputs, chip, board):
+     return [stem + "-u.bin", stem + "-u.ptb"]
+ 
+ 
++def _stage_tree(source, destination, skip=()):
++    """Copy a firmware tree's names, bytes and modes, keeping symlinks.
++
++    shutil.copytree also copies BSD file flags (copystat calls chflags), and
++    every file on the sealed system volume carries SIP's `restricted` flag,
++    which not even root may set: copying /usr/share/firmware/wifi that way
++    fails with EPERM. The archive needs none of that metadata.
++    """
++    os.makedirs(destination)
++    for root, dirs, files in os.walk(source):
++        relative = os.path.relpath(root, source)
++        target = destination if relative == "." else os.path.join(destination, relative)
++        if relative == ".":
++            dirs[:] = [name for name in dirs if name not in skip]
++            files = [name for name in files if name not in skip]
++        for name in list(dirs):
++            path = os.path.join(root, name)
++            if os.path.islink(path):
++                # os.walk does not descend into a linked directory: keep the link.
++                os.symlink(os.readlink(path), os.path.join(target, name))
++                dirs.remove(name)
++            else:
++                os.mkdir(os.path.join(target, name))
++        for name in files:
++            path, copy = os.path.join(root, name), os.path.join(target, name)
++            if os.path.islink(path):
++                os.symlink(os.readlink(path), copy)
++            else:
++                shutil.copyfile(path, copy)
++                os.chmod(copy, os.stat(path).st_mode & 0o777)
++
++
+ class _SystemWiFiArchive:
+     """subprocess for stub: when Wi-Fi came from the installed system, the
+     fallback archive carries that tree as firmware/wifi."""
+@@ -251,13 +283,8 @@ class _SystemWiFiArchive:
+         recovery = os.path.join(*RECOVERY_FIRMWARE[1:])
+         with tempfile.TemporaryDirectory(prefix="omarchy-wifi-") as staging:
+             firmware = os.path.join(staging, "firmware")
+-            shutil.copytree(
+-                recovery,
+-                firmware,
+-                symlinks=True,
+-                ignore=lambda directory, names: ["wifi"] if os.path.samefile(directory, recovery) else [],
+-            )
+-            shutil.copytree(tree, os.path.join(firmware, "wifi"), symlinks=True)
++            _stage_tree(recovery, firmware, skip=("wifi",))
++            _stage_tree(tree, os.path.join(firmware, "wifi"))
+             # Later -C arguments are relative to Recovery's directory: return
+             # there after the staged tree.
+             command[at:at + 3] = ["-C", staging, "firmware", "-C", os.path.abspath(RECOVERY_FIRMWARE[1])]
+diff --git a/Engine/overlay/tests/test_omarchy_asahi.py b/Engine/overlay/tests/test_omarchy_asahi.py
+index a851f94..0345fb0 100644
+--- a/Engine/overlay/tests/test_omarchy_asahi.py
++++ b/Engine/overlay/tests/test_omarchy_asahi.py
+@@ -125,6 +125,7 @@ from omarchy_asahi import (  # noqa: E402
+     OmarchyOSInstaller,
+     esp_board_layout,
+     fill_aurora_stage1,
++    fill_macho_stage1,
+     install_board_stage1,
+     install_esp_board_layout,
+     stub_installer,
+@@ -530,6 +531,110 @@ class AsahiStage1AdapterTests(unittest.TestCase):
+         self.assertIn(b"180190f8-0000-4000-8000-000000000000", boot_object)
+         self.assertIn(b";m1n1/boot.bin", boot_object)
+ 
++    def _m4_max_payload(self, stage1=True, macho=True, stage2=b"m1n1 m4 max confined"):
++        raw = j700_stage1()
++        with zipfile.ZipFile(self.payload, "a") as archive:
++            if stage1:
++                archive.writestr("esp/aurora/stage1-j616c.bin", raw)
++            if macho:
++                archive.writestr("esp/aurora/stage1-j616c.macho", aura_macho(raw))
++            if stage2 is not None:
++                archive.writestr("esp/m1n1/boot-ctxr-j616c.bin", stage2)
++        (self.installed_esp / "aurora").mkdir()
++        if stage1:
++            (self.installed_esp / "aurora/stage1-j616c.bin").write_bytes(raw)
++        if macho:
++            (self.installed_esp / "aurora/stage1-j616c.macho").write_bytes(aura_macho(raw))
++        if stage2 is not None:
++            (self.installed_esp / "m1n1/boot-ctxr-j616c.bin").write_bytes(stage2)
++
++    def _m4_max_on_26_6_2(self):
++        installer = self._on_26_6_2()
++        installer.sysinfo.device_class = "j616cap"
++        return installer
++
++    def test_an_m4_max_payload_without_the_j616c_stage1_is_refused_before_disk_changes(self):
++        self._m4_max_payload(stage1=False)
++        installer = self._m4_max_on_26_6_2()
++        adapter = self._adapter(installer)
++
++        with self.assertRaisesRegex(AsahiAdapterError, "stage1-j616c.bin"):
++            adapter.preflight(self.plan)
++
++        self.assertFalse(adapter.preflight_complete)
++        self.assertEqual(installer.dutil.add_calls, [])
++
++    def test_an_m4_max_payload_without_its_macho_stage1_is_refused_before_disk_changes(self):
++        self._m4_max_payload(macho=False)
++        installer = self._m4_max_on_26_6_2()
++        adapter = self._adapter(installer)
++
++        with self.assertRaisesRegex(AsahiAdapterError, "stage1-j616c.macho"):
++            adapter.preflight(self.plan)
++
++        self.assertFalse(adapter.preflight_complete)
++        self.assertEqual(installer.dutil.add_calls, [])
++
++    def test_an_m4_max_payload_without_its_confined_stage2_is_refused_before_disk_changes(self):
++        self._m4_max_payload(stage2=None)
++        installer = self._m4_max_on_26_6_2()
++        adapter = self._adapter(installer)
++
++        with self.assertRaisesRegex(
++            AsahiAdapterError, "no esp/m1n1/boot-ctxr-j616c.bin for a 16-inch M4 Max MacBook Pro"
++        ):
++            adapter.preflight(self.plan)
++
++        self.assertFalse(adapter.preflight_complete)
++        self.assertEqual(installer.dutil.add_calls, [])
++
++    def test_an_m4_max_without_the_native_recovery_app_is_refused_before_disk_changes(self):
++        self._m4_max_payload()
++        installer = self._m4_max_on_26_6_2()
++        adapter = self._adapter(installer)
++
++        with self.assertRaisesRegex(AsahiAdapterError, "native Recovery app"):
++            adapter.preflight(self.plan)
++
++        self.assertFalse(adapter.preflight_complete)
++        self.assertEqual(installer.dutil.add_calls, [])
++
++    def test_an_m4_max_stage1_chainloads_the_confined_stage2(self):
++        self._m4_max_payload()
++        installer = self._m4_max_on_26_6_2()
++        adapter = self._adapter(installer)
++        staged = {}
++        adapter.recovery_app = "/private/job/Recovery.app"
++        adapter.recovery_manifest = "/private/job/recovery.json"
++        adapter.recovery_requirement = 'cdhash H"' + 'a' * 40 + '"'
++        adapter.authorized_owner = "mina"
++
++        with patch("omarchy_asahi.omarchy_recovery.validate_source"), patch(
++            "omarchy_asahi.omarchy_recovery.source_bootstrap", return_value={"ownerUUIDs": ["o"]}
++        ):
++            adapter.preflight(self.plan)
++        adapter.prepare_target(self.plan)
++        partition_disk = adapter.osins.partition_disk
++        def with_a_real_esp_uuid(name, size):
++            partition_disk(name, size)
++            adapter.osins.efi_part.uuid = "180190F8-0000-4000-8000-000000000000"
++        adapter.osins.partition_disk = with_a_real_esp_uuid
++        with patch("omarchy_asahi.omarchy_recovery.stage",
++                   side_effect=lambda *args, **kwargs: staged.update(kwargs)):
++            adapter.install_stub_and_esp(self.plan)
++
++        boot_object = Path(installer.ins.boot_obj_path).read_bytes()
++        self.assertTrue(boot_object.startswith(b"m1n1 j700 stage 1"))
++        self.assertIn(b"180190f8-0000-4000-8000-000000000000", boot_object)
++        self.assertIn(b";m1n1/boot-ctxr.bin", boot_object)
++        self.assertEqual(staged["boot_mode"], "macho-ctxr")
++        self.assertEqual(staged["macho_stage1"], aura_macho(boot_object))
++        self.assertEqual((self.installed_esp / "m1n1/boot-ctxr.bin").read_bytes(),
++                         b"m1n1 m4 max confined")
++        self.assertTrue((self.installed_esp / "m1n1/boot.bin").exists())
++        for dropped in ("m1n1/boot-ctxr-j616c.bin", "aurora/stage1-j616c.macho"):
++            self.assertFalse((self.installed_esp / dropped).exists(), dropped)
++
+     def _common_payload(self, stage1=None, stage2=b"common stage2"):
+         with zipfile.ZipFile(self.payload) as archive:
+             entries = {name: archive.read(name) for name in archive.namelist()}
+@@ -2019,6 +2124,33 @@ def j700_stage1(path=b"", window=0, uuid=b""):
+     return b"m1n1 j700 stage 1" + block + b"\0" * 64 + b"STACKBOT"
+ 
+ 
++def aura_macho(raw, entry_offset=0x800, boot_exec=False, filetype=12):
++    """A minimal aura-style fileset boot object carrying `raw` at the start of
++    __TEXT_EXEC, as aura's tools/macho_boot_object.py lays it out."""
++    import struct as _struct
++    page = 0x4000
++    base = 0xFFFFFE0007004000
++    code = (len(raw) + page - 1) // page * page + page
++    segments = [("__TEXT", 0, page), ("__TEXT_EXEC", page, code),
++                ("__PRELINK_INFO", page + code, page), ("__LINKEDIT", page * 2 + code, page)]
++    if boot_exec:
++        segments.append(("__TEXT_BOOT_EXEC", page * 3 + code, page))
++    commands = b""
++    for name, offset, size in segments:
++        commands += _struct.pack("<II16sQQQQIIII", 0x19, 72, name.encode(), base + offset, size,
++                                 offset, size, 1, 1, 0, 0)
++    registers = [0] * 34
++    registers[32] = base + page + entry_offset
++    commands += _struct.pack("<IIII", 5, 16 + 34 * 8, 6, 0x44) + _struct.pack("<34Q", *registers)
++    header = _struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0xC0000002, filetype,
++                          len(segments) + 1, len(commands), 0, 0)
++    end = max(offset + size for _, offset, size in segments)
++    data = bytearray(end)
++    data[:len(header) + len(commands)] = header + commands
++    data[page:page + len(raw)] = raw
++    return bytes(data)
++
++
+ class BoardStage1Tests(unittest.TestCase):
+     UUID = "97c92d03-2cb3-461f-9134-134a58cc9fdc"
+ 
+@@ -2103,6 +2235,74 @@ class BoardStage1Tests(unittest.TestCase):
+                     install_board_stage1("j613ap", "26.6.2", package.__getitem__, self.UUID, str(target))
+                 self.assertEqual(target.read_bytes(), b"asahi stage 1")
+ 
++    def test_a_16_inch_m4_max_on_26_6_2_gets_the_filled_j616c_stage1_and_macho_object(self):
++        import struct as _struct
++        raw = j700_stage1(window=4321)
++        with tempfile.TemporaryDirectory() as root:
++            target = self.write_generic(root)
++            package = {"esp/aurora/stage1-j616c.bin": raw,
++                       "esp/aurora/stage1-j616c.macho": aura_macho(raw)}
++            obj = install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++            data = target.read_bytes()
++            self.assertEqual(len(data), len(raw))
++            offset = data.index(b"AURORA-S1-CFG01\0") + 16
++            _, window, uuid, path = _struct.unpack_from("<II40s192s", data, offset)
++            self.assertEqual(window, 0)
++            self.assertEqual(uuid.rstrip(b"\0"), self.UUID.encode())
++            self.assertEqual(path.rstrip(b"\0"), b";m1n1/boot-ctxr.bin")
++            # The object carries exactly the filled raw image, every other byte unchanged.
++            self.assertEqual(obj, aura_macho(data))
++
++    def test_other_boards_get_no_macho_object(self):
++        with tempfile.TemporaryDirectory() as root:
++            target = self.write_generic(root)
++            package = {"esp/aurora/stage1-j700.bin": j700_stage1(window=5000)}
++            self.assertIsNone(
++                install_board_stage1("j700ap", "26.6.2", package.__getitem__, self.UUID, str(target)))
++
++    def test_an_m4_max_image_without_the_j616c_stage1_is_refused(self):
++        for package in ({}, {"esp/aurora/stage1-j613.bin": j700_stage1()}):
++            with self.subTest(package=sorted(package)), tempfile.TemporaryDirectory() as root:
++                target = self.write_generic(root)
++                with self.assertRaisesRegex(AsahiAdapterError, "stage1-j616c.bin"):
++                    install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++                self.assertEqual(target.read_bytes(), b"asahi stage 1")
++
++    def test_an_m4_max_image_without_or_with_a_foreign_macho_object_is_refused(self):
++        raw = j700_stage1()
++        other = j700_stage1(path=b";other")
++        for obj in (None, aura_macho(other), aura_macho(raw, entry_offset=0x1000),
++                    aura_macho(raw, boot_exec=True), aura_macho(raw, filetype=2), b"not mach-o"):
++            with self.subTest(obj=None if obj is None else obj[:16]), \
++                    tempfile.TemporaryDirectory() as root:
++                target = self.write_generic(root)
++                package = {"esp/aurora/stage1-j616c.bin": raw}
++                if obj is not None:
++                    package["esp/aurora/stage1-j616c.macho"] = obj
++                with self.assertRaises(AsahiAdapterError):
++                    install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++                self.assertEqual(target.read_bytes(), b"asahi stage 1")
++
++    def test_an_m4_max_image_with_a_malformed_j616c_stage1_is_refused(self):
++        package = {"esp/aurora/stage1-j616c.bin": b"not a stage 1"}
++        with tempfile.TemporaryDirectory() as root:
++            target = self.write_generic(root)
++            with self.assertRaises(AsahiAdapterError):
++                install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++            self.assertEqual(target.read_bytes(), b"asahi stage 1")
++
++    def test_the_macho_fill_carries_only_a_same_size_filled_image(self):
++        raw = j700_stage1()
++        obj = aura_macho(raw)
++        filled = fill_aurora_stage1(raw, self.UUID, "m1n1/boot-ctxr.bin", 0)
++        self.assertEqual(fill_macho_stage1(obj, raw, filled), aura_macho(filled))
++        with self.assertRaises(AsahiAdapterError):
++            fill_macho_stage1(obj, raw, filled + b"x")
++        dirty = bytearray(obj)
++        dirty[0x4000 + len(raw) + 8] = 1
++        with self.assertRaises(AsahiAdapterError):
++            fill_macho_stage1(bytes(dirty), raw, filled)
++
+     def test_common_stage1_is_used_on_every_admitted_board_with_zero_delay(self):
+         import struct as _struct
+         package = {"esp/aurora/stage1.bin": j700_stage1(window=5000),
+@@ -2205,6 +2405,36 @@ class EspBoardLayoutTests(unittest.TestCase):
+         with self.assertRaisesRegex(AsahiAdapterError, "no esp/m1n1/boot-j700.bin for the MacBook Neo"):
+             esp_board_layout("j700ap", ["esp/m1n1/boot.bin"])
+ 
++    M4_MAX_MEMBERS = MEMBERS + ["esp/aurora/stage1-j616c.bin", "esp/aurora/stage1-j616c.macho",
++                                "esp/m1n1/boot-ctxr-j616c.bin"]
++
++    def test_an_m4_max_installs_its_confined_stage2_beside_the_standard_one(self):
++        self.assertEqual(esp_board_layout("j616cap", self.M4_MAX_MEMBERS), {
++            "esp/EFI/BOOT/BOOTAA64.EFI": "EFI/BOOT/BOOTAA64.EFI",
++            "esp/aurora/stage1-j700.bin": "aurora/stage1-j700.bin",
++            "esp/aurora/stage1-j616c.bin": "aurora/stage1-j616c.bin",
++            "esp/m1n1/boot.bin": "m1n1/boot.bin",
++            "esp/m1n1/boot-ctxr-j616c.bin": "m1n1/boot-ctxr.bin",
++        })
++
++    def test_other_macs_drop_the_m4_max_files(self):
++        for device_class, own in (("j613ap", None), ("j700ap", "esp/m1n1/boot-j700.bin")):
++            with self.subTest(device_class=device_class):
++                layout = esp_board_layout(device_class, self.M4_MAX_MEMBERS)
++                self.assertNotIn("esp/m1n1/boot-ctxr-j616c.bin", layout)
++                self.assertNotIn("esp/aurora/stage1-j616c.macho", layout)
++                self.assertNotIn("m1n1/boot-ctxr.bin", layout.values())
++                self.assertEqual(layout.get(own or "esp/m1n1/boot.bin"), "m1n1/boot.bin")
++
++    def test_an_m4_max_payload_without_its_confined_stage2_or_object_is_refused(self):
++        for missing in ("esp/m1n1/boot-ctxr-j616c.bin", "esp/aurora/stage1-j616c.macho"):
++            with self.subTest(missing=missing):
++                members = [m for m in self.M4_MAX_MEMBERS if m != missing]
++                with self.assertRaisesRegex(
++                    AsahiAdapterError, f"no {missing} for a 16-inch M4 Max MacBook Pro"
++                ):
++                    esp_board_layout("j616cap", members)
++
+     def test_a_member_outside_the_esp_is_refused(self):
+         with self.assertRaises(AsahiAdapterError):
+             esp_board_layout("j613ap", ["root.img"])
+diff --git a/Engine/overlay/tests/test_omarchy_firmware.py b/Engine/overlay/tests/test_omarchy_firmware.py
+index 9fbce3d..258c61b 100644
+--- a/Engine/overlay/tests/test_omarchy_firmware.py
++++ b/Engine/overlay/tests/test_omarchy_firmware.py
+@@ -63,9 +63,10 @@ UPSTREAM_IPSWS = [
+           "j514map", "j516sap", "j516cap", "j516map"], "14.8.3"),
+ ]
+ IPSW_VERSIONS = patched_ipsws() + UPSTREAM_IPSWS
+-CHIP_MIN_VER = {0x8103: "11.0", 0x8112: "12.4", 0x8122: "14.8.3", 0x8140: "26.6"}
++CHIP_MIN_VER = {0x8103: "11.0", 0x8112: "12.4", 0x8122: "14.8.3", 0x6041: "26.6.2",
++                0x8140: "26.6"}
+ DEVICE_MIN = {"j313ap": "11.0", "j413ap": "12.4", "j613ap": "14.8.3",
+-              "j615ap": "14.8.3", "j700ap": "26.6"}
++              "j615ap": "14.8.3", "j700ap": "26.6", "j616cap": "26.6.2"}
+ TODAY = ["13.5", "14.8.3", "26.6"]
+ ON_26_6_2 = dict(sys_firmware="mBoot-18000.161.10", macos_ver="26.6.2",
+                  sfr_full_ver="25.7.83.0.0,0")
+@@ -97,7 +98,7 @@ class PatchedFirmwareTableTests(unittest.TestCase):
+         self.assertEqual((neo.version, neo.devices), ("26.6", ["j700ap"]))
+         self.assertEqual(air, IPSW(
+             "26.6.2", "26.0", "mBoot-18000.161.10", "25.7.83.0.0,0", False,
+-            ["j613ap", "j615ap", "j700ap"],
++            ["j613ap", "j615ap", "j700ap", "j616cap"],
+             "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/"
+             "A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"))
+ 
+@@ -186,6 +187,34 @@ def require(sysinfo, device, supported_fw):
+     require_available(minver, avail, split_ver)
+ 
+ 
++class M4MaxFirmwareTests(unittest.TestCase):
++    """The 16-inch M4 Max (j616cap, T6041) installs only 26.6.2 OS firmware."""
++
++    def test_an_m4_max_offered_26_6_2_takes_it_and_the_larger_stub(self):
++        sysinfo, device = mac("j616cap", 0x6041)
++        self.assertEqual(choose(sysinfo, device, ["26.6.2"]),
++                         ("26.6.2", STUB_SIZE_MACOS26))
++
++    def test_an_m4_max_has_no_firmware_in_todays_metadata(self):
++        # 26.6 is the Neo's; the M3 Macs' 14.8.3 is below the T6041 floor.
++        sysinfo, device = mac("j616cap", 0x6041)
++        self.assertEqual(choose(sysinfo, device, TODAY), (None, STUB_SIZE_MACOS26))
++
++    def test_an_m4_max_whose_firmware_predates_26_6_2_cannot_take_it(self):
++        # Values read from a J616c on macOS 26.3 (25D125).
++        sysinfo, device = mac("j616cap", 0x6041, sys_firmware="iBoot-13822.81.10",
++                              macos_ver="26.3", sfr_full_ver="25.4.125.0.0,0")
++        self.assertEqual(choose(sysinfo, device, ["26.6.2"]), (None, STUB_SIZE_MACOS26))
++
++    def test_the_m4_max_floor_names_26_6_2_when_nothing_fits(self):
++        sysinfo, device = mac("j616cap", 0x6041, sys_firmware="iBoot-13822.81.10",
++                              macos_ver="26.3", sfr_full_ver="25.4.125.0.0,0")
++        minver, avail = available_ipsws(IPSW_VERSIONS, CHIP_MIN_VER, sysinfo, device,
++                                        ["26.6.2"], False, split_ver)
++        with self.assertRaisesRegex(FirmwareRequirementError, "older than macOS 26.6.2"):
++            require_available(minver, avail, split_ver)
++
++
+ class FirmwareRequirementTests(unittest.TestCase):
+     # The edge image of 2026-10-19 offers every Mac 13.5, 14.8.3 and 26.6.2.
+     EDGE = ["13.5", "14.8.3", "26.6.2"]
+diff --git a/Engine/overlay/tests/test_omarchy_recovery.py b/Engine/overlay/tests/test_omarchy_recovery.py
+index 04f976d..8efd5c4 100644
+--- a/Engine/overlay/tests/test_omarchy_recovery.py
++++ b/Engine/overlay/tests/test_omarchy_recovery.py
+@@ -183,6 +183,30 @@ class RecoveryTests(unittest.TestCase):
+         self.assertFalse((app / "Contents/Resources/AuraPayloads").exists())
+         self.assertTrue(all("--verify" in command for command in self.commands))
+ 
++    def test_an_m4_class_mac_stages_the_macho_object_and_confined_stage2(self):
++        (self.esp / "m1n1/boot-ctxr.bin").write_bytes(b"actual-confined-stage2")
++        result = recovery.stage(self.installer, ESP, str(self.esp), run=self.fake_run,
++                                macho_stage1=b"filled-macho-object", boot_mode="macho-ctxr")
++        config = result["configuration"]
++        self.assertEqual((config["bootMode"], config["stage2Path"]), ("macho-ctxr", "m1n1/boot-ctxr.bin"))
++        payloads = self.system / recovery.INSTALL_DATA_DIRECTORY / "AuraPayloads"
++        self.assertEqual((payloads / "macho-ctxr/aura-boot.macho").read_bytes(), b"filled-macho-object")
++        self.assertEqual((payloads / "macho-ctxr/boot-ctxr.bin").read_bytes(), b"actual-confined-stage2")
++        self.assertFalse((payloads / "raw").exists())
++        manifest = json.loads((payloads / "manifest.json").read_text())
++        self.assertEqual(manifest["defaultMode"], "macho-ctxr")
++        self.assertEqual(manifest["modes"], {"macho-ctxr": {"espPath": "m1n1/boot-ctxr.bin"}})
++
++    def test_a_boot_mode_without_its_stage1_is_refused_before_staging(self):
++        for kwargs in ({"boot_mode": "macho-ctxr"}, {"macho_stage1": b"object"},
++                       {"boot_mode": "macho", "macho_stage1": b"object"},
++                       {"boot_mode": "macho-ctxr", "macho_stage1": b""}):
++            with self.subTest(kwargs=kwargs):
++                (self.esp / "m1n1/boot-ctxr.bin").write_bytes(b"confined")
++                with self.assertRaises(recovery.RecoveryError):
++                    recovery.stage(self.installer, ESP, str(self.esp), run=self.fake_run, **kwargs)
++                self.assertFalse((self.system / recovery.APP_NAME).exists())
++
+     def test_neo_configuration_explicitly_allows_custom_boot_arguments(self):
+         self.installer.sysinfo = SimpleNamespace(device_class="j700ap")
+         result = self.stage()
+diff --git a/Engine/overlay/tests/test_omarchy_wifi.py b/Engine/overlay/tests/test_omarchy_wifi.py
+index 3914641..90766bf 100644
+--- a/Engine/overlay/tests/test_omarchy_wifi.py
++++ b/Engine/overlay/tests/test_omarchy_wifi.py
+@@ -354,6 +354,22 @@ class CollectorTests(unittest.TestCase):
+         self.assertEqual(self.after, ["-C", str(self.work / "recovery/usr/share")])
+         self.assertEqual(self.commands[-1][-3:], ["-C", "../../usr/sbin", "appleh13camerad"])
+ 
++    def test_the_archive_copies_no_file_flags(self):
++        # Every file on the sealed system volume carries SIP's `restricted`
++        # flag, which chflags refuses even to root (EPERM): staging must not
++        # copy BSD flags, as shutil.copytree's copystat does.
++        def refused(*args, **kwargs):
++            raise PermissionError(1, "Operation not permitted")
++
++        with mock.patch.object(os, "chflags", refused, create=True), \
++                mock.patch.object(os, "lchflags", refused, create=True):
++            with self.collecting("j616c") as radios:
++                self.stub_collects()
++        self.assertEqual(radios.system, str(self.system))
++        self.assertIn("wifi/C-4388__s-C2/guam.trx", self.staged)
++        self.assertTrue(self.staged["wifi/C-4388__s-C2/mriya.trx"])
++        self.assertIn("bluetooth/recovery-bt.bin", self.staged)
++
+     def test_names_are_restored_after_collection(self):
+         before = (self.stub.WiFiFWCollection, self.stub.BluetoothFWCollection, self.stub.subprocess)
+         with self.collecting("j614s"):
+diff --git a/Engine/patches/0001-omarchy-engine-runtime.patch b/Engine/patches/0001-omarchy-engine-runtime.patch
+index 2f4ed8c..41f25d5 100644
+--- a/Engine/patches/0001-omarchy-engine-runtime.patch
++++ b/Engine/patches/0001-omarchy-engine-runtime.patch
+@@ -35,7 +35,7 @@ index 21031fd..76c0935 100755
+  
+  echo "Packaging installer..."
+ diff --git a/src/main.py b/src/main.py
+-index 88dd2ab..47aad7c 100644
++index 88dd2ab..f296008 100644
+ --- a/src/main.py
+ +++ b/src/main.py
+ @@ -4,11 +4,16 @@ import os, os.path, shlex, subprocess, sys, time, termios, json, getpass, report
+@@ -55,19 +55,21 @@ index 88dd2ab..47aad7c 100644
+  
+  # Minimum free space to leave when resizing, to allow for OS upgrades
+  MIN_FREE_OS = psize("38GB")
+-@@ -49,9 +54,11 @@ CHIP_MIN_VER = {
++@@ -49,9 +54,13 @@ CHIP_MIN_VER = {
+      0x6030: "14.8.3",   # T6030, M3 Pro
+      0x6031: "14.8.3",   # T6031, M3 Max (16-core)
+      0x6034: "14.8.3",   # T6034, M3 Max (14-core)
+++    0x6041: "26.6.2",   # T6041, M4 Max
+ +    0x8140: "26.6",     # T8140, A18 Pro
+  }
+  
+  DEVICES = {
+ +    "j700ap":   Device("26.6", False),  # MacBook Neo (A18 Pro, 2026)
+++    "j616cap":  Device("26.6.2", False),  # MacBook Pro (16-inch, M4 Max, 2024)
+      "j274ap":   Device("11.0", False),  # Mac mini (M1, 2020)
+      "j293ap":   Device("11.0", False),  # MacBook Pro (13-inch, M1, 2020)
+      "j313ap":   Device("11.0", False),  # MacBook Air (M1, 2020)
+-@@ -95,6 +102,22 @@ if os.environ.get("ALLOW_VM", None):
++@@ -95,6 +104,23 @@ if os.environ.get("ALLOW_VM", None):
+      DEVICES["vma2macosap"] = Device("12.0", False)
+  
+  IPSW_VERSIONS = [
+@@ -78,19 +80,20 @@ index 88dd2ab..47aad7c 100644
+ +         False,
+ +         ["j700ap"],
+ +         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-65618/10445B26-DE2C-43EC-9149-0A831602E74B/UniversalMac_26.6_25G72_Restore.ipsw"),
+-+    # Optional for the M3 Airs and Neo: it is chosen only when
+-+    # the payload's supported_fw names no other version they can use.
+++    # Optional for the M3 Airs and Neo: it is chosen only when the payload's
+++    # supported_fw names no other version they can use. The only firmware
+++    # the 16-inch M4 Max may install: its aura, DCP and GPU paths accept no other.
+ +    IPSW("26.6.2",
+ +         "26.0",
+ +         "mBoot-18000.161.10",
+ +         "25.7.83.0.0,0",
+ +         False,
+-+         ["j613ap", "j615ap", "j700ap"],
+++         ["j613ap", "j615ap", "j700ap", "j616cap"],
+ +         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"),
+      IPSW("12.3.1",
+           "12.1",
+           "iBoot-7459.101.3",
+-@@ -128,7 +151,10 @@ IPSW_VERSIONS = [
++@@ -128,7 +154,10 @@ IPSW_VERSIONS = [
+  class InstallerMain:
+      def __init__(self, version):
+          self.version = version
+@@ -101,7 +104,7 @@ index 88dd2ab..47aad7c 100644
+          self.credentials_validated = False
+          self.expert = False
+          self.ipsw = None
+-@@ -585,20 +611,11 @@ class InstallerMain:
++@@ -585,20 +614,11 @@ class InstallerMain:
+          self.step2(report=True)
+  
+      def choose_ipsw(self, supported_fw=None):
+@@ -127,7 +130,7 @@ index 88dd2ab..47aad7c 100644
+  
+          minver.sort(key=lambda ipsw: split_ver(ipsw.version))
+  
+-@@ -812,18 +829,15 @@ class InstallerMain:
++@@ -812,18 +832,15 @@ class InstallerMain:
+          else:
+              target = resizable[0]
+  
+@@ -155,7 +158,7 @@ index 88dd2ab..47aad7c 100644
+  
+          min_perc = 100 * min_size / total
+  
+-@@ -922,6 +936,25 @@ class InstallerMain:
++@@ -922,6 +939,25 @@ class InstallerMain:
+  
+          return True
+  
+@@ -181,7 +184,7 @@ index 88dd2ab..47aad7c 100644
+      def action_select_disk(self):
+          choices = {"1": "Internal storage"}
+  
+-@@ -939,21 +972,22 @@ class InstallerMain:
++@@ -939,21 +975,22 @@ class InstallerMain:
+          return True
+  
+      def main(self):
+@@ -217,7 +220,7 @@ index 88dd2ab..47aad7c 100644
+              p_message("By default, this installer will hide certain advanced options that")
+              p_message("are only useful for Asahi Linux developers. You can enable expert mode")
+              p_message("to show them. Do not enable this unless you know what you are doing.")
+-@@ -970,7 +1004,19 @@ class InstallerMain:
++@@ -970,7 +1007,19 @@ class InstallerMain:
+  
+          self.chip_min_ver = CHIP_MIN_VER.get(self.sysinfo.chip_id, None)
+          self.device = DEVICES.get(self.sysinfo.device_class, None)
+@@ -238,7 +241,7 @@ index 88dd2ab..47aad7c 100644
+              p_error("This device is not supported yet!")
+              p_error("Please check out the Asahi Linux Blog for updates on device support:")
+              print()
+-@@ -1126,6 +1172,19 @@ class InstallerMain:
++@@ -1126,6 +1175,19 @@ class InstallerMain:
+  
+          if self.cur_os is None and self.sysinfo.boot_mode != "macOS":
+              self.cur_os = default_os
+@@ -258,7 +261,7 @@ index 88dd2ab..47aad7c 100644
+          self.check_cur_os()
+  
+          actions = {}
+-@@ -1226,7 +1285,11 @@ if __name__ == "__main__":
++@@ -1226,7 +1288,11 @@ if __name__ == "__main__":
+          logging.exception("Process execution failed")
+          p_warning("If you need to file a bug report, please attach the log file:")
+          p_warning(f"  {os.getcwd()}/installer.log")
+diff --git a/Engine/source-lock.json b/Engine/source-lock.json
+index 9588ec9..f8be3bf 100644
+--- a/Engine/source-lock.json
++++ b/Engine/source-lock.json
+@@ -141,7 +141,7 @@
+     }
+   },
+   "downstream_overlay": {
+-    "version": "v0.9.2-omarchy.20261110.fb337ca4e5a0",
++    "version": "v0.9.2-omarchy.20261113.e19ff4512988",
+     "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
+     "minimum_app_version": "2.3.0",
+     "engine_modes": [
+@@ -151,7 +151,7 @@
+     ],
+     "patch": {
+       "path": "patches/0001-omarchy-engine-runtime.patch",
+-      "sha256": "28c3dbceebaeb2d023d972f816184609c2ffb6065502e1f91839ac69e9e4a94a"
++      "sha256": "90d123994599a7d8f1d525ff7f7a3db65a3fc6cb4d6d311ec5a24acca6fbe968"
+     },
+     "files": [
+       {
+@@ -172,7 +172,7 @@
+       {
+         "path": "overlay/src/omarchy_asahi.py",
+         "destination": "src/omarchy_asahi.py",
+-        "sha256": "dd74b3799a889d446099bb7fa1f4115518acda26c9fc8c0c516d49f1fe57dc25"
++        "sha256": "3b89148810cfa8df76b1340b3d43d01f5863f2134dba36ee473e41720d757ef4"
+       },
+       {
+         "path": "overlay/src/omarchy_contract.py",
+@@ -207,7 +207,7 @@
+       {
+         "path": "overlay/tests/test_omarchy_asahi.py",
+         "destination": "tests/test_omarchy_asahi.py",
+-        "sha256": "c5991393b140b54a4b33082286126dd0ea6da8fe09f7353ee13833cd48bf9033"
++        "sha256": "8c340e18ce47a768511ddc330faac97be8176034a285113191a00e5b164608ab"
+       },
+       {
+         "path": "overlay/tests/test_omarchy_contract.py",
+@@ -292,7 +292,7 @@
+       {
+         "path": "overlay/tests/test_omarchy_firmware.py",
+         "destination": "tests/test_omarchy_firmware.py",
+-        "sha256": "3655ba86b7282c2ce3a5305b78dba2510e535e5ae5d669a473301003040c34f1"
++        "sha256": "9e8c6f9e7ca2279523136acb2cdd3ed2cb1d94359aafe9ae3c4639234c9b72c4"
+       },
+       {
+         "path": "overlay/src/omarchy_als.py",
+@@ -307,12 +307,12 @@
+       {
+         "path": "overlay/src/omarchy_wifi.py",
+         "destination": "src/omarchy_wifi.py",
+-        "sha256": "8313c53ce581c5a25803f0f47a516ec1d94b768ba84f2db3438a8536e6ff5208"
++        "sha256": "03b86ab5716a106807227af7df40e84ed4972056c409246716cafa74320b3de3"
+       },
+       {
+         "path": "overlay/src/omarchy_recovery.py",
+         "destination": "src/omarchy_recovery.py",
+-        "sha256": "4d495597d9d1b6e169fe55ac8d1ee9c30d969ee50e6987e58cd2d62e23f2bcfd"
++        "sha256": "8f9589b34640d2e75b116b04cd7146a0d0c093302c9683ddb5b201da09af08e3"
+       },
+       {
+         "path": "overlay/src/omarchy_apple_aea.py",
+@@ -337,12 +337,12 @@
+       {
+         "path": "overlay/tests/test_omarchy_wifi.py",
+         "destination": "tests/test_omarchy_wifi.py",
+-        "sha256": "1ad6282a527481e5204097c601cb4d9c00ac9612c7a5491d49c84e1880e281c5"
++        "sha256": "bc72b339364bd897d68f76046faf47f8b70b11ddfe396a4c0dd3be99dd564d67"
+       },
+       {
+         "path": "overlay/tests/test_omarchy_recovery.py",
+         "destination": "tests/test_omarchy_recovery.py",
+-        "sha256": "769dfa871dc59371099f7bea59f3e4209159ef4123522f31001626c4484f7541"
++        "sha256": "e0b69eb456cc4811135818ada982837209cc7a5b92748e114a42c4f434e05500"
+       }
+     ]
+   },
+@@ -477,9 +477,9 @@
+     }
+   ],
+   "validation_artifact": {
+-    "filename": "installer-v0.9.2-omarchy.20261110.fb337ca4e5a0.tar.gz",
+-    "size_bytes": 17908690,
+-    "sha256": "1c762ce473573b01b34ab1dafc13ec742d25d5f4ebb38645c0260a0cce1714a9",
++    "filename": "installer-v0.9.2-omarchy.20261113.e19ff4512988.tar.gz",
++    "size_bytes": 17911578,
++    "sha256": "6f9176afa0ffe2ccef98526b0f3f9b65f794fb08aaa733fc636411344b794c8a",
+     "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
+     "signature": "absent",
+     "metadata_sha256": "2e6181ce6b6e17c11039e04bfadade8d10ae0e11889885ad8c9960b68f179a5d"
+@@ -506,7 +506,7 @@
+           "upstream_base_sha256": "c8d4d2a80f3a88a9ba4d6d4024c0001062e35d15d72ae530681a0612e6525984",
+           "upstream_sha256": "894fb8cd2ffc672bb96a14969ee9de2879d250c8c5990fee122ccf66d9b50024",
+           "base_sha256": "95760ed02d44b5457acb81559a4e2d892ffbb7f0f2b7417c0b2eb02937945ae7",
+-          "sha256": "84da2978421cc551411bc4acd15e4fcd208ea21c4f2f01510bfed5ce49e809dc"
++          "sha256": "4bd69256ab932b20123529bf8f2d0dcd342201bcb4ab3db13512cb9e96b740ae"
+         }
+       ]
+     },
+diff --git a/Recovery/Native/Authorization.c b/Recovery/Native/Authorization.c
+index 51c8773..57cad92 100644
+--- a/Recovery/Native/Authorization.c
++++ b/Recovery/Native/Authorization.c
+@@ -22,6 +22,9 @@
+ #ifndef AUTHORIZATION_TIMEOUT_SECONDS
+ #define AUTHORIZATION_TIMEOUT_SECONDS 300
+ #endif
++#ifndef AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS
++#define AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS 1800
++#endif
+ enum { INVALID=-1, PTY_FAILED=-2, TERMINAL_FAILED=-3, FORK_FAILED=-4,
+        TIMED_OUT=-5, UNEXPECTED_CONFIRMATION=-6, REPEATED_CONFIRMATION=-7,
+        REPEATED_PASSWORD=-8, REPEATED_USERNAME=-9, INPUT_FAILED=-10,
+@@ -117,6 +120,20 @@ static void output_snapshot(const char *raw, size_t length, const char *secret,
+     free(clean);
+ }
+ 
++/* kmutil configure-boot --compress works through the whole padded Mach-O
++ * object of an M4-class Mac (about 146 MiB) and can take far longer than any
++ * other authorized command on an older Recovery; every other command keeps the
++ * short limit. */
++static int authorization_timeout(const char *executable, char *const arguments[])
++{
++    if(!strcmp(executable,"/usr/bin/kmutil") && arguments[1] &&
++       !strcmp(arguments[1],"configure-boot")) {
++        for(int i=2;arguments[i];i++)
++            if(!strcmp(arguments[i],"--compress"))return AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS;
++    }
++    return AUTHORIZATION_TIMEOUT_SECONDS;
++}
++
+ static int authorization_run_logged(const char *executable, char *const arguments[],
+                                     const char *username, const char *password,
+                                     bool confirm_boot_object, aurora_log_callback output,
+@@ -154,7 +171,7 @@ static int authorization_run_logged(const char *executable, char *const argument
+     unsigned user_sent=0,password_sent=0,confirmation_sent=0;
+     char pending[4096]={0}, line[4096]={0}, raw[LOG_LIMIT];
+     size_t used=0,raw_used=0;
+-    time_t deadline=time(NULL)+AUTHORIZATION_TIMEOUT_SECONDS;
++    time_t deadline=time(NULL)+authorization_timeout(executable,arguments);
+     for(;;) {
+         if(!exited) {
+             pid_t done=waitpid(child,&status,WNOHANG);
+diff --git a/Recovery/Sources/Account/RecoveryInstallData.swift b/Recovery/Sources/Account/RecoveryInstallData.swift
+index 8ebc0a5..cdbe08c 100644
+--- a/Recovery/Sources/Account/RecoveryInstallData.swift
++++ b/Recovery/Sources/Account/RecoveryInstallData.swift
+@@ -98,12 +98,22 @@ public enum RecoveryInstallData {
+       value["schema"] as? Int == 2,
+       let files = value["files"] as? [String: [String: Any]]
+     else { throw AccountSetupFailure("The old Recovery payload manifest is invalid.") }
+-    let required: Set<String> = [
+-      "raw/aura-raw.bin", "raw/boot.bin", "vendorfw/firmware.tar",
+-      "vendorfw/firmware.cpio", "vendorfw/manifest.txt",
++    // Each installable boot mode stages one Stage 1 and one Stage 2: raw, or the
++    // padded Mach-O mode of M4-class Macs.
++    let firmware: Set<String> = [
++      "vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt",
+     ]
+-    let allowed = required.union(["vendorfw/u-boot/asmedia/asm2214a-apple.bin"])
+-    guard required.isSubset(of: files.keys), Set(files.keys).isSubset(of: allowed) else {
++    let startup: [Set<String>] = [
++      ["raw/aura-raw.bin", "raw/boot.bin"],
++      ["macho-ctxr/aura-boot.macho", "macho-ctxr/boot-ctxr.bin"],
++    ]
++    guard
++      startup.contains(where: { mode in
++        let required = firmware.union(mode)
++        let allowed = required.union(["vendorfw/u-boot/asmedia/asm2214a-apple.bin"])
++        return required.isSubset(of: files.keys) && Set(files.keys).isSubset(of: allowed)
++      })
++    else {
+       throw AccountSetupFailure("The old Recovery payload inventory is invalid.")
+     }
+     var verified: [String: Data] = [:]
+diff --git a/Recovery/Sources/BootSelection.swift b/Recovery/Sources/BootSelection.swift
+index 4e1b996..eb6836c 100644
+--- a/Recovery/Sources/BootSelection.swift
++++ b/Recovery/Sources/BootSelection.swift
+@@ -3,19 +3,46 @@ import Foundation
+ enum AuraBootMode: String, Codable {
+   case raw
+   case macho
++  /// M4-class Macs (T8132, T6040/T6041, T8140 and later): aura's Mach-O boot
++  /// object, padded at enrollment so iBoot arms a 128 MiB execute window, which
++  /// chainloads the confined Stage 2 at `m1n1/boot-ctxr.bin`. The engine stages
++  /// the filled, unpadded object; Recovery pads it, checks what kmutil derives
++  /// and enrolls it with `--compress` (aurora-silicon/aurora-installer's flow).
++  case machoCtxr = "macho-ctxr"
+ 
+   var stage1Path: String {
+-    self == .raw ? "raw/aura-raw.bin" : "macho/aura-boot.macho"
++    switch self {
++    case .raw: "raw/aura-raw.bin"
++    case .macho: "macho/aura-boot.macho"
++    case .machoCtxr: "macho-ctxr/aura-boot.macho"
++    }
+   }
+ 
+   var stage2Path: String {
+-    self == .raw ? "raw/boot.bin" : "macho/aura-stage2.pkg"
++    switch self {
++    case .raw: "raw/boot.bin"
++    case .macho: "macho/aura-stage2.pkg"
++    case .machoCtxr: "macho-ctxr/boot-ctxr.bin"
++    }
++  }
++
++  /// Where the installation's Stage 2 goes on the ESP.
++  var espStage2Path: String {
++    self == .machoCtxr ? "m1n1/boot-ctxr.bin" : "m1n1/boot.bin"
+   }
+ 
++  /// The code window the enrolled object is padded for, if any.
++  var executeWindowSize: UInt64? { self == .machoCtxr ? ExecuteWindow.size : nil }
++
+   func enrollmentArguments(stage1: String, volume: String) -> [String] {
+     var arguments = ["configure-boot", "-c", stage1, "-v", volume]
+-    if self == .raw {
++    switch self {
++    case .raw:
+       arguments += ["--raw", "--entry-point", "2048", "--lowest-virtual-address", "0"]
++    case .macho:
++      break
++    case .machoCtxr:
++      arguments.append("--compress")
+     }
+     return arguments
+   }
+@@ -29,6 +56,17 @@ struct BootSelection: Codable {
+     mode = machoEnabled ? .macho : .raw
+     self.nestedVirtualization = machoEnabled && nestedVirtualization
+   }
++
++  /// The mode an installation's configuration names. Only raw and the padded
++  /// Mach-O mode are installable; the configuration decoder enforces the pairing
++  /// with its Stage 2 path.
++  init(configuredMode: String) throws {
++    guard let mode = AuraBootMode(rawValue: configuredMode), mode != .macho else {
++      throw InstallConfigurationError.invalid
++    }
++    self.mode = mode
++    nestedVirtualization = false
++  }
+ }
+ 
+ enum RecoveryBootPolicy {
+diff --git a/Recovery/Sources/InstallConfiguration.swift b/Recovery/Sources/InstallConfiguration.swift
+index f185ccc..bc04fb9 100644
+--- a/Recovery/Sources/InstallConfiguration.swift
++++ b/Recovery/Sources/InstallConfiguration.swift
+@@ -29,7 +29,10 @@ struct InstallConfiguration: Decodable {
+         && (object["allowCustomBootArguments"] == nil || object["allowCustomBootArguments"] is Bool)
+     else { throw InstallConfigurationError.invalid }
+     let config = try JSONDecoder().decode(Self.self, from: data)
+-    guard config.schema == 2, config.bootMode == "raw", config.stage2Path == "m1n1/boot.bin",
++    // Raw boots the standard Stage 2; the padded Mach-O mode of M4-class Macs
++    // boots only the confined one.
++    let modes = ["raw": "m1n1/boot.bin", "macho-ctxr": "m1n1/boot-ctxr.bin"]
++    guard config.schema == 2, modes[config.bootMode] == config.stage2Path,
+       !config.volumeName.isEmpty, config.volumeName.count <= 80,
+       !config.volumeName.contains("/"),
+       config.volumeName.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+diff --git a/Recovery/Sources/MachOStage1.swift b/Recovery/Sources/MachOStage1.swift
+new file mode 100644
+index 0000000..9184d58
+--- /dev/null
++++ b/Recovery/Sources/MachOStage1.swift
+@@ -0,0 +1,567 @@
++// SPDX-License-Identifier: MIT
++// Mach-O Stage 1 checks and execute-window padding for M4-class Macs.
++//
++// Ported unchanged in behavior from aurora-silicon/aurora-installer
++// macOS/Recovery/Sources/Account/AuraStage1.swift at
++// b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT, Copyright (c) 2021 The Asahi
++// Linux contributors and Aurora Silicon contributors). Only the access
++// modifiers changed, and the Stage 1 key block (unused here) was left out.
++// Ported with AI assistance (Claude Code).
++
++import Foundation
++
++/// Which Stage 1 boot object a Mac enrolls. Every Mac enrolls aura's Mach-O
++/// boot object (aura build/aura-boot.macho); none enrolls the raw image.
++enum AuraStage1Format {
++  /// M4-generation and later chips keep aura and the kernel's code inside an
++  /// execute window: T8132 (M4), T6040/T6041 (M4 Pro/Max), T8140 (A18 Pro),
++  /// T8142 and T605x (M5) and whatever follows them. Their object is padded for
++  /// that window, enrolled with `--compress`, and loads the confined Stage 2.
++  /// Apple numbers each generation upward, so M1 to M3 (T8103, T8112, T8122,
++  /// T600x, T602x, T603x) stay below both bounds: they enroll the object
++  /// unpadded and load the standard Stage 2. An unpadded object needs aura
++  /// 1.0.0b10-g2296392f or later (aura#134), whose Stage 1 stops its payload scan
++  /// at the object's __PRELINK_INFO.
++  static func usesExecuteWindow(chipID: UInt64) -> Bool {
++    (0x8130...0x8FFF).contains(chipID) || (0x6040...0x6FFF).contains(chipID)
++  }
++
++  /// The ESP file an unpadded Stage 1 loads.
++  static let standardStage2Path = "m1n1/boot.bin"
++  /// The ESP file a padded Stage 1 loads. Package updates on execute-window
++  /// chips write this one.
++  static let confinedStage2Path = "m1n1/boot-ctxr.bin"
++
++  static func stage2Path(executeWindow: Bool) -> String {
++    executeWindow ? confinedStage2Path : standardStage2Path
++  }
++}
++
++/// The configuration block in aura's Stage 1 (aura src/stage1_config.c): magic,
++/// then version, proxy window, a NUL-padded ESP PARTUUID and a NUL-padded Stage 2
++/// path, then the CRC-32 of those fields. It reads the same in a raw image and in
++/// the boot object that carries one.
++enum Stage1Configuration {
++  struct Invalid: Error, LocalizedError {
++    let reason: String
++    var errorDescription: String? {
++      "The startup software's configuration is invalid: \(reason)."
++    }
++  }
++
++  static let magic = Data("AURORA-S1-CFG01\0".utf8)
++  static let uuidRange = 8..<48
++  static let pathRange = 48..<240
++
++  /// The ESP and Stage 2 a filled Stage 1 chainloads.
++  static func read(_ image: Data) throws -> (espUUID: String, stage2Path: String) {
++    let (_, body) = try block(in: Data(image))
++    let uuid = body[uuidRange].prefix { $0 != 0 }
++    let path = body[pathRange].prefix { $0 != 0 }
++    guard uuid.count == 36,
++      body[(uuidRange.lowerBound + 36)..<uuidRange.upperBound].allSatisfy({ $0 == 0 }),
++      UUID(uuidString: String(decoding: uuid, as: UTF8.self)) != nil,
++      path.first == UInt8(ascii: ";"),
++      body[(pathRange.lowerBound + path.count)..<pathRange.upperBound].allSatisfy({ $0 == 0 })
++    else { throw Invalid(reason: "it names no startup partition and path") }
++    return (
++      String(decoding: uuid, as: UTF8.self), String(decoding: path.dropFirst(), as: UTF8.self)
++    )
++  }
++
++  /// Returns `image` chainloading `stage2Path`, with every other byte unchanged.
++  static func retargeted(_ image: Data, stage2Path: String) throws -> Data {
++    let image = Data(image)
++    _ = try read(image)
++    let encoded = Array((";" + stage2Path).utf8)
++    guard encoded.count < pathRange.count, stage2Path.utf8.count > 0,
++      stage2Path.utf8.allSatisfy({ $0 >= 0x20 && $0 < 0x7F && $0 != 0x3B && $0 != 0x5C })
++    else { throw Invalid(reason: "its Stage 2 path cannot be stored") }
++    let (offset, fields) = try block(in: image)
++    var body = fields
++    body.replaceSubrange(
++      pathRange, with: encoded + [UInt8](repeating: 0, count: pathRange.count - encoded.count))
++    var result = image
++    result.replaceSubrange(
++      offset..<(offset + body.count + 4),
++      with: body + withUnsafeBytes(of: crc32(body).littleEndian, Array.init))
++    return result
++  }
++
++  /// The block's offset past its magic, and its fields without the CRC.
++  private static func block(in image: Data) throws -> (Int, [UInt8]) {
++    guard let first = image.range(of: magic),
++      image.range(of: magic, in: first.upperBound..<image.endIndex) == nil,
++      first.upperBound + pathRange.upperBound + 4 <= image.endIndex
++    else { throw Invalid(reason: "it has no single configuration block") }
++    let bytes = [UInt8](image[first.upperBound..<(first.upperBound + pathRange.upperBound + 4)])
++    let body = Array(bytes.prefix(pathRange.upperBound))
++    func word(_ at: Int) -> UInt32 {
++      (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[at + $1]) << (8 * $1) }
++    }
++    guard word(0) == 1, word(pathRange.upperBound) == crc32(body) else {
++      throw Invalid(reason: "its version or checksum is wrong")
++    }
++    return (first.upperBound, body)
++  }
++
++  static func crc32(_ bytes: [UInt8]) -> UInt32 {
++    var crc: UInt32 = 0xFFFF_FFFF
++    for byte in bytes {
++      crc ^= UInt32(byte)
++      for _ in 0..<8 { crc = crc >> 1 ^ (crc & 1 == 0 ? 0 : 0xEDB8_8320) }
++    }
++    return ~crc
++  }
++}
++
++/// Checks a Mach-O Stage 1 before kmutil enrolls it. kmutil records the size
++/// of __TEXT_BOOT_EXEC as the boot policy's kcbz, and iBoot starts SPTM only
++/// when kcbz is nonzero, so the object must not have that segment. Aura's
++/// boot objects (aura tools/macho_boot_object.py) also keep every segment
++/// fully file-backed at its virtual offset, which is how iBoot places them.
++enum MachOBootObject {
++  struct Invalid: Error, LocalizedError {
++    let reason: String
++    var errorDescription: String? {
++      "The Mach-O startup software is invalid: \(reason)."
++    }
++  }
++
++  struct Segment {
++    let vmaddr: UInt64
++    let vmsize: UInt64
++    let fileoff: UInt64
++    let filesize: UInt64
++  }
++
++  static let required = ["__TEXT", "__TEXT_EXEC", "__PRELINK_INFO", "__LINKEDIT"]
++  /// The raw image's entry point, which the boot object enters at.
++  static let rawEntryOffset: UInt64 = 0x800
++
++  static func check(_ data: Data) throws {
++    _ = try layout(data)
++  }
++
++  /// `fileSize` is the size of the whole file when `data` is only its start,
++  /// as for an expanded object whose padding is never held in memory.
++  static func layout(
++    _ data: Data, fileSize: UInt64? = nil
++  ) throws -> (segments: [String: Segment], entry: UInt64) {
++    let bytes = [UInt8](data)
++    let total = fileSize ?? UInt64(bytes.count)
++    func u32(_ offset: Int) throws -> UInt32 {
++      guard offset >= 0, offset + 4 <= bytes.count else { throw Invalid(reason: "truncated") }
++      return (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[offset + $1]) << (8 * $1) }
++    }
++    func u64(_ offset: Int) throws -> UInt64 {
++      UInt64(try u32(offset)) | UInt64(try u32(offset + 4)) << 32
++    }
++    guard try u32(0) == 0xFEED_FACF, try u32(4) == 0x0100_000C else {
++      throw Invalid(reason: "not a 64-bit Arm Mach-O image")
++    }
++    guard try u32(12) == 12 else { throw Invalid(reason: "not a fileset boot object") }
++    let count = Int(try u32(16))
++    let size = Int(try u32(20))
++    guard 32 + size <= bytes.count else { throw Invalid(reason: "load commands are truncated") }
++    var segments: [String: Segment] = [:]
++    var entry: UInt64?
++    var offset = 32
++    for _ in 0..<count {
++      let command = try u32(offset)
++      let length = Int(try u32(offset + 4))
++      guard length >= 8, length % 8 == 0, offset + length <= 32 + size else {
++        throw Invalid(reason: "malformed load command")
++      }
++      if command == 0x19 {  // LC_SEGMENT_64
++        guard length >= 72 else { throw Invalid(reason: "malformed segment") }
++        let name = String(
++          decoding: bytes[(offset + 8)..<(offset + 24)].prefix { $0 != 0 }, as: UTF8.self)
++        guard segments[name] == nil else { throw Invalid(reason: "duplicate segment \(name)") }
++        segments[name] = Segment(
++          vmaddr: try u64(offset + 24), vmsize: try u64(offset + 32),
++          fileoff: try u64(offset + 40), filesize: try u64(offset + 48))
++      } else if command == 0x5 {  // LC_UNIXTHREAD
++        guard length >= 16 + 34 * 8, try u32(offset + 8) == 6 else {
++          throw Invalid(reason: "malformed entry thread")
++        }
++        entry = try u64(offset + 16 + 32 * 8)
++      }
++      offset += length
++    }
++    guard offset == 32 + size else { throw Invalid(reason: "load command sizes disagree") }
++    if let boot = segments["__TEXT_BOOT_EXEC"], boot.vmsize != 0 || boot.filesize != 0 {
++      throw Invalid(reason: "it has __TEXT_BOOT_EXEC, so iBoot would start SPTM")
++    }
++    for name in required where segments[name] == nil {
++      throw Invalid(reason: "it has no \(name) segment")
++    }
++    let base = segments["__TEXT"]!.vmaddr
++    guard segments["__TEXT"]!.fileoff == 0 else {
++      throw Invalid(reason: "__TEXT is not at offset 0")
++    }
++    for (name, segment) in segments where segment.vmsize != 0 {
++      guard segment.vmaddr >= base, segment.fileoff == segment.vmaddr - base,
++        segment.filesize == segment.vmsize,
++        segment.fileoff <= total,
++        segment.filesize <= total - segment.fileoff
++      else { throw Invalid(reason: "\(name) is not file-backed at its virtual offset") }
++    }
++    let code = segments["__TEXT_EXEC"]!
++    guard let entry, entry >= code.vmaddr, entry - code.vmaddr < code.vmsize else {
++      throw Invalid(reason: "its entry point is outside __TEXT_EXEC")
++    }
++    return (segments, entry)
++  }
++
++  /// Returns `object` with the Stage 1 configuration that `filled` carries.
++  /// `object` must be aura's boot object for `raw`: the raw image unchanged at
++  /// the start of __TEXT_EXEC, then only zero padding, entered at the raw
++  /// image's own entry point. `filled` is `raw` with its configuration block
++  /// filled, so the result is that boot object made from `filled`.
++  static func fill(_ object: Data, raw: Data, filled: Data) throws -> Data {
++    let object = Data(object)
++    let (segments, entry) = try layout(object)
++    let code = segments["__TEXT_EXEC"]!
++    guard !raw.isEmpty, filled.count == raw.count, UInt64(raw.count) <= code.filesize else {
++      throw Invalid(reason: "it does not carry this Stage 1")
++    }
++    guard entry == code.vmaddr + rawEntryOffset else {
++      throw Invalid(reason: "it does not enter this Stage 1 at its entry point")
++    }
++    let start = Int(code.fileoff)
++    let end = start + raw.count
++    guard object.subdata(in: start..<end) == raw,
++      object.subdata(in: end..<(start + Int(code.filesize))).allSatisfy({ $0 == 0 })
++    else { throw Invalid(reason: "it does not carry this Stage 1") }
++    var result = object
++    result.replaceSubrange(start..<end, with: filled)
++    return result
++  }
++
++  /// The kcrz kmutil should derive for an unpadded object: load address to the
++  /// end of __TEXT_EXEC, as for a padded one.
++  static func readOnlySize(_ object: Data) throws -> UInt64 {
++    let code = try layout(object).segments["__TEXT_EXEC"]!
++    let (end, overflow) = code.fileoff.addingReportingOverflow(code.vmsize)
++    guard !overflow else { throw Invalid(reason: "__TEXT_EXEC is too large") }
++    return end
++  }
++
++  /// kmutil's own derivation, printed by `kmutil inspect --show-mach-boot-properties`.
++  static func bootExecSize(fromInspection output: String) -> UInt64? {
++    bootProperty("kcbz", fromInspection: output)
++  }
++
++  /// Checks what kmutil derives from a padded object before it is enrolled, and
++  /// returns what it relied on. kcrz is what iBoot sizes the window from. Without
++  /// kcrz only an exact kcwf, the first writable offset, is accepted, and anything
++  /// else refuses, so an unverified object never reaches the boot policy.
++  static func checkInspection(_ output: String, readOnlySize expected: UInt64) throws
++    -> String
++  {
++    guard let boot = bootExecSize(fromInspection: output) else {
++      throw Invalid(reason: "kmutil did not report its layout")
++    }
++    guard boot == 0 else {
++      throw Invalid(reason: "kmutil would start SPTM for it (kcbz \(boot))")
++    }
++    if let region = bootProperty("kcrz", fromInspection: output) {
++      guard region == expected else {
++        throw Invalid(
++          reason: "kmutil derives a read-only region of \(region) bytes, not \(expected)")
++      }
++      return "kcrz \(region)"
++    }
++    guard let writable = bootProperty("kcwf", fromInspection: output), writable == expected else {
++      throw Invalid(reason: "kmutil did not report a read-only region of \(expected) bytes")
++    }
++    return "kcwf \(writable), no kcrz"
++  }
++
++  static func bootProperty(_ name: String, fromInspection output: String) -> UInt64? {
++    for line in output.split(whereSeparator: \.isNewline) {
++      let parts = line.split(separator: ":", maxSplits: 1).map {
++        $0.trimmingCharacters(in: .whitespaces)
++      }
++      if parts.count == 2, parts[0] == name { return UInt64(parts[1]) }
++    }
++    return nil
++  }
++}
++
++/// How large a code-execute window to ask of iBoot.
++///
++/// On T8140 and later, iBoot confines each secondary core's EL2 execution to a
++/// locked window, CTXR_D. It runs from the device tree through the static trust
++/// cache and into the boot object, ending where the object's read-only region
++/// ends, which is kmutil's kcrz. Nothing at runtime can move that end, so the
++/// only way to grow the window is to enroll an object with a larger kcrz.
++enum ExecuteWindow {
++  /// The region CONFIG_ARM64_CTXR_EXECMEM confines kernel code to.
++  static let size: UInt64 = 128 << 20
++  /// An arm64 kernel image and that region start on this boundary. iBoot picks
++  /// the load address, so the padding has to hold the region at any alignment.
++  static let alignment: UInt64 = 2 << 20
++  /// Room kept at the start of __TEXT_EXEC for aura: Stage 1 where iBoot placed
++  /// it, then Stage 2 copied over it, each with its .bss and stacks. A confined
++  /// Stage 2 file larger than this cannot load.
++  static let auraSlot: UInt64 = 16 << 20
++  static let page: UInt64 = 0x4000
++
++  /// The size __TEXT_EXEC needs to hold aura and a `window`-byte aligned region.
++  static func codeSize(window: UInt64 = size, slot: UInt64 = auraSlot) -> UInt64 {
++    slot + (alignment - page) + window
++  }
++}
++
++/// A Mach-O Stage 1 with __TEXT_EXEC padded by file-backed zeros. kmutil derives
++/// kcrz from file offsets, so a segment grown only in vmsize leaves it unchanged
++/// and the padding has to be in the file. `write(to:)` leaves it as a hole, and
++/// `kmutil configure-boot --compress` keeps it from reaching Preboot.
++struct ExpandedMachOBootObject {
++  struct WriteFailure: Error, LocalizedError {
++    let reason: String
++    var errorDescription: String? {
++      "The expanded startup software could not be saved: \(reason)."
++    }
++  }
++
++  /// The object through the end of the original __TEXT_EXEC, its load commands
++  /// rewritten and its code unchanged.
++  let head: Data
++  /// Every segment after __TEXT_EXEC, unchanged.
++  let tail: Data
++  /// The zero bytes between `head` and `tail`.
++  let padding: UInt64
++  /// The kcrz kmutil should derive: load address to the end of __TEXT_EXEC.
++  let readOnlySize: UInt64
++
++  var size: UInt64 { UInt64(head.count) + padding + UInt64(tail.count) }
++
++  /// The file is sparse, but kmutil reads and compresses all of it and where it
++  /// works isn't documented, so its enrollment counts the whole decompressed size.
++  func requireSpace(freeBytes: UInt64) throws {
++    guard freeBytes >= size else {
++      throw WriteFailure(
++        reason:
++          "this volume has \(freeBytes >> 20) MiB free and it needs \((size + (1 << 20) - 1) >> 20) MiB"
++      )
++    }
++  }
++
++  /// Atomically writes the object as a sparse file, which costs about what the
++  /// original object does on APFS. Only `head` and `tail` are read back: a new
++  /// file's hole reads as zeros, so the padding is never held in memory.
++  func write(to path: URL) throws {
++    let directory = path.deletingLastPathComponent()
++    let temporary = directory.appendingPathComponent(
++      "." + path.lastPathComponent + "." + UUID().uuidString)
++    let fd = open(temporary.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++    guard fd >= 0 else { throw WriteFailure(reason: "cannot create the file") }
++    var published = false
++    defer {
++      close(fd)
++      if !published { unlink(temporary.path) }
++    }
++    let tailOffset = off_t(UInt64(head.count) + padding)
++    // The final size first, so the padding is a hole whatever the tail holds.
++    guard ftruncate(fd, off_t(size)) == 0 else {
++      throw WriteFailure(reason: "cannot size the file")
++    }
++    try Self.writeAll(head, to: fd, at: 0)
++    try Self.writeAll(tail, to: fd, at: tailOffset)
++    var info = stat()
++    guard fstat(fd, &info) == 0, UInt64(info.st_size) == size else {
++      throw WriteFailure(reason: "its size is wrong")
++    }
++    guard try Self.read(fd, count: head.count, at: 0) == head,
++      try Self.read(fd, count: tail.count, at: tailOffset) == tail
++    else { throw WriteFailure(reason: "it did not verify") }
++    guard fsync(fd) == 0 else { throw WriteFailure(reason: "cannot flush the file") }
++    guard rename(temporary.path, path.path) == 0 else {
++      throw WriteFailure(reason: "cannot move the file into place")
++    }
++    published = true
++    let parent = open(directory.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++    guard parent >= 0 else { throw WriteFailure(reason: "cannot open its directory") }
++    defer { close(parent) }
++    guard fsync(parent) == 0 else { throw WriteFailure(reason: "cannot flush its directory") }
++  }
++
++  private static func writeAll(_ bytes: Data, to fd: Int32, at offset: off_t) throws {
++    try bytes.withUnsafeBytes { buffer in
++      var done = 0
++      while done < buffer.count {
++        let count = pwrite(
++          fd, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
++        guard count > 0 else { throw WriteFailure(reason: "cannot write the file") }
++        done += count
++      }
++    }
++  }
++
++  private static func read(_ fd: Int32, count: Int, at offset: off_t) throws -> Data {
++    var result = Data(count: count)
++    try result.withUnsafeMutableBytes { buffer in
++      var done = 0
++      while done < buffer.count {
++        let got = pread(fd, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
++        guard got > 0 else { throw WriteFailure(reason: "cannot read the file back") }
++        done += got
++      }
++    }
++    return result
++  }
++}
++
++extension MachOBootObject {
++  /// Pads `object`'s __TEXT_EXEC so that iBoot arms a larger execute window:
++  /// aura's code keeps its bytes and addresses, the segment becomes
++  /// `ExecuteWindow.codeSize(window:slot:)` bytes, and the segments after it move
++  /// up by the same amount in both file and memory, so every segment stays fully
++  /// file-backed at its virtual offset, which is how iBoot places them.
++  ///
++  /// Only load commands this code can move are accepted, so anything it does not
++  /// recognize is refused rather than left pointing at the wrong bytes.
++  static func expandExecuteWindow(
++    _ object: Data, window: UInt64 = ExecuteWindow.size, slot: UInt64 = ExecuteWindow.auraSlot
++  ) throws -> ExpandedMachOBootObject {
++    let page = ExecuteWindow.page
++    guard window > 0, window % page == 0, slot % page == 0 else {
++      throw Invalid(reason: "its execute window is not a whole number of pages")
++    }
++    guard window <= 1 << 40, slot <= 1 << 40 else {
++      throw Invalid(reason: "its execute window is too large")
++    }
++    func sum(_ first: UInt64, _ second: UInt64) throws -> UInt64 {
++      let (result, overflow) = first.addingReportingOverflow(second)
++      guard !overflow else { throw Invalid(reason: "an address or offset is out of range") }
++      return result
++    }
++    let (segments, entry) = try layout(object)
++    let code = segments["__TEXT_EXEC"]!
++    guard entry == code.vmaddr + rawEntryOffset else {
++      throw Invalid(reason: "it does not enter aura at its entry point")
++    }
++    var bytes = [UInt8](object)
++    func u32(_ offset: Int) throws -> UInt32 {
++      guard offset >= 0, offset + 4 <= bytes.count else { throw Invalid(reason: "truncated") }
++      return (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[offset + $1]) << (8 * $1) }
++    }
++    func u64(_ offset: Int) throws -> UInt64 {
++      UInt64(try u32(offset)) | UInt64(try u32(offset + 4)) << 32
++    }
++    func put<T: FixedWidthInteger>(_ value: T, at offset: Int) {
++      withUnsafeBytes(of: value.littleEndian) {
++        bytes.replaceSubrange(offset..<(offset + MemoryLayout<T>.size), with: $0)
++      }
++    }
++
++    // aura's load header (start.S) gives the memory the image needs, past its file.
++    let start = Int(code.fileoff)
++    guard start + 0x820 <= bytes.count,
++      bytes[(start + loadHeaderOffset)..<(start + loadHeaderOffset + 8)]
++        .elementsEqual("AURALOAD".utf8)
++    else { throw Invalid(reason: "__TEXT_EXEC does not start with aura") }
++    guard try u64(start + loadHeaderOffset + 16) <= slot, code.vmsize <= slot else {
++      throw Invalid(reason: "aura does not fit the room kept for it")
++    }
++
++    let codeSize = ExecuteWindow.codeSize(window: window, slot: slot)
++    let growth = codeSize - code.vmsize
++    let codeEnd = try sum(code.vmaddr, code.vmsize)
++    let fileEnd = try sum(code.fileoff, code.filesize)
++    guard fileEnd % page == 0, code.vmaddr % page == 0 else {
++      throw Invalid(reason: "__TEXT_EXEC is not page-aligned")
++    }
++    func moved32(_ offset: UInt32) throws -> UInt32 {
++      guard let result = UInt32(exactly: try sum(UInt64(offset), growth)) else {
++        throw Invalid(reason: "its execute window is too large")
++      }
++      return result
++    }
++
++    // The fileset's own commands, then those of each member's header.
++    var headers = [0]
++    var index = 0
++    while index < headers.count {
++      guard Set(headers).count == headers.count else {
++        throw Invalid(reason: "a fileset member repeats")
++      }
++      let header = headers[index]
++      index += 1
++      guard try u32(header) == 0xFEED_FACF else {
++        throw Invalid(reason: "a fileset member has no Mach-O header")
++      }
++      var offset = header + 32
++      for _ in 0..<Int(try u32(header + 16)) {
++        let command = try u32(offset)
++        let length = Int(try u32(offset + 4))
++        guard length >= 8, offset + length <= bytes.count else {
++          throw Invalid(reason: "malformed load command")
++        }
++        switch command {
++        case 0x19:  // LC_SEGMENT_64
++          guard length >= 72 else { throw Invalid(reason: "malformed segment") }
++          let vmaddr = try u64(offset + 24)
++          let vmsize = try u64(offset + 32)
++          let name = String(
++            decoding: bytes[(offset + 8)..<(offset + 24)].prefix { $0 != 0 }, as: UTF8.self)
++          if name == "__TEXT_EXEC" {
++            guard vmaddr == code.vmaddr, vmsize == code.vmsize else {
++              throw Invalid(reason: "two headers disagree about __TEXT_EXEC")
++            }
++            put(codeSize, at: offset + 32)
++            put(codeSize, at: offset + 48)
++          } else if vmaddr >= codeEnd {
++            put(try sum(vmaddr, growth), at: offset + 24)
++            put(try sum(try u64(offset + 40), growth), at: offset + 40)
++            let sections = Int(try u32(offset + 64))
++            guard length == 72 + 80 * sections else {
++              throw Invalid(reason: "malformed segment")
++            }
++            for section in 0..<sections {
++              let entry = offset + 72 + 80 * section
++              put(try sum(try u64(entry + 32), growth), at: entry + 32)
++              let fileOffset = try u32(entry + 48)
++              if fileOffset != 0 { put(try moved32(fileOffset), at: entry + 48) }
++            }
++          } else if try sum(vmaddr, vmsize) > code.vmaddr {
++            throw Invalid(reason: "\(name) overlaps __TEXT_EXEC")
++          }
++        case 0x8000_0034:  // LC_DYLD_CHAINED_FIXUPS
++          // Aura relocates itself, so its table must name no fixup to move.
++          let data = Int(try u32(offset + 8))
++          let starts = data + Int(try u32(data + 4))
++          for segment in 0..<Int(try u32(starts)) where try u32(starts + 4 + 4 * segment) != 0 {
++            throw Invalid(reason: "it has chained fixups")
++          }
++          if UInt64(data) >= fileEnd { put(try moved32(UInt32(data)), at: offset + 8) }
++        case 0x8000_0035:  // LC_FILESET_ENTRY
++          guard try u64(offset + 8) < code.vmaddr, try u64(offset + 16) < code.fileoff else {
++            throw Invalid(reason: "a fileset member is not before __TEXT_EXEC")
++          }
++          headers.append(Int(try u64(offset + 16)))
++        case 0x2, 0xB:  // LC_SYMTAB, LC_DYSYMTAB
++          guard bytes[(offset + 8)..<(offset + length)].allSatisfy({ $0 == 0 }) else {
++            throw Invalid(reason: "it has a symbol table")
++          }
++        case 0x5, 0x1B, 0x32:  // LC_UNIXTHREAD, LC_UUID, LC_BUILD_VERSION
++          break
++        default:
++          throw Invalid(reason: "it has a load command that cannot be moved")
++        }
++        offset += length
++      }
++    }
++
++    let expanded = ExpandedMachOBootObject(
++      head: Data(bytes[0..<Int(fileEnd)]), tail: Data(bytes[Int(fileEnd)...]), padding: growth,
++      readOnlySize: try sum(code.fileoff, codeSize))
++    _ = try layout(expanded.head, fileSize: expanded.size)
++    return expanded
++  }
++
++  static let loadHeaderOffset = 0x808
++}
+diff --git a/Recovery/Sources/RecoveryActions.swift b/Recovery/Sources/RecoveryActions.swift
+index 4436edc..9c48f48 100644
+--- a/Recovery/Sources/RecoveryActions.swift
++++ b/Recovery/Sources/RecoveryActions.swift
+@@ -82,6 +82,70 @@ enum RecoveryActions {
+   static func hash(_ bytes: Data) -> String {
+     RecoveryDigest.sha256(bytes)
+   }
++  /// The staged Mach-O Stage 1 must be aura's boot object, filled for this
++  /// installation's ESP and its confined Stage 2, before anything changes.
++  static func verifyMachOStage1(_ stage1: Data, config: InstallConfiguration) throws {
++    do {
++      try MachOBootObject.check(stage1)
++      let target = try Stage1Configuration.read(stage1)
++      try check(
++        target.espUUID.lowercased() == config.espUUID.lowercased()
++          && target.stage2Path == config.stage2Path,
++        "The startup software does not chainload this installation's startup partition.")
++    } catch let error as MachOBootObject.Invalid {
++      throw RecoveryFailure(message: error.localizedDescription)
++    } catch let error as Stage1Configuration.Invalid {
++      throw RecoveryFailure(message: error.localizedDescription)
++    }
++  }
++  /// Bytes this volume can still give to a file.
++  static func freeBytes(_ path: URL) throws -> UInt64 {
++    var status = statfs()
++    guard statfs(path.path, &status) == 0 else {
++      throw RecoveryFailure(message: "Could not read this volume's free space.")
++    }
++    return UInt64(status.f_bavail) * UInt64(status.f_bsize)
++  }
++  /// Pads the Mach-O Stage 1 for the execute window, writes it as a sparse file
++  /// and checks what kmutil derives from that file: kcbz 0, so iBoot doesn't
++  /// start SPTM, and the expected kcrz (aurora-silicon/aurora-installer's checks).
++  static func stageExpandedStage1(_ stage1: Data, window: UInt64, at path: URL) throws {
++    let usage = (try? run("/usr/bin/kmutil", ["configure-boot", "--help"])) ?? Data()
++    try check(
++      String(decoding: usage, as: UTF8.self).contains("--compress"),
++      "This Recovery's kmutil cannot compress startup software, which this Mac needs.")
++    let expanded: ExpandedMachOBootObject
++    do {
++      expanded = try MachOBootObject.expandExecuteWindow(stage1, window: window)
++      try expanded.requireSpace(freeBytes: freeBytes(path.deletingLastPathComponent()))
++      if FileManager.default.fileExists(atPath: path.path) {
++        try FileManager.default.removeItem(at: path)
++      }
++      try expanded.write(to: path)
++    } catch let error as MachOBootObject.Invalid {
++      throw RecoveryFailure(message: error.localizedDescription)
++    } catch let error as ExpandedMachOBootObject.WriteFailure {
++      throw RecoveryFailure(message: error.localizedDescription)
++    }
++    let output: Data
++    do {
++      output = try run(
++        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
++    } catch {
++      throw RecoveryFailure(
++        message:
++          "This Recovery's kmutil could not check the startup software, so it was not enrolled. Open Window → Installer Log for its output."
++      )
++    }
++    do {
++      let used = try MachOBootObject.checkInspection(
++        String(decoding: output, as: UTF8.self), readOnlySize: expanded.readOnlySize)
++      InstallerLog.shared.append(
++        "Startup software padded for the execute window (\(expanded.size) bytes) and checked by kmutil: \(used).")
++    } catch let error as MachOBootObject.Invalid {
++      throw RecoveryFailure(message: error.localizedDescription)
++    }
++  }
+   @discardableResult static func run(_ path: String, _ args: [String]) throws -> Data {
+     let logged = path != "/usr/sbin/nvram"
+     let log = logged ? CommandLog("$ " + ([path] + args).joined(separator: " ")) : nil
+@@ -349,13 +413,17 @@ enum RecoveryActions {
+     }
+     let config = try configuration.get()
+     try check(
+-      selection.mode == .raw && !selection.nestedVirtualization,
+-      "This installation includes raw boot mode only.")
++      [.raw, .machoCtxr].contains(selection.mode) && !selection.nestedVirtualization
++        && selection.mode.espStage2Path == config.stage2Path,
++      "This installation's boot mode does not match its startup files.")
+     try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
+     progress(0.05, "Verifying the installation files")
+     let m = try manifest()
+     let stage1 = try asset(selection.mode.stage1Path, manifest: m)
+     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
++    if selection.mode == .machoCtxr {
++      try verifyMachOStage1(stage1, config: config)
++    }
+     // A successful setup must retain a usable per-device repair baseline.
+     _ = try RecoveryBaseline.firmware(
+       manifest: m, root: payloadRoot())
+@@ -422,7 +490,14 @@ enum RecoveryActions {
+     try record(journal.phase)
+     InstallerLog.shared.persist(to: operation.appendingPathComponent("installer.log"))
+     let stage1Path = operation.appendingPathComponent("stage1")
+-    try RecoveryFileTransaction.write(stage1, to: stage1Path)
++    if let window = selection.mode.executeWindowSize {
++      // The journal and receipt keep the unpadded object's hash; only the file
++      // kmutil enrolls is padded, and it is padded again on a resumed setup.
++      progress(0.2, "Preparing the startup software for this Mac")
++      try stageExpandedStage1(stage1, window: window, at: stage1Path)
++    } else {
++      try RecoveryFileTransaction.write(stage1, to: stage1Path)
++    }
+     do {
+       try RecoveryInstallationCoordinator.run(
+         phase: journal.phase, persist: record,
+@@ -457,7 +532,11 @@ enum RecoveryActions {
+             "The pending startup bundle changed; its recovery record was preserved.")
+         },
+         enroll: {
+-          progress(0.55, "Installing the startup software")
++          progress(
++            0.55,
++            selection.mode.executeWindowSize == nil
++              ? "Installing the startup software"
++              : "Installing the startup software (compressing it can take several minutes)")
+           try authorized(
+             "/usr/bin/kmutil",
+             selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
+@@ -660,7 +739,8 @@ enum RecoveryActions {
+       hasPendingInstallation: FileManager.default.fileExists(atPath: pendingInstallation.path),
+       verifyBundle: {
+         let config = try configuration.get()
+-        let expected = try asset("raw/boot.bin", manifest: manifest())
++        let expected = try asset(
++          try BootSelection(configuredMode: config.bootMode).mode.stage2Path, manifest: manifest())
+         let target = try esp().appendingPathComponent(config.stage2Path)
+         try check(
+           try Data(contentsOf: target) == expected,
+@@ -677,7 +757,8 @@ enum RecoveryActions {
+     try recoveryOnly()
+     let record = try installed()
+     let config = try configuration.get()
+-    let expected = try asset("raw/boot.bin", manifest: manifest())
++    let expected = try asset(
++      try BootSelection(configuredMode: config.bootMode).mode.stage2Path, manifest: manifest())
+     let target = try esp().appendingPathComponent(config.stage2Path)
+     try check(
+       try Data(contentsOf: target) == expected,
+@@ -757,7 +838,7 @@ extension RecoveryActions {
+       let record = try installed()
+       guard let name = record["mode"] as? String, let mode = AuraBootMode(rawValue: name),
+         let path = record["stage2Path"] as? String,
+-        path == RecoveryBaseline.stage2Path, path == (try configuration.get()).stage2Path
++        mode != .macho, path == mode.espStage2Path, path == (try configuration.get()).stage2Path
+       else {
+         throw RecoveryFailure(message: "The installed boot mode is not recorded.")
+       }
+@@ -771,7 +852,7 @@ extension RecoveryActions {
+       files[path] = bytes
+       let destination = try esp()
+       let backup = state.appendingPathComponent("recover-" + UUID().uuidString + ".before")
+-      try RecoveryBaseline.restore(files: files, root: destination, backup: backup) {
++      try RecoveryBaseline.restore(files: files, root: destination, backup: backup, stage2: path) {
+         try atomic($0, to: $1)
+       }
+       print("Stage 2 and device firmware restored.")
+diff --git a/Recovery/Sources/RecoveryBaseline.swift b/Recovery/Sources/RecoveryBaseline.swift
+index 1ca3bed..3a1b2a8 100644
+--- a/Recovery/Sources/RecoveryBaseline.swift
++++ b/Recovery/Sources/RecoveryBaseline.swift
+@@ -11,6 +11,8 @@ enum RecoveryBaseline {
+     "vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt",
+   ]
+   static let stage2Path = "m1n1/boot.bin"
++  /// Where a padded Mach-O Stage 1 (M4-class Macs) chainloads from instead.
++  static let confinedStage2Path = "m1n1/boot-ctxr.bin"
+   static let optionalVendorPath = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
+ 
+   static func hash(_ data: Data) -> String {
+@@ -109,9 +111,13 @@ enum RecoveryBaseline {
+   // attempted file in rollback because a writer can fail after replacing it.
+   static func restore(
+     files: [String: Data], root: URL, backup: URL,
++    stage2: String = stage2Path,
+     write: (Data, URL) throws -> Void
+   ) throws {
+-    let required = Set([stage2Path] + vendorPaths)
++    guard [stage2Path, confinedStage2Path].contains(stage2) else {
++      throw RecoveryBaselineFailure(message: "Invalid Stage 2 path.")
++    }
++    let required = Set([stage2] + vendorPaths)
+     let names = files.keys.sorted()
+     guard required.isSubset(of: Set(names)),
+       Set(names).isSubset(of: required.union([optionalVendorPath]))
+diff --git a/Recovery/Sources/main.swift b/Recovery/Sources/main.swift
+index 0e642cd..3e14e70 100644
+--- a/Recovery/Sources/main.swift
++++ b/Recovery/Sources/main.swift
+@@ -320,7 +320,13 @@ final class InstallerModel {
+   }
+ 
+   private var installationTask: Task<Void, Never>?
+-  var bootSelection: BootSelection { BootSelection() }
++  // The installation's configuration names its mode: raw, or the padded
++  // Mach-O mode of M4-class Macs. Previews without one stay raw.
++  var bootSelection: BootSelection {
++    (try? RecoveryActions.configuration.get()).flatMap {
++      try? BootSelection(configuredMode: $0.bootMode)
++    } ?? BootSelection()
++  }
+ 
+   var steps: [String] {
+     recoveryInterface
+diff --git a/Recovery/Tests/BootSelectionCheck.swift b/Recovery/Tests/BootSelectionCheck.swift
+index 2344b16..c01ee93 100644
+--- a/Recovery/Tests/BootSelectionCheck.swift
++++ b/Recovery/Tests/BootSelectionCheck.swift
+@@ -35,8 +35,25 @@ import Foundation
+             && restored.nestedVirtualization == selection.nestedVirtualization)
+       }
+     }
++    // The padded Mach-O mode: the confined Stage 2, a 128 MiB window and --compress.
++    let ctxr = try BootSelection(configuredMode: "macho-ctxr")
++    precondition(ctxr.mode == .machoCtxr && !ctxr.nestedVirtualization)
++    precondition(ctxr.mode.espStage2Path == "m1n1/boot-ctxr.bin")
++    precondition(ctxr.mode.executeWindowSize == 128 << 20)
++    precondition(
++      ctxr.mode.enrollmentArguments(stage1: "/p/obj", volume: volume)
++        == ["configure-boot", "-c", "/p/obj", "-v", volume, "--compress"])
++    let raw = try BootSelection(configuredMode: "raw")
++    precondition(raw.mode.espStage2Path == "m1n1/boot.bin")
++    precondition(BootSelection().mode.executeWindowSize == nil)
++    for refused in ["macho", "MACHO-CTXR", ""] {
++      do {
++        _ = try BootSelection(configuredMode: refused)
++        preconditionFailure("accepted configured mode \(refused)")
++      } catch {}
++    }
+     print(
+-      "PASS default raw; all four option combinations; exact raw/Mach-O argument separation; paths with spaces; JSON round trip"
++      "PASS padded Mach-O mode arguments, paths and configured-mode refusals; default raw; all four option combinations; exact raw/Mach-O argument separation; paths with spaces; JSON round trip"
+     )
+   }
+ }
+diff --git a/Recovery/Tests/InstallConfigurationCheck.swift b/Recovery/Tests/InstallConfigurationCheck.swift
+index af1e077..8f318fa 100644
+--- a/Recovery/Tests/InstallConfigurationCheck.swift
++++ b/Recovery/Tests/InstallConfigurationCheck.swift
+@@ -27,6 +27,26 @@ import Foundation
+         preconditionFailure("accepted invalid \(key)")
+       } catch {}
+     }
++    // The padded Mach-O mode of M4-class Macs boots only the confined Stage 2,
++    // and raw only the standard one.
++    var confined = value
++    confined["bootMode"] = "macho-ctxr"
++    confined["stage2Path"] = "m1n1/boot-ctxr.bin"
++    let decodedConfined = try InstallConfiguration.decode(
++      JSONSerialization.data(withJSONObject: confined))
++    precondition(decodedConfined.bootMode == "macho-ctxr")
++    for (mode, path) in [
++      ("macho-ctxr", "m1n1/boot.bin"), ("raw", "m1n1/boot-ctxr.bin"),
++      ("macho", "m1n1/boot-ctxr.bin"), ("macho-ctxr", "m1n1/boot-ctxr-j616c.bin"),
++    ] {
++      var mismatched = value
++      mismatched["bootMode"] = mode
++      mismatched["stage2Path"] = path
++      do {
++        _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: mismatched))
++        preconditionFailure("accepted \(mode) with \(path)")
++      } catch {}
++    }
+     precondition(config.allowCustomBootArguments == nil)
+     for allowed in [false, true] {
+       var scoped = value
+@@ -61,6 +81,6 @@ import Foundation
+         preconditionFailure("accepted invalid bootstrap \(key)")
+       } catch {}
+     }
+-    print("PASS strict per-install configuration, raw-only mode, IDs, paths and missing fields")
++    print("PASS strict per-install configuration, raw and padded Mach-O modes with their Stage 2 paths, IDs, paths and missing fields")
+   }
+ }
+diff --git a/Recovery/Tests/MachOBootObjectCheck.swift b/Recovery/Tests/MachOBootObjectCheck.swift
+new file mode 100644
+index 0000000..4a23d94
+--- /dev/null
++++ b/Recovery/Tests/MachOBootObjectCheck.swift
+@@ -0,0 +1,494 @@
++// SPDX-License-Identifier: MIT
++// Ported from aurora-silicon/aurora-installer macOS/Recovery/Tests/MachOBootObjectCheck.swift
++// at b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT). Ported with AI assistance (Claude Code).
++import Foundation
++
++@main struct MachOBootObjectCheck {
++  static let base: UInt64 = 0xFFFF_FE00_0700_4000
++
++  struct Segment {
++    var name: String
++    var offset: UInt64
++    var size: UInt64
++    var fileOffset: UInt64? = nil
++  }
++
++  static func object(
++    _ segments: [Segment], entry: UInt64 = 0x10800, filetype: UInt32 = 12
++  ) -> Data {
++    func le<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
++      withUnsafeBytes(of: value.littleEndian, Array.init)
++    }
++    var commands: [UInt8] = []
++    for segment in segments {
++      var name = Array(segment.name.utf8)
++      name += [UInt8](repeating: 0, count: 16 - name.count)
++      commands += le(UInt32(0x19)) + le(UInt32(72)) + name
++      commands += le(base + segment.offset) + le(segment.size)
++      commands += le(segment.fileOffset ?? segment.offset) + le(segment.size)
++      commands += le(UInt32(1)) + le(UInt32(1)) + le(UInt32(0)) + le(UInt32(0))
++    }
++    var registers = [UInt64](repeating: 0, count: 34)
++    registers[32] = base + entry
++    commands += le(UInt32(5)) + le(UInt32(16 + 34 * 8)) + le(UInt32(6)) + le(UInt32(0x44))
++    for register in registers { commands += le(register) }
++    var bytes = le(UInt32(0xFEED_FACF)) + le(UInt32(0x0100_000C)) + le(UInt32(0xC000_0002))
++    bytes += le(filetype) + le(UInt32(segments.count + 1)) + le(UInt32(commands.count))
++    bytes += le(UInt32(0)) + le(UInt32(0)) + commands
++    let end = segments.map { $0.offset + $0.size }.max() ?? 0
++    bytes += [UInt8](repeating: 0, count: Int(end) - bytes.count)
++    return Data(bytes)
++  }
++
++  static let valid = [
++    Segment(name: "__TEXT", offset: 0, size: 0x8000),
++    Segment(name: "__PRELINK_TEXT", offset: 0x8000, size: 0x8000),
++    Segment(name: "__TEXT_EXEC", offset: 0x10000, size: 0x430000),
++    Segment(name: "__PRELINK_INFO", offset: 0x440000, size: 0x4000),
++    Segment(name: "__DATA", offset: 0x444000, size: 0x4000),
++    Segment(name: "__LINKEDIT", offset: 0x448000, size: 0x4000),
++  ]
++
++  static func rejects(_ data: Data, _ why: String) {
++    do {
++      try MachOBootObject.check(data)
++      preconditionFailure("accepted: \(why)")
++    } catch {}
++  }
++
++  static func le<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
++    withUnsafeBytes(of: value.littleEndian, Array.init)
++  }
++
++  static func name16(_ name: String) -> [UInt8] {
++    Array(name.utf8) + [UInt8](repeating: 0, count: 16 - name.utf8.count)
++  }
++
++  /// One LC_SEGMENT_64 of aura's layout: file offset equals virtual offset.
++  static func command(
++    _ name: String, _ offset: UInt64, _ size: UInt64, section: (String, UInt64)? = nil
++  ) -> [UInt8] {
++    var bytes = le(UInt32(0x19)) + le(UInt32(72 + (section == nil ? 0 : 80))) + name16(name)
++    bytes += le(base + offset) + le(size) + le(offset) + le(size)
++    bytes += le(UInt32(1)) + le(UInt32(1)) + le(UInt32(section == nil ? 0 : 1)) + le(UInt32(0))
++    if let section {
++      bytes += name16(section.0) + name16(name) + le(base + offset) + le(section.1)
++      bytes += le(UInt32(offset)) + [UInt8](repeating: 0, count: 28)
++    }
++    return bytes
++  }
++
++  /// The boot object aura's tools/macho_boot_object.py makes for `raw`.
++  static func auraObject(
++    raw: Data, extraCommand: [UInt8] = [], symbols: UInt32 = 0, fixup: UInt32 = 0
++  ) -> Data {
++    let size = UInt64(raw.count)
++    let info: UInt64 = 0x10000 + size
++    let data = info + 0x4000
++    let linkedit = data + 0x4000
++    var registers = [UInt64](repeating: 0, count: 34)
++    registers[16] = base + 0x10000
++    registers[32] = base + 0x10800
++    var thread = le(UInt32(5)) + le(UInt32(16 + 34 * 8)) + le(UInt32(6)) + le(UInt32(0x44))
++    for register in registers { thread += le(register) }
++    let uuid = le(UInt32(0x1B)) + le(UInt32(24)) + [UInt8](repeating: 0x5A, count: 16)
++    let build = le(UInt32(0x32)) + le(UInt32(24)) + [UInt8](repeating: 0, count: 16)
++    let code = command("__TEXT_EXEC", 0x10000, size)
++    let dataSegment = command("__DATA", data, 0x4000)
++    let linkeditSegment = command("__LINKEDIT", linkedit, 0x4000)
++    let member = Array("com.apple.kernel".utf8) + [0, 0, 0, 0, 0, 0, 0, 0]
++    let fileset =
++      le(UInt32(0x8000_0035)) + le(UInt32(32 + member.count)) + le(base + 0x8000)
++      + le(UInt64(0x8000)) + le(UInt32(32)) + le(UInt32(0)) + member
++    let fixups = le(UInt32(0x8000_0034)) + le(UInt32(16)) + le(UInt32(linkedit)) + le(UInt32(56))
++    func header(_ type: UInt32, _ commands: [[UInt8]]) -> [UInt8] {
++      let payload = commands.flatMap { $0 }
++      return le(UInt32(0xFEED_FACF)) + le(UInt32(0x0100_000C)) + le(UInt32(0xC000_0002))
++        + le(type) + le(UInt32(commands.count)) + le(UInt32(payload.count)) + le(UInt32(0))
++        + le(UInt32(0)) + payload
++    }
++    let outer = header(
++      12,
++      [
++        uuid, build, thread, fixups, command("__TEXT", 0, 0x8000),
++        command("__PRELINK_TEXT", 0x8000, 0x8000, section: ("__text", 0x8000)), code,
++        command("__PRELINK_INFO", info, 0x4000, section: ("__info", 0x20)), dataSegment,
++        linkeditSegment, fileset,
++      ] + (extraCommand.isEmpty ? [] : [extraCommand]))
++    let primary = header(
++      2,
++      [
++        command("__TEXT", 0x8000, 0x8000), code, dataSegment, linkeditSegment,
++        le(UInt32(0x2)) + le(UInt32(24)) + le(symbols) + [UInt8](repeating: 0, count: 12),
++        le(UInt32(0xB)) + le(UInt32(80)) + [UInt8](repeating: 0, count: 72), uuid, build, thread,
++      ])
++    var result = Data(count: Int(linkedit) + 0x4000)
++    result.replaceSubrange(0..<outer.count, with: outer)
++    result.replaceSubrange(0x8000..<(0x8000 + primary.count), with: primary)
++    result.replaceSubrange(0x10000..<(0x10000 + raw.count), with: raw)
++    let info0 = Int(info)
++    result.replaceSubrange(info0..<(info0 + 4), with: [0xDE, 0xAD, 0xBE, 0xEF])
++    // A valid fixup table naming no fixups: seven header words, then the starts.
++    var table: [UInt8] = []
++    for word: UInt32 in [0, 28, 56, 56, 0, 1, 0, 6, 0, 0, fixup, 0, 0, 0] { table += le(word) }
++    result.replaceSubrange(Int(linkedit)..<(Int(linkedit) + table.count), with: table)
++    return result
++  }
++
++  static func rawImage(footprint: UInt64 = 0x18000) -> Data {
++    var raw = Data((0..<0x18000).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 3) })
++    let header =
++      Array("AURALOAD".utf8) + le(UInt32(1)) + le(UInt32(1)) + le(footprint) + le(UInt64(0))
++    raw.replaceSubrange(0x808..<(0x808 + header.count), with: header)
++    return raw
++  }
++
++  static func segmentFields(_ data: Data, header: Int, name: String) -> (
++    UInt64, UInt64, UInt64, UInt64
++  )? {
++    func u32(_ at: Int) -> UInt32 {
++      data.subdata(in: at..<(at + 4)).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
++    }
++    func u64(_ at: Int) -> UInt64 {
++      data.subdata(in: at..<(at + 8)).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
++    }
++    var offset = header + 32
++    for _ in 0..<Int(u32(header + 16)) {
++      if u32(offset) == 0x19, data.subdata(in: (offset + 8)..<(offset + 24)) == Data(name16(name)) {
++        return (u64(offset + 24), u64(offset + 32), u64(offset + 40), u64(offset + 48))
++      }
++      offset += Int(u32(offset + 4))
++    }
++    return nil
++  }
++
++  static func refusesExpansion(
++    _ data: Data, window: UInt64 = 0x100000, slot: UInt64 = 0x20000, _ why: String
++  ) {
++    do {
++      _ = try MachOBootObject.expandExecuteWindow(data, window: window, slot: slot)
++      preconditionFailure("expanded: \(why)")
++    } catch {}
++  }
++
++  static func checkExpansion() throws {
++    let raw = rawImage()
++    let original = auraObject(raw: raw)
++    try MachOBootObject.check(original)
++    let window: UInt64 = 0x100000
++    let slot: UInt64 = 0x20000
++    let expanded = try MachOBootObject.expandExecuteWindow(original, window: window, slot: slot)
++    let codeSize = slot + ExecuteWindow.alignment - 0x4000 + window
++    let growth = codeSize - 0x18000
++    precondition(ExecuteWindow.codeSize(window: window, slot: slot) == codeSize)
++    precondition(expanded.padding == growth)
++    precondition(expanded.readOnlySize == 0x10000 + codeSize)
++    precondition(expanded.size == UInt64(original.count) + growth)
++
++    // The whole file, with its padding, is what kmutil and iBoot see.
++    let file = expanded.head + Data(count: Int(expanded.padding)) + expanded.tail
++    let (segments, entry) = try MachOBootObject.layout(file)
++    try MachOBootObject.check(file)
++    precondition(entry == base + 0x10800)
++    let headLayout = try MachOBootObject.layout(expanded.head, fileSize: expanded.size)
++    precondition(headLayout.entry == entry)
++    // Code, and everything below it but the load commands, keep their bytes.
++    precondition(file.subdata(in: 0x10000..<0x28000) == raw)
++    precondition(file.suffix(0xC000) == original.suffix(0xC000))
++    precondition(file.subdata(in: 0x28000..<(0x28000 + Int(growth))).allSatisfy { $0 == 0 })
++    for (name, offset, size) in [
++      ("__PRELINK_INFO", UInt64(0x28000), UInt64(0x4000)), ("__DATA", 0x2c000, 0x4000),
++      ("__LINKEDIT", 0x30000, 0x4000),
++    ] {
++      let moved = segments[name]!
++      precondition(moved.vmaddr == base + offset + growth && moved.fileoff == offset + growth)
++      precondition(moved.vmsize == size && moved.filesize == size)
++    }
++    // The fileset member's copy of each moved segment agrees, as kmutil requires.
++    for name in ["__TEXT_EXEC", "__DATA", "__LINKEDIT"] {
++      let outer = segmentFields(file, header: 0, name: name)!
++      let inner = segmentFields(file, header: 0x8000, name: name)!
++      precondition(outer == inner, name)
++    }
++    precondition(segmentFields(file, header: 0, name: "__TEXT_EXEC")!.1 == codeSize)
++    precondition(segmentFields(file, header: 0, name: "__TEXT_EXEC")!.3 == codeSize)
++    precondition(segmentFields(file, header: 0x8000, name: "__TEXT")!.0 == base + 0x8000)
++    // __info's section and the fixup table move with their segments.
++    let bytes = [UInt8](file)
++    func word(_ at: Int) -> UInt32 {
++      (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[at + $1]) << (8 * $1) }
++    }
++    var offset = 32
++    var sawInfo = false
++    var sawFixups = false
++    for _ in 0..<Int(word(16)) {
++      if word(offset) == 0x19,
++        Data(bytes[(offset + 8)..<(offset + 24)]) == Data(name16("__PRELINK_INFO"))
++      {
++        let section = offset + 72
++        precondition(word(section + 48) == UInt32(0x28000 + growth))
++        let at = Int(word(section + 48))
++        precondition(Array(bytes[at..<(at + 4)]) == [0xDE, 0xAD, 0xBE, 0xEF])
++        sawInfo = true
++      } else if word(offset) == 0x8000_0034 {
++        precondition(word(offset + 8) == UInt32(0x30000 + growth))
++        precondition(word(Int(word(offset + 8)) + 28) == 6)
++        sawFixups = true
++      }
++      offset += Int(word(offset + 4))
++    }
++    precondition(sawInfo && sawFixups)
++
++    // An aligned window fits past aura wherever iBoot loads the object.
++    let full = ExecuteWindow.codeSize()
++    for load in stride(from: UInt64(0x1_0000_4000), to: 0x1_0020_8000, by: 0x4000) {
++      let free = load + 0x10000 + ExecuteWindow.auraSlot
++      let start = (free + ExecuteWindow.alignment - 1) & ~(ExecuteWindow.alignment - 1)
++      precondition(start + ExecuteWindow.size <= load + 0x10000 + full)
++    }
++
++    refusesExpansion(
++      auraObject(raw: rawImage(footprint: slot + 1)), "aura needs more than its slot")
++    refusesExpansion(auraObject(raw: Data(count: 0x18000)), "no aura load header")
++    refusesExpansion(auraObject(raw: raw, fixup: 8), "a real chained fixup")
++    refusesExpansion(auraObject(raw: raw, symbols: 0x40), "a symbol table")
++    refusesExpansion(
++      auraObject(raw: raw, extraCommand: le(UInt32(0x1D)) + le(UInt32(16)) + le(UInt64(0))),
++      "LC_CODE_SIGNATURE, which it cannot move")
++    refusesExpansion(original, window: 0x100, "a window of part of a page")
++    refusesExpansion(file, "an object that is already expanded")
++    refusesExpansion(object(valid), "not aura's object")
++    // A crafted object is refused, never a trap on the arithmetic.
++    func patched(_ name: String, field: Int, value: UInt64) -> Data {
++      var data = original
++      var offset = 0x8000 + 32
++      while data.subdata(in: (offset + 8)..<(offset + 24)) != Data(name16(name)) {
++        offset += Int(
++          data.subdata(in: (offset + 4)..<(offset + 8))
++            .withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
++      }
++      data.replaceSubrange((offset + field)..<(offset + field + 8), with: le(value))
++      return data
++    }
++    refusesExpansion(
++      patched("__DATA", field: 24, value: UInt64.max - 0x100), "a virtual address that overflows")
++    refusesExpansion(
++      patched("__DATA", field: 40, value: UInt64.max - 0x100), "a file offset that overflows")
++    refusesExpansion(
++      original, window: UInt64.max - 0x3FFF, "a window that overflows the segment size")
++    refusesExpansion(
++      original, window: 0x4000, slot: UInt64.max - 0x3FFF, "a slot that overflows the segment size")
++    var repeating: [UInt8] = le(UInt32(0x8000_0035))
++    repeating += le(UInt32(32 + 24))
++    repeating += le(base)
++    repeating += le(UInt64(0))
++    repeating += le(UInt32(32))
++    repeating += le(UInt32(0))
++    repeating += Array("com.apple.kernel".utf8)
++    repeating += [0, 0, 0, 0, 0, 0, 0, 0]
++    refusesExpansion(auraObject(raw: raw, extraCommand: repeating), "a member naming itself")
++
++    // The default window is what reaches disk: a hole, not the whole window.
++    let defaults = try MachOBootObject.expandExecuteWindow(original)
++    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
++      "aura-execute-window-" + UUID().uuidString)
++    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
++    defer { try? FileManager.default.removeItem(at: directory) }
++    let path = directory.appendingPathComponent("stage1")
++    try defaults.write(to: path)
++    try defaults.write(to: path)  // A resumed setup replaces the earlier file.
++    let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
++    precondition(names == ["stage1"])
++    var info = stat()
++    precondition(stat(path.path, &info) == 0)
++    precondition(UInt64(info.st_size) == defaults.size && info.st_mode & 0o777 == 0o600)
++    precondition(defaults.size > ExecuteWindow.size && UInt64(info.st_blocks) * 512 < 16 << 20)
++    let handle = try FileHandle(forReadingFrom: path)
++    defer { try? handle.close() }
++    let readHead = try handle.read(upToCount: defaults.head.count)
++    precondition(readHead == defaults.head)
++    let middle = UInt64(defaults.head.count) + defaults.padding / 2
++    try handle.seek(toOffset: middle)
++    let readHole = try handle.read(upToCount: 0x4000)
++    precondition(readHole == Data(count: 0x4000))
++    try handle.seek(toOffset: defaults.size - UInt64(defaults.tail.count))
++    let readTail = try handle.read(upToCount: defaults.tail.count)
++    precondition(readTail == defaults.tail)
++    do {
++      try defaults.write(to: directory.appendingPathComponent("missing/stage1"))
++      preconditionFailure("wrote into a missing directory")
++    } catch {}
++  }
++
++  /// Vectors from aura's tools/fill_stage1_config.py.
++  static func checkConfiguration() throws {
++    let uuid = "3ce364b1-1de6-4418-a00d-5b2d95884ad7"
++    func block(_ path: String, crc: UInt32, magic: String = "AURORA-S1-CFG01\0") -> Data {
++      let encoded = Array((";" + path).utf8)
++      var bytes = Array(magic.utf8) + le(UInt32(1)) + le(UInt32(5000)) + Array(uuid.utf8)
++      bytes += [UInt8](repeating: 0, count: 4) + encoded
++      bytes += [UInt8](repeating: 0, count: 192 - encoded.count) + le(crc)
++      return Data(bytes)
++    }
++    let code = Data(repeating: 0x5A, count: 0x40)
++    let standard = code + block("m1n1/boot.bin", crc: 0x3C0C_2E4E) + code
++    let confined = code + block("m1n1/boot-ctxr.bin", crc: 0x158D_6EE6) + code
++    let read = try Stage1Configuration.read(standard)
++    precondition(read.espUUID == uuid && read.stage2Path == "m1n1/boot.bin")
++    let readConfined = try Stage1Configuration.read(confined)
++    precondition(readConfined.stage2Path == "m1n1/boot-ctxr.bin")
++    let moved = try Stage1Configuration.retargeted(
++      standard, stage2Path: AuraStage1Format.confinedStage2Path)
++    precondition(moved == confined, "a retargeted block must match aura's own fill")
++    let back = try Stage1Configuration.retargeted(
++      moved, stage2Path: AuraStage1Format.standardStage2Path)
++    precondition(back == standard)
++    func refused(_ image: Data, path: String = "m1n1/boot-ctxr.bin", _ why: String) {
++      do {
++        _ = try Stage1Configuration.retargeted(image, stage2Path: path)
++        preconditionFailure("retargeted: \(why)")
++      } catch {}
++    }
++    refused(code, "no block")
++    refused(standard + standard, "two blocks")
++    refused(code + block("m1n1/boot.bin", crc: 0), "a wrong checksum")
++    var empty = code + block("m1n1/boot.bin", crc: 0x3C0C_2E4E)
++    empty.removeLast(1)
++    refused(empty, "a truncated block")
++    for path in ["", "m1n1;boot.bin", "m1n1\\boot.bin", "é", String(repeating: "a", count: 191)] {
++      refused(standard, path: path, "the path \(path)")
++    }
++  }
++
++  static func checkSpace() throws {
++    let expanded = try MachOBootObject.expandExecuteWindow(auraObject(raw: rawImage()))
++    // The default window: aura's slot, its alignment slack, the window and the object around them.
++    precondition(ExecuteWindow.size == 128 << 20 && expanded.size > 146 << 20)
++    precondition(expanded.size < 147 << 20)
++    try expanded.requireSpace(freeBytes: expanded.size)
++    do {
++      try expanded.requireSpace(freeBytes: expanded.size - 1)
++      preconditionFailure("a sparse object is counted at its whole decompressed size")
++    } catch {
++      precondition(error.localizedDescription.contains("147 MiB"), error.localizedDescription)
++    }
++  }
++
++  static func main() throws {
++    try MachOBootObject.check(object(valid))
++    try checkExpansion()
++    try checkConfiguration()
++    try checkSpace()
++
++    var boot = valid
++    boot.insert(Segment(name: "__TEXT_BOOT_EXEC", offset: 0x440000, size: 0x4000), at: 3)
++    boot[4].offset = 0x444000
++    boot[5].offset = 0x448000
++    boot[6].offset = 0x44c000
++    rejects(object(boot), "a nonempty __TEXT_BOOT_EXEC starts SPTM")
++    var empty = valid
++    empty.insert(Segment(name: "__TEXT_BOOT_EXEC", offset: 0x440000, size: 0), at: 3)
++    try MachOBootObject.check(object(empty))
++
++    rejects(object(valid, filetype: 2), "not a fileset")
++    rejects(object(valid.filter { $0.name != "__PRELINK_INFO" }), "kmutil requires __PRELINK_INFO")
++    rejects(object(valid, entry: 0x8000), "entry outside __TEXT_EXEC")
++    var moved = valid
++    moved[2].fileOffset = 0x14000
++    rejects(object(moved), "file offset differs from virtual offset")
++    rejects(object(valid).prefix(0x20000), "segments past the end of the file")
++    rejects(Data(count: 0x10000), "raw image")
++
++    // Output of `kmutil inspect --show-mach-boot-properties` on macOS 26.6.2 (25G83).
++    let inspection = """
++      Mach-O boot properties derived for boot kernel collection:
++      {
++          kclo : 18446741874803752960
++          kcep : 18446741874803820544
++          kcrf : 0
++          kcrz : 4456448
++          kcsf : 0
++          kcsz : 0
++          kcxf : 0
++          kcxz : 0
++          kcbf : 0
++          kcbz : 0
++          kcwf : 4456448
++          kcwz : 32768
++          kclf : 4489216
++          kclz : 16384
++      }
++      """
++    precondition(MachOBootObject.bootExecSize(fromInspection: inspection) == 0)
++    precondition(
++      MachOBootObject.bootExecSize(
++        fromInspection: inspection.replacingOccurrences(
++          of: "kcbz : 0", with: "kcbz : 32768")) == 32768)
++    precondition(MachOBootObject.bootExecSize(fromInspection: "no properties") == nil)
++    let used = try MachOBootObject.checkInspection(inspection, readOnlySize: 4_456_448)
++    precondition(used == "kcrz 4456448")
++    func inspectionRefused(_ output: String, _ why: String) {
++      do {
++        _ = try MachOBootObject.checkInspection(output, readOnlySize: 4_456_448)
++        preconditionFailure("accepted inspection: \(why)")
++      } catch {}
++    }
++    inspectionRefused("no properties", "nothing reported")
++    inspectionRefused(
++      inspection.replacingOccurrences(of: "kcbz : 0", with: "kcbz : 32768"), "SPTM would start")
++    inspectionRefused(
++      inspection.replacingOccurrences(of: "kcrz : 4456448", with: "kcrz : 4472832"),
++      "a different read-only region")
++    // kcrz decides even when kcwf agrees. Without it, only an exact kcwf passes.
++    let noRegion = inspection.replacingOccurrences(of: "    kcrz : 4456448\n", with: "")
++    let fallback = try MachOBootObject.checkInspection(noRegion, readOnlySize: 4_456_448)
++    precondition(fallback == "kcwf 4456448, no kcrz")
++    inspectionRefused(
++      noRegion.replacingOccurrences(of: "kcwf : 4456448", with: "kcwf : 4472832"),
++      "no kcrz and a different kcwf")
++    inspectionRefused(
++      noRegion.replacingOccurrences(of: "    kcwf : 4456448\n", with: ""), "neither property")
++
++    // The installer fills the Stage 1 that the boot object carries in place.
++    let raw = Data((0..<0x18000).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 1) })
++    var carrier = object(valid)
++    carrier.replaceSubrange(0x10000..<(0x10000 + raw.count), with: raw)
++    var filled = raw
++    filled.replaceSubrange(0x9000..<0x9010, with: Data(repeating: 0xAB, count: 16))
++    let result = try MachOBootObject.fill(carrier, raw: raw, filled: filled)
++    precondition(result.count == carrier.count)
++    precondition(result.subdata(in: 0x10000..<(0x10000 + raw.count)) == filled)
++    precondition(result.prefix(0x10000) == carrier.prefix(0x10000))
++    precondition(
++      result.suffix(from: 0x10000 + raw.count) == carrier.suffix(from: 0x10000 + raw.count))
++    func refusesFill(_ object: Data, raw: Data, filled: Data, _ why: String) {
++      do {
++        _ = try MachOBootObject.fill(object, raw: raw, filled: filled)
++        preconditionFailure("filled: \(why)")
++      } catch {}
++    }
++    var other = raw
++    other[0x100] ^= 0xFF
++    refusesFill(carrier, raw: other, filled: filled, "another Stage 1")
++    refusesFill(carrier, raw: raw, filled: filled.prefix(raw.count - 1), "a different length")
++    var trailing = carrier
++    trailing[0x10000 + raw.count + 8] = 1
++    refusesFill(trailing, raw: raw, filled: filled, "data after the Stage 1")
++    refusesFill(object(valid, entry: 0x10000), raw: raw, filled: filled, "not its entry point")
++    refusesFill(carrier, raw: Data(count: 0x430001), filled: Data(count: 0x430001), "too large")
++
++    // M4 and later use the Mach-O Stage 1; every M1 to M3 chip keeps raw.
++    for chip: UInt64 in [0x8132, 0x6040, 0x6041, 0x8140, 0x8142, 0x6050, 0x6051, 0x6052, 0x8150] {
++      precondition(AuraStage1Format.usesExecuteWindow(chipID: chip), String(chip, radix: 16))
++    }
++    for chip: UInt64 in [
++      0x8103, 0x6000, 0x6001, 0x6002, 0x8112, 0x6020, 0x6021, 0x6022, 0x8122, 0x6030, 0x6031,
++      0x6032, 0x6034, 0, 0x8000, 0x7000, 0x9000,
++    ] {
++      precondition(!AuraStage1Format.usesExecuteWindow(chipID: chip), String(chip, radix: 16))
++    }
++    print(
++      "PASS Mach-O boot object: no __TEXT_BOOT_EXEC, kmutil's required segments, linear file backing, entry in __TEXT_EXEC; kcbz and kcrz from kmutil inspect; in-place Stage 1 fill; Stage 2 path retargeted as aura fills it; execute-window padding keeps code, stays sparse and counts its whole size for free space; M4-and-later chip predicate"
++    )
++  }
++}
+diff --git a/Recovery/test-all.sh b/Recovery/test-all.sh
+index 5aa83d8..df751e8 100755
+--- a/Recovery/test-all.sh
++++ b/Recovery/test-all.sh
+@@ -17,7 +17,8 @@ compile_run enrollment Sources/EnrollmentGate.swift Tests/EnrollmentGateCheck.sw
+ compile_run digest Sources/Account/RecoveryDigest.swift Tests/RecoveryDigestCheck.swift
+ compile_run owner Sources/RecoveryOwner.swift Tests/RecoveryOwnerCheck.swift
+ compile_run bootstrap-owner Sources/RecoveryOwner.swift Tests/BootstrapOwnerCheck.swift
+-compile_run boot-selection Sources/BootSelection.swift Tests/BootSelectionCheck.swift
++compile_run boot-selection Sources/BootSelection.swift Sources/MachOStage1.swift Sources/RecoveryOwner.swift Sources/InstallConfiguration.swift Tests/BootSelectionCheck.swift
++compile_run macho-boot-object Sources/MachOStage1.swift Tests/MachOBootObjectCheck.swift
+ compile_run installer-log Sources/InstallerLog.swift Tests/InstallerLogCheck.swift
+ compile_run log-view Sources/InstallerTheme.swift Sources/LogTextView.swift Tests/LogTextViewCheck.swift
+ compile_run sheet-presenter Sources/SheetPresenter.swift Tests/SheetPresenterCheck.swift
+diff --git a/Sources/OmarchyInstallerUXCore/MacModelNames.swift b/Sources/OmarchyInstallerUXCore/MacModelNames.swift
+index 4fca0a9..fb8799c 100644
+--- a/Sources/OmarchyInstallerUXCore/MacModelNames.swift
++++ b/Sources/OmarchyInstallerUXCore/MacModelNames.swift
+@@ -87,6 +87,7 @@
+       "apple,j613": mac("MacBook Air 13-inch (M3, 2024)", "MacBook Air", "M3"),
+       "apple,j615": mac("MacBook Air 15-inch (M3, 2024)", "MacBook Air", "M3"),
+       "apple,j614s": mac("MacBook Pro 14-inch (M4 Pro, 2024)", "MacBook Pro", "M4"),
++      "apple,j616c": mac("MacBook Pro 16-inch (M4 Max, 2024)", "MacBook Pro", "M4"),
+       "apple,j700": mac("MacBook Neo (A18 Pro, 2026)", "MacBook Neo", "A18 Pro"),
+     ]
+   }
+diff --git a/scripts/supported-models.json b/scripts/supported-models.json
+index 4773319..8f746d1 100644
+--- a/scripts/supported-models.json
++++ b/scripts/supported-models.json
+@@ -41,7 +41,9 @@
+     "apple,j575d": "Mac Studio (M3 Ultra, 2025): the pinned v0.9.2 engine has no j575dap device or T6032 chip entry, so it cannot inspect or plan this Mac",
+     "apple,j614s": "MacBook Pro 14-inch (M4 Pro, 2024): M4 and later Macs are not supported"
+   },
+-  "developer": {},
++  "developer": {
++    "apple,j616c": "MacBook Pro 16-inch (M4 Max, 2024): developer builds only, with a J616c image built on Aurora Silicon's aura Stage 1, J616c m1n1, U-Boot and kernel and macOS 26.6.2 OS firmware; public builds keep every M4 Mac refused"
++  },
+   "untested": {
+     "apple,j433": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+     "apple,j434": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+diff --git a/scripts/tests/test_make_unsigned_catalog.py b/scripts/tests/test_make_unsigned_catalog.py
+index 2b92016..f9dd1e5 100644
+--- a/scripts/tests/test_make_unsigned_catalog.py
++++ b/scripts/tests/test_make_unsigned_catalog.py
+@@ -101,6 +101,19 @@ class CatalogGeneratorTests(unittest.TestCase):
+         document["developer_models"] = [neo]
+         return document
+ 
++    def with_m4_max(self) -> dict:
++        """The inputs plus a developer group for the 16-inch M4 Max, a board no channel catalog carries."""
++        document = json.loads(json.dumps(self.inputs))
++        m4_max = {
++            "payload_name": "j616c-os-package.zip",
++            "metadata_name": "installer_data-j616c.json",
++            "device_identifiers": ["apple,j616c"],
++        }
++        (self.assets / m4_max["metadata_name"]).write_bytes(b"j616c-metadata" * 8)
++        (self.assets / m4_max["payload_name"]).write_bytes(b"j616c-payload" * 64)
++        document["developer_models"] = [m4_max]
++        return document
++
+     def assertRejected(self, document: dict, fragment: str, developer: bool = False) -> None:
+         result = self.generate(document, developer=developer)
+         self.assertNotEqual(result.returncode, 0, result.stdout)
+@@ -269,7 +282,7 @@ class CatalogGeneratorTests(unittest.TestCase):
+         self.assertIn("apple,j700", manifest["supported"])
+         self.assertIn("apple,j700", manifest["untested"])
+         self.assertEqual(set(manifest["refused"]), {"apple,j575d", "apple,j614s"})
+-        self.assertEqual(manifest["developer"], {})
++        self.assertEqual(set(manifest["developer"]), {"apple,j616c"})
+         for template in sorted(MANIFEST.parent.glob("release-inputs*.template.json")):
+             identifiers = json.loads(template.read_text())["device_identifiers"]
+             self.assertEqual(
+@@ -337,6 +350,27 @@ class CatalogGeneratorTests(unittest.TestCase):
+         neo_digest = hashlib.sha256((self.assets / "neo-os-package.zip").read_bytes()).hexdigest()
+         self.assertEqual(neo["payloadDigest"], f"sha256:{neo_digest}")
+ 
++    def test_a_developer_catalog_adds_the_m4_max_with_its_own_image(self) -> None:
++        result = self.generate(self.with_m4_max(), developer=True)
++        self.assertEqual(result.returncode, 0, result.stderr)
++        models = json.loads((self.directory / "catalog.json").read_text())["models"]
++        self.assertEqual(
++            [m["deviceIdentifier"] for m in models],
++            self.inputs["device_identifiers"] + ["apple,j616c"],
++        )
++        main, m4_max = models[0], models[-1]
++        self.assertEqual(main["payloadArtifact"]["fileName"], self.inputs["payload_name"])
++        self.assertEqual(m4_max["payloadArtifact"]["fileName"], "j616c-os-package.zip")
++        self.assertEqual(m4_max["metadataArtifact"]["fileName"], "installer_data-j616c.json")
++        self.assertEqual(m4_max["engineArtifact"], main["engineArtifact"])
++        digest = hashlib.sha256((self.assets / "j616c-os-package.zip").read_bytes()).hexdigest()
++        self.assertEqual(m4_max["payloadDigest"], f"sha256:{digest}")
++
++    def test_a_channel_catalog_never_carries_the_m4_max(self) -> None:
++        document = json.loads(json.dumps(self.inputs))
++        document["device_identifiers"].append("apple,j616c")
++        self.assertRejected(document, "apple,j616c is not in scripts/supported-models.json")
++
+     def test_developer_models_need_the_developer_flag(self) -> None:
+         self.assertRejected(self.with_neo(), "unknown keys")
+ 

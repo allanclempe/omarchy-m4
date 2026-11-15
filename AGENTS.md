@@ -17,8 +17,16 @@ Aurora's GPU driver, Hyprland and Wi-Fi. It took several hand fixes. The week of
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
-- The J616c image derivation (`tools/derive-j616c-image`), the installer branch and all build
-  artefacts are on the Mac's macOS side in `~/aurora-m4`, not in this repo yet.
+- `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
+  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in). Its header has usage.
+  It was edited after the last image build and hasn't been run since (JOURNEY 9.15).
+- `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
+  `macho-ctxr` Recovery mode, the engine changes and the Wi-Fi `chflags` fix. It applies to
+  omacom/omarchy-mac-installer at `a576543` (PR #212's head). The live branch is
+  `j616c/developer-admission` in `~/aurora-m4/omarchy-mac-installer-git` on the Mac, uncommitted;
+  refresh this patch from it when it changes.
+- Build artefacts (engine, payload, catalog, app, Aurora packages, VM) stay on the Mac in
+  `~/aurora-m4/build`.
 
 ## Machines
 
