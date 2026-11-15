@@ -1,0 +1,241 @@
+<title>J616c Boot Fix</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column of an engineering report, with a boot-chain strip near the top and dense reference tables below. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --fg: #1b2127;
+  --muted: #5a6670;
+  --rule: #d9dee2;
+  --accent: #0f6f74;
+  --accent-soft: #e2f0f0;
+  --ok: #1d7a43;
+  --ok-soft: #e3f3e8;
+  --bad: #b3361f;
+  --bad-soft: #f8e6e1;
+  --warn: #8a5a00;
+  --warn-soft: #f6edd8;
+  --code-bg: #eef1f3;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171b; --surface: #182026; --fg: #e3e8eb; --muted: #95a2ab; --rule: #2b353d;
+    --accent: #5cc3c6; --accent-soft: #163236; --ok: #6fcf93; --ok-soft: #15301f;
+    --bad: #f08a72; --bad-soft: #3a1d17; --warn: #e2b55a; --warn-soft: #33290f; --code-bg: #1f282f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171b; --surface: #182026; --fg: #e3e8eb; --muted: #95a2ab; --rule: #2b353d;
+  --accent: #5cc3c6; --accent-soft: #163236; --ok: #6fcf93; --ok-soft: #15301f;
+  --bad: #f08a72; --bad-soft: #3a1d17; --warn: #e2b55a; --warn-soft: #33290f; --code-bg: #1f282f;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--f-body); font-size: 15.5px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+}
+.page { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 44px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: clamp(2rem, 5vw, 2.8rem); font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 1.45rem; font-weight: 600; }
+h3 { font-size: 1.08rem; font-weight: 600; }
+p { margin: 0; }
+section { display: flex; flex-direction: column; gap: 14px; }
+.eyebrow { font-family: var(--f-mono); font-size: 0.76rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+code, .mono { font-family: var(--f-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.08em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+header { display: flex; flex-direction: column; gap: 12px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--f-mono); font-size: 0.82rem; color: var(--muted); }
+.lede { font-size: 1.12rem; max-width: 64ch; }
+
+.chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.stage { flex: 1 1 118px; min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.stage .name { font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+.stage .what { font-family: var(--f-mono); font-size: 0.74rem; color: var(--muted); overflow-wrap: anywhere; }
+.stage.fixed { border-color: var(--accent); background: var(--accent-soft); }
+.pill { align-self: flex-start; font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { color: var(--ok); background: var(--ok-soft); }
+.pill.bad { color: var(--bad); background: var(--bad-soft); }
+.pill.warn { color: var(--warn); background: var(--warn-soft); }
+.pill.fix { color: var(--accent); background: var(--surface); border: 1px solid var(--accent); }
+.legend { font-size: 0.86rem; color: var(--muted); max-width: 74ch; }
+
+blockquote { margin: 0; padding: 12px 16px; border-left: 3px solid var(--accent); background: var(--surface); font-size: 0.93rem; }
+blockquote p + p { margin-top: 8px; }
+blockquote cite { display: block; margin-top: 8px; font-style: normal; font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--f-mono); font-weight: 500; font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--f-mono); font-size: 0.84rem; white-space: nowrap; }
+td.when { font-family: var(--f-mono); font-size: 0.8rem; white-space: nowrap; color: var(--muted); }
+
+ol.steps, ul.list { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 8px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.note { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.note p { font-size: 0.92rem; }
+.note .tag { align-self: flex-start; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-family: var(--f-mono); font-size: 0.8rem; line-height: 1.5; }
+footer { border-top: 1px solid var(--rule); padding-top: 18px; font-size: 0.85rem; color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main class="page">
+  <header>
+    <span class="eyebrow">Omarchy on Apple silicon · M4 Max bring-up</span>
+    <h1>J616c: Omarchy boots to the desktop</h1>
+    <div class="meta">
+      <span>MacBook Pro 16" M4 Max</span><span>Mac16,5 · J616c · T6041</span><span>2026-11-13 to 11-14</span>
+    </div>
+    <p class="lede">Omarchy now runs on the M4 Max MacBook Pro: Hyprland desktop, all 14 CPU cores, Aurora's GPU driver and Wi-Fi. Getting there took four fixes after the install itself. Three are bugs in our J616c image build and one is in the installer. Each is described below with its evidence, so the image can be rebuilt to boot without hand fixes.</p>
+  </header>
+
+  <section>
+    <span class="eyebrow">Where it stands</span>
+    <h2>The boot chain on this Mac</h2>
+    <div class="chain" role="list">
+      <div class="stage" role="listitem"><span class="name">iBoot</span><span class="what">Apple, 26.6.2 stub</span><span class="pill ok">ok</span></div>
+      <div class="stage" role="listitem"><span class="name">aura Stage 1</span><span class="what">b13 Mach-O, unpadded</span><span class="pill warn">hand-enrolled</span></div>
+      <div class="stage fixed" role="listitem"><span class="name">aura Stage 2</span><span class="what">ESP m1n1/boot-ctxr.bin</span><span class="pill fix">rebuilt</span></div>
+      <div class="stage" role="listitem"><span class="name">U-Boot</span><span class="what">2026.07.aurora11</span><span class="pill ok">ok</span></div>
+      <div class="stage" role="listitem"><span class="name">Limine + UKI</span><span class="what">Linux 7.3.0-1-36-ARCH</span><span class="pill ok">14 cores</span></div>
+      <div class="stage fixed" role="listitem"><span class="name">SDDM + Hyprland</span><span class="what">mesa-aurora 20261113</span><span class="pill fix">updated</span></div>
+    </div>
+    <p class="legend">Highlighted stages needed a change on this Mac. Stage 1 is the unpadded aura object enrolled by hand in 1TR, because the padded one the installer enrols loops silently on T6041. Even so, Linux brings up all 14 cores (<code>/sys/devices/system/cpu/online</code> = <code>0-13</code>).</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">What broke, in boot order</span>
+    <h2>Five problems and their fixes</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Stage</th><th>Symptom</th><th>Cause</th><th>Fix used</th><th>Owner</th></tr></thead>
+        <tbody>
+          <tr><td>Stage 1</td><td>Silent reboot loop, nothing on screen or USB</td><td>Padded Mach-O Stage 1 (128 MiB CTXR window) doesn't start on T6041. Aurora has qualified it only on T8140 and T6040.</td><td>Unpadded object, enrolled by hand in 1TR</td><td>Aurora</td></tr>
+          <tr><td>U-Boot</td><td>Stops at <code>=&gt;</code></td><td>aura b13's ESP Stage 2 never restarts the SSD controller (ANS) that Stage 1 powered off, and U-Boot can only adopt a running one</td><td>Stage 2 built from aura <code>94d8e6e</code> (includes <code>aaec599f</code>)</td><td>Our image</td></tr>
+          <tr><td>Owner setup</td><td>Blank screen after “Press Return”, then “Setup hit an error”</td><td>First boot builds the keyring without Aurora's key, so pacman waits on a hidden “Import PGP key? [Y/n]” for the <code>[aurora]</code> repo</td><td><code>pacman-key --populate aurora</code></td><td>Our image</td></tr>
+          <tr><td>Owner setup</td><td>“The EFI partition this Mac boots from is not where its boot files are written”</td><td>Every Omarchy ESP has FAT serial <code>4F4D-5801</code>, fstab mounts by it, and a leftover ESP from an earlier attempt got mounted</td><td>Mount the device-tree ESP; fstab by <code>PARTUUID</code></td><td>Installer</td></tr>
+          <tr><td>Login</td><td>Black screen after setup</td><td>The edge image's <code>mesa-aurora 20261107</code> can't drive the GPU under Aurora's 7.3 kernel (<code>egl: failed to create dri2 screen</code>), so Hyprland and the SDDM greeter abort</td><td><code>mesa-aurora</code> and <code>vulkan-aurora</code> <code>202611130318</code> from <code>[aurora]</code></td><td>Our image</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="prose">
+    <span class="eyebrow">The main fix</span>
+    <h2>aura b13's Stage 2 never restarts a powered-off ANS</h2>
+    <p>On M4 and later, aura's Stage 1 powers ANS off after reading Stage 2 from the ESP and passes the controller's SART entries on as <code>nvme.sart=</code>. Aurora fixed Stage 2 in <code>aaec599f</code> on 2026-11-13:</p>
+    <blockquote>
+      <p>“An ESP Stage 2 that boots its embedded U-Boot never runs nvme_init(): it only writes the entries to the DT as apple,sart-entries and leaves ANS off. The U-Boot we embed adopts a running post-M4 ANS and can't start one from off, so with a Stage 1 that passes nvme.sart= it fails to probe NVMe.”</p>
+      <cite>aurora-silicon/aura aaec599f · payload: start a post-M4 ANS an earlier stage powered off before any payload</cite>
+    </blockquote>
+    <p>Neither <code>1.0.0b13</code> (<code>f0f180af</code>, in our image) nor <code>1.0.0b13.1</code> (<code>5dcf62d0</code>, cut from a release branch) contains it. We built Stage 2 from aura <code>94d8e6e</code> with the PKGBUILD's flags (<code>RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1 BUILTIN_LOGO=aurora</code>) and swapped it into <code>boot-ctxr.bin</code>. The device tree and U-Boot in that file are unchanged, byte for byte.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Part of boot-ctxr.bin</th><th>Bytes</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>aura Stage 2</td><td class="num">4,063,232</td><td>aura <code>94d8e6e</code> (was b13 <code>f0f180af</code>)</td></tr>
+          <tr><td><code>t6041-j616c.dtb</code></td><td class="num">100,823</td><td>unchanged, <code>linux-aurora 7.3.0.aurora1-36</code></td></tr>
+          <tr><td>U-Boot, gzipped</td><td class="num">354,550</td><td>unchanged, <code>uboot-aurora 2026.07.aurora11-1</code></td></tr>
+          <tr><td><strong>Whole file</strong></td><td class="num">4,518,605</td><td>sha256 <code>b6daef1f…8399</code> → <code>a0f493b4…f552</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>macOS 26.7.3 couldn't mount any FAT volume on this Mac, even a freshly formatted image. So the new file went onto the ESP with a script that overwrites a same-size file's clusters in place, after checking the label, both FATs and the old hash. We tested it first on a full copy of the ESP.</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">How we got there</span>
+    <h2>Test log</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>When</th><th>Test</th><th>Result</th><th>What it told us</th></tr></thead>
+        <tbody>
+          <tr><td class="when">11-13</td><td>Installer's padded Mach-O Stage 1</td><td><span class="pill bad">silent loop</span></td><td>Reboots every ~10 s before aura draws anything or appears on USB</td></tr>
+          <tr><td class="when">11-13 22:57</td><td>Same aura object, unpadded, enrolled by hand in 1TR</td><td><span class="pill warn">stops at =&gt;</span></td><td>Mach-O entry works on T6041. Stage 2 and U-Boot run.</td></tr>
+          <tr><td class="when">11-13 23:27</td><td>Stage 1 log over USB with aura's proxy</td><td><span class="pill ok">captured</span></td><td><code>ANS powered off, 9 SART entries kept</code> before the handover</td></tr>
+          <tr><td class="when">11-14 07:02</td><td>u-boot#48 sent over USB</td><td><span class="pill bad">reboots</span></td><td>Inconclusive: see the USB note below</td></tr>
+          <tr><td class="when">11-14 13:17</td><td>New Stage 2 sent over USB</td><td><span class="pill bad">reboots</span></td><td>Inconclusive, same reason</td></tr>
+          <tr><td class="when">11-14 13:44</td><td>New Stage 2 on the ESP</td><td><span class="pill ok">boots Linux</span></td><td>U-Boot, Limine and the UKI run. Omarchy's owner setup appears.</td></tr>
+          <tr><td class="when">11-14 14:37</td><td>Owner setup after the ESP and keyring fixes</td><td><span class="pill ok">complete</span></td><td>Account, initramfs, UKI and <code>limine.conf</code> rebuilt on the right ESP. 14 cores online.</td></tr>
+          <tr><td class="when">11-14 ~15:00</td><td>Aurora's Mesa installed, SDDM restarted</td><td><span class="pill ok">desktop</span></td><td>Greeter and Hyprland run on the <code>aurora</code> GPU driver (32-core GPU, firmware for T6041)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">Findings along the way</span>
+    <h2>Things the team should know</h2>
+    <div class="cols">
+      <div class="note">
+        <h3>All 14 cores without the padded Stage 1</h3>
+        <p>aura's docs say an OS outside the CTXR_D window gets only the boot CPU. On this J616c, Linux brought up all 14 cores (<code>0-13</code>) with the unpadded object. That makes the padded loop less urgent for J616c, and it's worth telling Aurora.</p>
+      </div>
+      <div class="note">
+        <h3>The USB proxy can't test the ANS hand-off</h3>
+        <p>With <code>aura-proxy</code> on the ESP, Stage 1 powers ANS off before waiting for a host, and <code>chainload.py</code> doesn't pass <code>nvme.sart=</code>. A Stage 2 sent over USB never sees the state a real boot gives it. Test this path from the ESP.</p>
+      </div>
+      <div class="note">
+        <h3>The kernel was never the blocker</h3>
+        <p>The image uses Aurora Silicon's <code>linux-aurora 7.3.0.aurora1-36</code>. omacom/linux-aurora (<code>bed544bd</code>) has no T604x device trees, so it can't boot J616c yet. The kernel and its Mesa have to come as a matching pair.</p>
+      </div>
+      <div class="note">
+        <h3>Wi-Fi works</h3>
+        <p><code>wlan0</code> comes up with the BCM4388 firmware collected from macOS. That depends on our fix for PR #212's <code>chflags</code> bug, where <code>shutil.copytree</code> fails with <code>EPERM</code> on SIP-restricted files.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <span class="eyebrow">Asks</span>
+    <h2>Proposed next steps</h2>
+    <ol class="steps">
+      <li><strong>J616c image (<code>tools/derive-j616c-image</code>):</strong> take Stage 2 from aura with <code>aaec599f</code>. Install <code>mesa-aurora</code> and <code>vulkan-aurora</code> from <code>[aurora]</code> along with the kernel. Make first boot trust Aurora's key (add <code>aurora</code> to the populated keyrings), or don't leave <code>[aurora]</code> enabled.</li>
+      <li><strong>Installer:</strong> give each ESP a unique FAT serial, or have fstab mount <code>/boot/efi</code> by <code>PARTUUID</code>. Otherwise a reinstall without a prior Remove mounts the wrong ESP. Also report the #212 <code>chflags</code> bug, and add a Mach-O Stage 1 mode (Recovery only does raw today).</li>
+      <li><strong>Aurora:</strong> ask for an aura release with <code>aaec599f</code>. Report the padded Stage 1 silent loop on J616c (T6041), and that the unpadded object still gives 14 cores.</li>
+      <li><strong>Kernel:</strong> ask whether omacom/linux-aurora will carry T6041 device trees. Until then J616c needs Aurora's kernel and Mesa.</li>
+      <li><strong>This Mac:</strong> fstab now mounts <code>/boot/efi</code> by <code>PARTUUID=272043e7-…-93d6-…</code>. The first attempt's partitions (disk0s7 to disk0s10) are still to be removed from macOS. The update guards (no Stage 2 rebuilds, kernel and Mesa held) stay until an aura release contains <code>aaec599f</code>.</li>
+    </ol>
+  </section>
+
+  <section>
+    <span class="eyebrow">Reference</span>
+    <h2>Undo and reproduce</h2>
+    <p class="prose">Backups on the Mac: <code>build/esp-test/boot-ctxr.bin.b13</code> (the original Stage 2 file) and <code>build/esp-test/esp-disk0s4-before.img</code> (the whole ESP before the write). To restore the original, run this from macOS with the two files and the two hashes swapped:</p>
+    <pre>sudo /usr/bin/python3 -I ~/aurora-m4/tools/esp-overwrite-same-size.py /dev/rdisk0s4 \
+  m1n1/boot-ctxr.bin ~/aurora-m4/build/aura-stage2-94d8e6e/boot-ctxr-ansfix.bin \
+  --label "EFI - OMARC" \
+  --expect-old b6daef1f655777fea3ef3f6b62d3c6c7ccad36f8149ee09d433d10fa06898399 \
+  --expect-new a0f493b491a896c32530f18d0d2320bda210881ef3274de5529b78c2ef9ff552 \
+  --backup ~/aurora-m4/build/esp-test/boot-ctxr.bin.b13 --write</pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Item</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Stage 2 source and build log</td><td><code>~/aurora-m4/build/aura-stage2-94d8e6e/</code>, <code>build/stage2-94d8e6e-build.log</code></td></tr>
+          <tr><td>New Stage 2 binary</td><td><code>aura.bin</code>, sha256 <code>46fd25ed…d068</code></td></tr>
+          <tr><td>ESP overwrite script</td><td><code>~/aurora-m4/tools/esp-overwrite-same-size.py</code></td></tr>
+          <tr><td>USB capture tools</td><td>dev-machine-01 <code>~/aura-tools/</code></td></tr>
+          <tr><td>Full running log</td><td><code>~/aurora-m4/JOURNEY.md</code>, sections 9.5 to 9.13</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Research, builds and this write-up were done with Claude Code (Claude Opus 5.5) at the owner's direction. Nothing has been pushed upstream.</footer>
+</main>
