@@ -210,14 +210,17 @@ PY
     [[ $(in_chroot pacman -Q "${p#aurora/}" | cut -d' ' -f2) == "$(in_chroot pacman -Si "$p" | sed -n 's/^Version *: //p')" ]] ||
       fail "${p#aurora/} is not Aurora's build"
   done
-  in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
 
   log "installing Aurora's speakersafetyd profiles"
   in_chroot pacman -S --noconfirm "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install Aurora's speakersafetyd profiles (pacman.log)"
-  [[ -f $T/usr/share/speakersafetyd/apple/j616.conf ]] || fail "no speakersafetyd profile for J616 (apple/j616.conf)"
-  grep -q 'ATTRS{id}=="AppleJ616"' "$T"/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules ||
+  grep -q '^\[Speaker/' "$T/usr/share/speakersafetyd/apple/j616.conf" 2>/dev/null ||
+    fail "no speakersafetyd profile with speakers for J616 (apple/j616.conf)"
+  # A commented-out rule would not start the daemon: match only a live one.
+  grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
+
+  in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
     speakersafetyd "${AURORA_AUDIO[@]#aurora/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
