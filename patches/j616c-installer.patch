@@ -238,6 +238,48 @@ index a085304..48abcd4 100644
              )
          self._record_installation(log_only=True)
          self._clean_esp()
+diff --git a/Engine/overlay/src/omarchy_isp.py b/Engine/overlay/src/omarchy_isp.py
+index 01efc02..272e816 100644
+--- a/Engine/overlay/src/omarchy_isp.py
++++ b/Engine/overlay/src/omarchy_isp.py
+@@ -1,9 +1,12 @@
+ # SPDX-License-Identifier: MIT
+ """Extend the engine's ISP registry and scan both Apple camera daemons.
+ 
+-Keep every inherited supported sensor. IMX558 1925's magic and length are
+-the apple_isp driver's setfile entry; other unqualified sensor IDs are not
+-enabled merely because a byte pattern occurs in the daemon.
++Keep every inherited supported sensor. IMX558 1925's and IMX958 2224's magic
++and length are the apple_isp driver's setfile entries (Aurora's isp-cam.c and
++aurora-installer's asahi_firmware/isp.py carry the same values); other
++unqualified sensor IDs are not enabled merely because a byte pattern occurs in
++the daemon. The IMX958 is the camera of the MacBook Pro 16-inch with M4 Pro or
++M4 Max (J616s, J616c): without its setfile the driver streams untuned.
+ """
+ 
+ from collections import namedtuple
+@@ -13,6 +16,8 @@ import struct
+ 
+ SetFile = namedtuple("SetFile", "sensor magic name size")
+ IMX558_1925 = SetFile(0x558, 0x19250306, "1925_03XX", 0xCBC0)
++IMX958_2224 = SetFile(0x958, 0x22240106, "2224_01XX", 0x6FF4)
++ADDED = (IMX558_1925, IMX958_2224)
+ DAEMON_NAMES = ("appleh13camerad", "appleh16camerad")
+ ALIGNMENT = 0x1000
+ log = logging.getLogger(__name__)
+@@ -23,10 +28,10 @@ class IspError(ValueError):
+ 
+ 
+ def extended_setfiles(inherited):
+-    """Preserve inherited entries, adding 1925 once without silent conflicts."""
++    """Preserve inherited entries, adding 1925 and 2224 once without silent conflicts."""
+     entries = {}
+     names = {}
+-    for entry in (*inherited, IMX558_1925):
++    for entry in (*inherited, *ADDED):
+         previous = entries.get(entry.magic)
+         if previous is not None and tuple(previous) != tuple(entry):
+             raise IspError(f"conflicting ISP registry entry {entry.magic:#x}")
 diff --git a/Engine/overlay/src/omarchy_recovery.py b/Engine/overlay/src/omarchy_recovery.py
 index 8913f8b..3be872b 100644
 --- a/Engine/overlay/src/omarchy_recovery.py
@@ -715,6 +757,50 @@ index 9fbce3d..258c61b 100644
  class FirmwareRequirementTests(unittest.TestCase):
      # The edge image of 2026-10-19 offers every Mac 13.5, 14.8.3 and 26.6.2.
      EDGE = ["13.5", "14.8.3", "26.6.2"]
+diff --git a/Engine/overlay/tests/test_omarchy_isp.py b/Engine/overlay/tests/test_omarchy_isp.py
+index 73ab264..b3f2ac6 100644
+--- a/Engine/overlay/tests/test_omarchy_isp.py
++++ b/Engine/overlay/tests/test_omarchy_isp.py
+@@ -23,10 +23,12 @@ class IspTests(unittest.TestCase):
+     def test_extends_registry_without_changing_inherited_entries(self):
+         custom = isp.SetFile(1, 0xABCD1234, "future_01XX", 100)
+         result = isp.extended_setfiles([LEGACY, IMX558_1921, custom])
+-        self.assertEqual(result, (LEGACY, IMX558_1921, custom, isp.IMX558_1925))
++        self.assertEqual(result, (LEGACY, IMX558_1921, custom, isp.IMX558_1925, isp.IMX958_2224))
+         self.assertEqual(isp.extended_setfiles(result), result)
+         with self.assertRaises(isp.IspError):
+             isp.extended_setfiles([isp.IMX558_1925._replace(size=64)])
++        with self.assertRaises(isp.IspError):
++            isp.extended_setfiles([isp.IMX958_2224._replace(size=64)])
+ 
+     def test_extracts_1925_full_kernel_size(self):
+         data = blob(isp.IMX558_1925, 0xAB)
+@@ -34,6 +36,25 @@ class IspTests(unittest.TestCase):
+         self.assertEqual(output, {"apple/isp_1925_03XX.dat": data})
+         self.assertEqual(len(next(iter(output.values()))), 52160)
+ 
++    def test_extracts_2224_for_the_16_inch_m4(self):
++        # IMX958 (J616s, J616c): the driver's entry is
++        # {0x958, 0x22240106, "apple/isp_2224_01XX.dat", 0x6ff4}.
++        self.assertEqual(isp.IMX958_2224, isp.SetFile(0x958, 0x22240106, "2224_01XX", 0x6FF4))
++        data = blob(isp.IMX958_2224, 0xCD)
++        output = isp.extract(bytes(8192) + data, [LEGACY])
++        self.assertEqual(output, {"apple/isp_2224_01XX.dat": data})
++        # 0x6ff4 rounded up to 64 bytes: the driver uploads its first 0x6ff4.
++        self.assertEqual(len(output["apple/isp_2224_01XX.dat"]), 0x7000)
++        with self.assertRaisesRegex(isp.IspError, "truncated"):
++            isp.extract(data[:-1], [LEGACY])
++
++    def test_h16_daemon_with_both_new_sensors(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            daemon = blob(isp.IMX558_1925) + bytes(-len(blob(isp.IMX558_1925)) % isp.ALIGNMENT)
++            (Path(tmp) / "appleh16camerad").write_bytes(daemon + blob(isp.IMX958_2224))
++            self.assertEqual(set(isp.collect(tmp, [LEGACY])),
++                             {"apple/isp_1925_03XX.dat", "apple/isp_2224_01XX.dat"})
++
+     def test_both_daemons_and_legacy_only_directory(self):
+         with tempfile.TemporaryDirectory() as tmp:
+             directory = Path(tmp)
 diff --git a/Engine/overlay/tests/test_omarchy_recovery.py b/Engine/overlay/tests/test_omarchy_recovery.py
 index 04f976d..490d7b4 100644
 --- a/Engine/overlay/tests/test_omarchy_recovery.py
@@ -910,7 +996,7 @@ index 2f4ed8c..41f25d5 100644
           p_warning("If you need to file a bug report, please attach the log file:")
           p_warning(f"  {os.getcwd()}/installer.log")
 diff --git a/Engine/source-lock.json b/Engine/source-lock.json
-index 9588ec9..c02e5d9 100644
+index 9588ec9..9265d93 100644
 --- a/Engine/source-lock.json
 +++ b/Engine/source-lock.json
 @@ -141,7 +141,7 @@
@@ -918,7 +1004,7 @@ index 9588ec9..c02e5d9 100644
    },
    "downstream_overlay": {
 -    "version": "v0.9.2-omarchy.20261110.fb337ca4e5a0",
-+    "version": "v0.9.2-omarchy.20261115.f6112d89ebf1",
++    "version": "v0.9.2-omarchy.20261116.e5ff013ee6b2",
      "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
      "minimum_app_version": "2.3.0",
      "engine_modes": [
@@ -958,7 +1044,13 @@ index 9588ec9..c02e5d9 100644
        },
        {
          "path": "overlay/src/omarchy_als.py",
-@@ -307,12 +307,12 @@
+@@ -302,17 +302,17 @@
+       {
+         "path": "overlay/src/omarchy_isp.py",
+         "destination": "src/omarchy_isp.py",
+-        "sha256": "bbb156702c3a9dd61c4069871d130de48f8e6ad506a6c682197c3e809b9d97ce"
++        "sha256": "f8d0c9b3723ba5ce87690131163fb759d08747897ae4ce2314a9656c827c8ab0"
+       },
        {
          "path": "overlay/src/omarchy_wifi.py",
          "destination": "src/omarchy_wifi.py",
@@ -973,7 +1065,13 @@ index 9588ec9..c02e5d9 100644
        },
        {
          "path": "overlay/src/omarchy_apple_aea.py",
-@@ -337,12 +337,12 @@
+@@ -332,17 +332,17 @@
+       {
+         "path": "overlay/tests/test_omarchy_isp.py",
+         "destination": "tests/test_omarchy_isp.py",
+-        "sha256": "9458c0dc1b5218b38601bd1bde1177b9de6c56096c1ba53cb47b92662f75be60"
++        "sha256": "2261932914ade9755c9e196851fc13aa4845c9350a178e2df3189a6c17237377"
+       },
        {
          "path": "overlay/tests/test_omarchy_wifi.py",
          "destination": "tests/test_omarchy_wifi.py",
@@ -995,7 +1093,7 @@ index 9588ec9..c02e5d9 100644
 -    "filename": "installer-v0.9.2-omarchy.20261110.fb337ca4e5a0.tar.gz",
 -    "size_bytes": 17908690,
 -    "sha256": "1c762ce473573b01b34ab1dafc13ec742d25d5f4ebb38645c0260a0cce1714a9",
-+    "filename": "installer-v0.9.2-omarchy.20261115.f6112d89ebf1.tar.gz",
++    "filename": "installer-v0.9.2-omarchy.20261116.e5ff013ee6b2.tar.gz",
 +    "size_bytes": 17911927,
 +    "sha256": "fd144c95b947b134f649d2f1456b1885c2f9a29542672ec770b0556456f40978",
      "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
