@@ -577,3 +577,19 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - So the failure is a race during the unload: whether the driver's error reply to iwd's quick scan arrives a few milliseconds before iwd drops its scan context. A reload that misses the race rejoins in 2.6 s. The failure itself wasn't reproduced (one plain run), so the race is narrowed, not proven, and how often it hits isn't known. The script now takes a number of plain runs and reports for each whether the race hit (failed connects before the load).
 - Decision (owner): no change to the image for the test. The check should turn the Wi-Fi radio off before unloading (`nmcli radio wifi off`, reload, `nmcli radio wifi on`), so iwd makes no connect attempts on a radio that's going away; that's noted on OMS-8, the test-tool task. Whether radio-off avoids the race was also not shown, since the plain run missed it.
 - Found in review: Omarchy's own `omarchy-wifi-resume-fix` (`omarchy-mac` 0.2.3-2) reloads `brcmfmac` the same plain way, after a resume where Wi-Fi didn't come back, and gives up after 30 s. It can meet the same race, possibly with access points already blocked from failed associations before the reload. Every run in these journals said "no reload needed", so there's no field data. Filed as OMS-20.
+
+### 9.28 The clean reinstall: build inputs and plan (OMS-14, 2026-11-16)
+- `tools/derive-j616c-image` now pins the exact `[aurora]` builds (`AURORA_PINS`) and stops before installing if the repo offers anything else, and again if anything else got installed. Aurora's repo keeps only its latest build, so a pin can't fetch an old one: it makes a moved repo a decision instead of a surprise. Checked with `bash -n` and a fake repo (matching versions pass; a newer kernel stops the build).
+- Pinned, read from `[aurora]`'s package database on 2026-11-16:
+  - `linux-aurora` and `-headers` `7.3.0.aurora1-40`, built 2026-11-15 05:59 UTC from aurora-silicon/linux `9125b314` (alarm-aurora `3fbe46d57`, "pin cand/7.3.0-40"). That source contains `5b192f8d` (1222 commits ahead, none behind), so the light sensor and motion nodes are enabled (OMS-3).
+  - `mesa-aurora` and `vulkan-aurora` `1:26.3.0_devel.202611150611.d4ad4a4dce6-1`, built 2026-11-15 07:29 UTC, the Mesa built with that kernel.
+  - `aura 1.0.0b13.1-1`, `uboot-aurora 2026.07.aurora11-1`, `asahi-scripts 20261023-9`, `aurora-audio 4.1.aurora2-16`, `speakersafetyd-aurora-profiles 1-2`.
+- Untested on this Mac until the reinstall: kernel `-40` (it runs `-36`), that Mesa, and aura `b13.1`'s Stage 1. The live Stage 1 was enrolled from the `b13` object (9.17), and the repo no longer has `b13`. Stage 2 stays the pinned aura `94d8e6e4` build. If the new chain doesn't boot, macOS still starts from Startup Options, and the fallback is the current packages saved from this Mac's pacman cache before the reinstall.
+- The engine is `v0.9.2-omarchy.20261116.e5ff013ee6b2` once rebuilt: OMS-11's unpadded Stage 1 mode plus OMS-22's IMX958 camera tuning.
+- Plan:
+  1. Merge OMS-22 (the camera port) and this branch.
+  2. On the Mac's Linux: back up the home folder and the current boot-chain and Mesa packages from the pacman cache to dev-machine-01.
+  3. On macOS: make `~/aurora-m4` a clone of this repo, so the build uses main's scripts and patch, not hand copies. Then rebuild the engine (and run `test/all` there), the Recovery app, the edge image (or reuse 2026-11-13's), the derivation, the developer catalog, the app and the package. Check the camera daemon yields `isp_2224_01XX.dat`.
+  4. Remove the first attempt's leftover partitions (disk0s7 to disk0s10), with the owner's approval and a listing first.
+  5. Install with Replace, then first boot, owner setup and the first `omarchy update`, with no hand steps.
+  6. Report with omarchy-m-test, compared with 2026-11-15's (7McWSfw9…). Check the camera log line is gone and `input.ambient-light` passes.
