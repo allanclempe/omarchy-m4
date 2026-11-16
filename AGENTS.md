@@ -5,8 +5,9 @@ brings Omarchy (Arch Linux ARM + Hyprland) to Apple silicon Macs. The goal is an
 stable Omarchy release for the M4 Max**: MacBook Pro 16-inch, `Mac16,5`, board J616c, chip T6041.
 Every M4 Mac is still refused by the public installer (omacom/omarchy-mac-installer).
 
-As of 2026-11-14 one J616c runs Omarchy end to end: aura, U-Boot, Limine, Linux 7.3 on all 14 cores,
-Aurora's GPU driver, Hyprland and Wi-Fi. It took several hand fixes. The week of 2026-11-16 is a
+As of 2026-11-16 one J616c runs Omarchy from the OMS-14 build: aura's raw Stage 1, U-Boot, Limine,
+Linux 7.3 on all 14 cores, Aurora's GPU driver, Hyprland and Wi-Fi. One hand step remains (the
+Stage 1 enrolment, OMS-24). The week of 2026-11-16 is a
 **soak test**: Allan uses the machine for real daily work, and we record how the OS behaves.
 
 ## Done means a clean reinstall
@@ -19,15 +20,19 @@ row below. A task whose fix lives only on the Mac isn't done.
 
 | Hand fix on the installed Mac | In the build | Task |
 | --- | --- | --- |
-| Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (not yet run) | OMS-14 |
-| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode for J616c (not yet built; Recovery's Swift checks still to run on macOS) | OMS-11 |
+| Stage 2 from aura `94d8e6e4` (ANS restart) written to the ESP | derivation pins it via `M1N1=` (run 2026-11-16); the pin is unnecessary, b13.1 has the fix | OMS-25 |
+| Unpadded Mach-O Stage 1 enrolled by hand in 1TR | installer patch: `macho-unpadded` mode (built and installed 2026-11-16); Stage 2 refuses it on a fresh install, see the raw row | OMS-11 |
 | `pacman-key --populate aurora` before owner setup | derivation drop-in (not yet run) | OMS-14 |
-| fstab mounts `/boot/efi` by PARTUUID | no | OMS-12 |
+| fstab mounts `/boot/efi` by PARTUUID | derivation installs `omarchy-esp-generator`, which mounts the device-tree ESP (not yet run) | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
+| Arch's `alsa-utils` swapped for Aurora's `alsa-utils-aurora` (pacman asked when installing Aurora's audio) | derivation removes `alsa-utils` and installs `alsa-utils-aurora`, pinned; found by the first run of the audio step (2026-11-16) | OMS-14 |
 | Update guards; Stage 2 trial disarmed | derivation: Stage 2 rebuilt from the pin, tried once by Aurora's trial, `owner-boot-chain` marker; kernel and Mesa update (not yet run) | OMS-13 |
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
+| `linux-firmware-realtek` installed (USB Ethernet firmware) | derivation, PR #12 (not yet run) | OMS-7 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
+| Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | no: switch the J616c to the installer's `raw` mode | OMS-24 |
+| App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 
 ## Where things are
 
@@ -35,6 +40,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   section 9 onward before acting on the boot chain. Add new findings as the next numbered section
   (`### 9.N Title (date)`). Record corrections there, never by rewriting history.
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
+- `tools/wifi-reload-timing.sh` times Wi-Fi's rejoin after a `brcmfmac` reload, plain and with the
+  radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
@@ -46,6 +53,10 @@ row below. A task whose fix lives only on the Mac isn't done.
   the padded `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix. Apply it to a
   checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
   back into this patch, so the repo stays the source.
+- `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
+  `tools/tests/` has their tests (plain Bash, run on Linux).
+- `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
+  stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
   (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`. `patches/README.md` gives each patch's base
   and how to apply and test it.
@@ -64,25 +75,30 @@ row below. A task whose fix lives only on the Mac isn't done.
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
 
-## The installed Mac: guards that must stay
+## The installed Mac (reinstalled 2026-11-16, OMS-14)
 
-The live boot depends on a Stage 2 built from aura `94d8e6e` (it has `aaec599f`, the post-M4 ANS
-restart). No aura release has that fix yet: `1.0.0b13.1` lacks it. These guards keep updates from
-putting the broken Stage 2 back. Keep them until an aura release contains `aaec599f` (JOURNEY 9.14):
+A fresh install from the OMS-14 build (`build/oms14/` on the Mac's macOS). It boots through
+**aura's raw Stage 1**, enrolled by hand from One True Recovery with `bputil -nc` then
+`kmutil configure-boot --raw` (JOURNEY 9.31), because the Mach-O object the build enrols is
+refused by Stage 2 on this chip (9.30). The image's own update policy applies: Stage 2 rebuilt
+from the pinned aura `94d8e6e4` (`M1N1=` in `/etc/default/update-m1n1`), tried once by Aurora's
+trial, `IgnorePkg = m1n1-aurora` only, and `/etc/omarchy-mac-boot/owner-boot-chain`. No other
+hand guards. The pin is unnecessary: aura `1.0.0b13.1` carries the ANS fix (9.31, OMS-25).
 
-- `M1N1_UPDATE_DISABLED=1` in `/etc/default/update-m1n1`: Aurora's hook no longer rebuilds Stage 2
-  or arms Stage 2 trials.
-- `IgnorePkg = m1n1-aurora linux-aurora mesa-aurora vulkan-aurora`: the kernel and its Mesa stay in
-  step with the device tree inside the frozen Stage 2.
-- `/etc/omarchy-mac-boot/owner-boot-chain`: Omarchy's update check only warns, because its boot
-  check always fails on Aurora's `update-m1n1`. Its suggested fix
-  (`mkinitcpio -P && update-m1n1 && omarchy-mac-boot-update`) rebuilds Stage 2: leave it unrun.
-
-Known-good values: live `m1n1/boot-ctxr.bin` sha256 `a0f493b4…f552`; ESP `nvme0n1p4`,
-PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT serial `4F4D-5801`.
+Known-good values: ESP `nvme0n1p4`, PARTUUID `6a2fb892-ad59-47d7-811e-9e64269d36fb`; volume
+group `D0250F82-1ADD-4E65-AA4D-95A9108F576D`; stub System volume `8213D71C-4BD0-400F-B2ED-ED1A4CABD0F1`;
+Stage 2 `m1n1/boot-ctxr.bin` sha256 `1a0b3993…`; enrolled raw Stage 1 sha256 `78268eb7…034f`
+(`stage1-b13dev-raw.bin`, aura b13 for this ESP). Every Omarchy ESP has FAT serial `4F4D-5801`.
+The ESP also holds the test files `go-oms14*.sh` and `stage1-b13dev-*`; they do nothing at boot.
 
 ## Working rules
 
+- **This repo is public.** Anyone can read every file, every commit on every branch, and every
+  PR's text, and a commit stays in the history after the file is changed. Keep out of all of
+  them: Wi-Fi network names (write "a home mesh network"), addresses on the home network, where
+  Allan lives, device serial numbers, credentials and tokens, other people's private details, and
+  anything from the team's private Basecamp beyond what its authors made public. If something
+  private gets committed, stop and tell Allan: taking it out means rewriting history (OMS-21).
 - Anything that writes to the Mac's disk, ESP, boot policy or 1TR needs Allan's approval first,
   with a backup and an undo path stated.
 - Copy identifiers (PARTUUIDs, hashes, serials) from command output, character for character.
@@ -90,6 +106,10 @@ PARTUUID `272043e7-ec24-4890-93d6-545cfbb8329b`; every Omarchy ESP has FAT seria
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
 - Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
+  with enough context to ask them cold. Move a question to **Answered** when it's settled. That
+  file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
+  Never commit it, and don't quote it in public files.
 - Any commit or PR from this work says it was made with AI assistance (Aurora's contributing guide
   requires it).
 

@@ -18,6 +18,11 @@
 #     the amps stay locked and there is no speaker sink (OMS-1). Also Aurora's
 #     aurora-audio: the edge image's build (4.1.aurora3-3) has no J616 speaker or
 #     mic graph, Aurora's (4.1.aurora2-16) does, though its pkgrel sorts lower;
+#   - pins the exact [aurora] builds it was tested with (AURORA_PINS: kernel,
+#     aura, U-Boot, asahi-scripts, Mesa, audio) and stops if the repo has moved on;
+#   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
+#     split, so USB-C Ethernet dongles on RTL8153B (and Realtek USB Wi-Fi and
+#     Bluetooth) ran without their firmware (OMS-7);
 #   - uses a Stage 2 built from aura main with aaec599f (restarts the post-M4
 #     ANS that Stage 1 powers off; no aura release has it yet), installed at
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
@@ -33,6 +38,10 @@
 #   - makes the trial guard count its 12 minutes from when the unlocked system
 #     starts, not from kernel start, so time at the disk password doesn't roll
 #     back a good trial (OMS-17);
+#   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
+#     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
+#     which every Omarchy ESP shares (OMS-12), and /boot from the partition
+#     after it rather than the Boot UUID every install shares (OMS-15);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
@@ -60,6 +69,26 @@ AURORA_MESA_OPTIONAL=(mesa-aurora-fex-guest vulkan-lavapipe-aurora)
 # speakersafetyd looks for apple/j616.conf on a J616c; only this package has it.
 # aurora-audio: the J616 speaker and mic DSP graphs (asahi-audio/j616).
 AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles aurora/aurora-audio)
+# Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
+# rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
+# linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
+DONGLE_FIRMWARE=(core/linux-firmware-realtek)
+# The exact [aurora] builds this image is made and tested with. Aurora's repo keeps
+# only its latest build, so a pin can't fetch an older one: it stops the build when
+# the repo has moved on, so a new kernel, Stage 1 or Mesa never ships untested.
+# Bump these on purpose, and record why in JOURNEY.
+declare -A AURORA_PINS=(
+  [linux-aurora]=7.3.0.aurora1-40
+  [linux-aurora-headers]=7.3.0.aurora1-40
+  [aura]=1.0.0b13.1-1
+  [uboot-aurora]=2026.07.aurora11-1
+  [asahi-scripts]=20261023-9
+  [mesa-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
+  [vulkan-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
+  [aurora-audio]=4.1.aurora2-16
+  [speakersafetyd-aurora-profiles]=1-2
+  [alsa-utils-aurora]=1.2.16-1
+)
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
@@ -90,7 +119,11 @@ host() {
 mounts=()
 loops=()
 cleanup() {
-  local i
+  local rc=$? i
+  # The work volume goes with the container: on a failure, keep its logs.
+  if ((rc != 0)) && [[ -d /out && -n ${W:-} ]]; then
+    mkdir -p /out/failed-logs && cp -p "$W"/*.log "$W"/*.txt /out/failed-logs/ 2>/dev/null || true
+  fi
   for ((i = ${#mounts[@]} - 1; i >= 0; i--)); do umount "${mounts[i]}" 2>/dev/null || umount -l "${mounts[i]}" 2>/dev/null || true; done
   for i in "${loops[@]}"; do losetup -d "$i" 2>/dev/null || true; done
 }
@@ -207,6 +240,14 @@ PY
   in_chroot pacman -Sy --noconfirm >"$W/pacman.log" 2>&1 || fail "pacman -Sy failed (pacman.log)"
   in_chroot pacman -S --noconfirm aurora/aurora-keyring >>"$W/pacman.log" 2>&1 ||
     fail "could not install aurora-keyring"
+  # Before installing anything else: the repo must still offer exactly the pinned builds.
+  local pkg have moved=()
+  for pkg in "${!AURORA_PINS[@]}"; do
+    have=$(in_chroot pacman -Si "aurora/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    [[ $have == "${AURORA_PINS[$pkg]}" ]] || moved+=("$pkg: pinned ${AURORA_PINS[$pkg]}, [aurora] has ${have:-nothing}")
+  done
+  ((${#moved[@]} == 0)) ||
+    fail "[aurora] no longer offers the pinned builds; review them, then bump AURORA_PINS: $(printf '%s; ' "${moved[@]}")"
   in_chroot pacman -Rdd --noconfirm m1n1-aurora >>"$W/pacman.log" 2>&1 || fail "could not remove m1n1-aurora"
   in_chroot pacman -S --noconfirm "${AURORA_BOOT[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Aurora boot chain (pacman.log)"
@@ -225,8 +266,17 @@ PY
   done
 
   log "installing Aurora's speakersafetyd profiles and aurora-audio"
-  in_chroot pacman -S --noconfirm "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
+  # They need Aurora's alsa-utils-aurora, which conflicts with Arch's alsa-utils, and
+  # --noconfirm answers "no" to removing it. Swap it explicitly (OMS-14: this step had
+  # been done by hand on the Mac).
+  if in_chroot pacman -Qq alsa-utils 2>/dev/null | grep -qx alsa-utils; then
+    in_chroot pacman -Rdd --noconfirm alsa-utils >>"$W/pacman.log" 2>&1 || fail "could not remove Arch's alsa-utils"
+  fi
+  in_chroot pacman -S --noconfirm aurora/alsa-utils-aurora "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install Aurora's speaker packages (pacman.log)"
+  in_chroot pacman -Qq alsa-utils-aurora >/dev/null 2>&1 || fail "alsa-utils-aurora is not installed"
+  # Anything that needed alsa-utils must still be satisfied (alsa-utils-aurora provides it).
+  in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "missing dependencies after the alsa-utils swap (pacman.log)"
   grep -q '^\[Speaker/' "$T/usr/share/speakersafetyd/apple/j616.conf" 2>/dev/null ||
     fail "no speakersafetyd profile with speakers for J616 (apple/j616.conf)"
   for p in graph.json mic.json; do
@@ -236,11 +286,23 @@ PY
   grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
 
+  log "installing Realtek firmware for USB dongles"
+  in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install the Realtek dongle firmware (pacman.log)"
+  # Arch Linux ARM ships it plain, x86 Arch zstd-compressed; the kernel loads either.
+  in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
+    fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
+
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" | tee "$W/versions.txt"
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
+  # And what got installed is exactly what was pinned.
+  for pkg in "${!AURORA_PINS[@]}"; do
+    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${AURORA_PINS[$pkg]}" ]] ||
+      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the pinned ${AURORA_PINS[$pkg]}"
+  done
 
   local kver
   kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
@@ -392,6 +454,17 @@ PY
 [Service]
 ExecStartPre=/usr/bin/pacman-key --populate aurora
 EOF
+
+  log "mounting /boot/efi and /boot from the install the Mac boots"
+  # fstab stays as the image builder writes it (mac-image-check pins the line);
+  # the generator's units take precedence over fstab's at every boot.
+  # The generator copies these lines' UUIDs, options and fsck pass, so match all of them.
+  grep -Eq '^UUID=4F4D-5801[[:space:]]+/boot/efi[[:space:]]+vfat[[:space:]]+umask=0077[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot/efi line isn't the one omarchy-esp-generator replaces (UUID=4F4D-5801, umask=0077, pass 2)"
+  grep -Eq '^UUID=4f4d5801-424f-4f54-8000-000000000001[[:space:]]+/boot[[:space:]]+ext4[[:space:]]+defaults,noatime[[:space:]]+0[[:space:]]+2[[:space:]]*$' "$T/etc/fstab" ||
+    fail "fstab's /boot line isn't the one omarchy-esp-generator replaces (UUID=4f4d5801-424f-…-0001, defaults,noatime, pass 2)"
+  install -D -m 0755 /tools/image/omarchy-esp-generator \
+    "$T/usr/local/lib/systemd/system-generators/omarchy-esp-generator"
 
   log "cleaning up the root"
   rm -rf "$T/etc/pacman.d/gnupg"
