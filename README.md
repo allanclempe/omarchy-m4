@@ -29,7 +29,7 @@ install, which needed hand fixes:
 - The Hyprland desktop.
 - Speakers and microphones, with Aurora's J616 speaker profiles and DSP graphs.
 - Wi-Fi: it rejoins in about 2.5 s after a driver reload.
-- The camera at 1920x1080. The picture is a bit soft; a comparison with macOS is next.
+- The camera at 1920x1080. The picture is much noisier than on macOS, even with the sensor tuning file loaded (`JOURNEY.md` 9.27, 9.37).
 - The keyboard backlight.
 - USB-C Ethernet adapters, with Arch's Realtek firmware.
 
