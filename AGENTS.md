@@ -7,7 +7,7 @@ Every M4 Mac is still refused by the public installer (omacom/omarchy-mac-instal
 
 As of 2026-11-16 one J616c runs Omarchy installed from the OMS-24 build with **zero hand steps**
 (JOURNEY 9.35): aura's raw Stage 1 enrolled by the installer, U-Boot, Limine, Linux 7.3 on all 14
-cores, Aurora's GPU driver, Hyprland, Wi-Fi, the camera with its tuning and the light sensor. The week of 2026-11-16 is a
+cores, Aurora's GPU driver, Hyprland, Wi-Fi, the camera (its tuning loads, but the picture stays noisier than on macOS, JOURNEY 9.37) and the light sensor. The week of 2026-11-16 is a
 **soak test**: Allan uses the machine for real daily work, and we record how the OS behaves.
 
 ## Done means a clean reinstall

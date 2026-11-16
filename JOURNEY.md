@@ -688,3 +688,8 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - **Light sensor:** `aop-sensors-als` reads 50 lux.
   - Packages are the pins (`linux-aurora 7.3.0.aurora1-40`, `aura 1.0.0b13.1-1`, Mesa `202611150611`); `M1N1=` pin, `IgnorePkg = m1n1-aurora`, both Stage 2 trial units enabled; no failed units.
 - So the build meets the bar this repo set: a fresh install boots to a working desktop with zero hand steps through install, first boot and the first `omarchy update`. What stays outside it: removing an earlier install (OMS-23), the app version passed by hand at build time, the Stage 2 pin (OMS-25), and the trial path, still unexercised because no boot-chain update has come yet.
+
+### 9.37 Soak test: the tuned camera looks no better (OMS-22, 2026-11-16)
+- Allan, using the acceptance install (9.35) after the first `omarchy update`: the camera picture looks no better than before the fix. The setfile `isp_2224_01XX.dat` is installed and loads, and the kernel no longer logs "streaming without sensor tuning". So the missing setfile wasn't the cause, or not the whole cause, of the noise measured against macOS in 9.27 (about 26 dB lower PSNR, purple speckle in shadows).
+- Not measured yet: the 9.27 comparison repeated with the tuning loaded. Candidates from 9.27, none checked: per-module calibration (`iCCl`), which Aurora's camera-tuning doc says no kernel uploads yet; and the noise reduction and processing macOS applies that the Linux path may not.
+- OMS-22's collection fix stays: it is still what the kernel asks for. The README no longer calls the camera's picture a comparison still to make, and AGENTS.md no longer implies the tuning fixed the picture.
