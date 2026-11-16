@@ -59,6 +59,10 @@ row below. A task whose fix lives only on the Mac isn't done.
   `tools/tests/` has their tests (plain Bash, run on Linux).
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
   stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
+- `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
+  for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
+  name collisions `[aurora]` causes by being first. It also covers the kernel dependency
+  (Aurora's 7.3 kernel, until omacom's 7.3 carries the J616c).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
