@@ -5,9 +5,9 @@ brings Omarchy (Arch Linux ARM + Hyprland) to Apple silicon Macs. The goal is an
 stable Omarchy release for the M4 Max**: MacBook Pro 16-inch, `Mac16,5`, board J616c, chip T6041.
 Every M4 Mac is still refused by the public installer (omacom/omarchy-mac-installer).
 
-As of 2026-11-16 one J616c runs Omarchy from the OMS-14 build: aura's raw Stage 1, U-Boot, Limine,
-Linux 7.3 on all 14 cores, Aurora's GPU driver, Hyprland and Wi-Fi. One hand step remains (the
-Stage 1 enrolment, OMS-24). The week of 2026-11-16 is a
+As of 2026-11-16 one J616c runs Omarchy installed from the OMS-24 build with **zero hand steps**
+(JOURNEY 9.35): aura's raw Stage 1 enrolled by the installer, U-Boot, Limine, Linux 7.3 on all 14
+cores, Aurora's GPU driver, Hyprland, Wi-Fi, the camera (its tuning loads, but the picture stays noisier than on macOS, JOURNEY 9.37) and the light sensor. The week of 2026-11-16 is a
 **soak test**: Allan uses the machine for real daily work, and we record how the OS behaves.
 
 ## Done means a clean reinstall
@@ -31,8 +31,10 @@ row below. A task whose fix lives only on the Mac isn't done.
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
 | `linux-firmware-realtek` installed (USB Ethernet firmware) | derivation, PR #12 (not yet run) | OMS-7 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
-| Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | no: switch the J616c to the installer's `raw` mode | OMS-24 |
+| An earlier install removed by hand with `diskutil` before reinstalling (the app refuses M4 installs) | no: the app's removal check must learn aura's boot object | OMS-23 |
+| Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c; the installer enrolled it on the acceptance install (JOURNEY 9.35) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
+| Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
 
 ## Where things are
 
@@ -71,26 +73,24 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Machine | Reach it | Role |
 | --- | --- | --- |
 | The M4 Max, macOS | `allanclempe@allans-macbook-pro` over SSH | Builds the engine, app and installer package (Xcode), and runs the Lima build VM `omarchy-builder` for the image |
-| The M4 Max, Omarchy | `clempe@dev-machine-macos` over Tailscale | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
+| The M4 Max, Omarchy | `clempe@dev-machine-mac-1` over Tailscale SSH (the name changes with each fresh install) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
 | dev-machine-01 | local | Linux host on the other end of the USB-C cable for `tools/aura-usb/` |
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
 
-## The installed Mac (reinstalled 2026-11-16, OMS-14)
+## The installed Mac (acceptance install, 2026-11-16)
 
-A fresh install from the OMS-14 build (`build/oms14/` on the Mac's macOS). It boots through
-**aura's raw Stage 1**, enrolled by hand from One True Recovery with `bputil -nc` then
-`kmutil configure-boot --raw` (JOURNEY 9.31), because the Mach-O object the build enrols is
-refused by Stage 2 on this chip (9.30). The image's own update policy applies: Stage 2 rebuilt
-from the pinned aura `94d8e6e4` (`M1N1=` in `/etc/default/update-m1n1`), tried once by Aurora's
-trial, `IgnorePkg = m1n1-aurora` only, and `/etc/omarchy-mac-boot/owner-boot-chain`. No other
-hand guards. The pin is unnecessary: aura `1.0.0b13.1` carries the ANS fix (9.31, OMS-25).
+Installed from `build/oms24/Omarchy-J616c-Developer.pkg` (app 2.3.18) with no hand step
+(JOURNEY 9.35). The installer enrolled **aura's raw Stage 1** in `raw-ctxr` mode (`bputil -nc`,
+`kmutil --raw`), loading the confined Stage 2 `m1n1/boot-ctxr.bin`. The image's own update policy
+applies: Stage 2 rebuilt from the pinned aura `94d8e6e4` (`M1N1=` in `/etc/default/update-m1n1`),
+tried once by Aurora's trial, `IgnorePkg = m1n1-aurora` only, and
+`/etc/omarchy-mac-boot/owner-boot-chain`. No hand guards. The pin is unnecessary: aura `1.0.0b13.1`
+carries the ANS fix (9.31, OMS-25).
 
-Known-good values: ESP `nvme0n1p4`, PARTUUID `6a2fb892-ad59-47d7-811e-9e64269d36fb`; volume
-group `D0250F82-1ADD-4E65-AA4D-95A9108F576D`; stub System volume `8213D71C-4BD0-400F-B2ED-ED1A4CABD0F1`;
-Stage 2 `m1n1/boot-ctxr.bin` sha256 `1a0b3993…`; enrolled raw Stage 1 sha256 `78268eb7…034f`
-(`stage1-b13dev-raw.bin`, aura b13 for this ESP). Every Omarchy ESP has FAT serial `4F4D-5801`.
-The ESP also holds the test files `go-oms14*.sh` and `stage1-b13dev-*`; they do nothing at boot.
+Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d04a`; Boot
+`nvme0n1p5`, PARTUUID `9d4a6c2a-2925-4563-ad03-c63c37147581`; camera setfile
+`isp_2224_01XX.dat` sha256 `dce21e48ccd35f54…`. Every Omarchy ESP has FAT serial `4F4D-5801`.
 
 ## Working rules
 
