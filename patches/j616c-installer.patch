@@ -1,5 +1,5 @@
 diff --git a/Engine/overlay/src/omarchy_asahi.py b/Engine/overlay/src/omarchy_asahi.py
-index a085304..48abcd4 100644
+index a085304..87b640e 100644
 --- a/Engine/overlay/src/omarchy_asahi.py
 +++ b/Engine/overlay/src/omarchy_asahi.py
 @@ -448,7 +448,116 @@ BOARD_STAGE1 = {
@@ -202,7 +202,69 @@ index a085304..48abcd4 100644
                or member in BOARD_STAGE2.values()
                or (common and member in {board.member for board in BOARD_STAGE1.values()})
                or (own is not None and member == ESP_STAGE2)):
-@@ -1358,9 +1504,14 @@ class AsahiStage1Adapter:
+@@ -680,6 +826,50 @@ def _neo_peripheral_collectors(installer):
+             stub.AlsFWCollection, stub.ISPFWCollection, stub.subprocess = old_als, old_isp, old_process
+ 
+ 
++# Boards whose camera has a sensor setfile beyond upstream's registry, and
++# must get it: the installer's firmware.tar is what first boot installs, and a
++# camera without its setfile streams dark and noisy (omarchy-m4 OMS-22).
++BOARD_CAMERA_SETFILES = {
++    # The 16-inch M4 Max's IMX958 (aura's isp-cam.c: 0x958, 0x22240106, 0x6ff4).
++    "j616cap": ("the 16-inch M4 Max", ("2224_01XX",)),
++}
++
++
++@contextlib.contextmanager
++def _camera_tuning_collector(installer):
++    """Collect camera setfiles with the upgraded registry on every Mac.
++
++    Upstream's ISPFWCollection knows only its own setfile list, so a sensor
++    it lacks (IMX958 on the J616c) is never collected, however the registry
++    was extended. The Neo keeps its own collector, which already upgrades the
++    registry and checks its sensors."""
++    upstream = getattr(asahi_firmware, "isp", None)
++    device = getattr(getattr(installer, "sysinfo", None), "device_class", "")
++    if upstream is None or not hasattr(stub, "ISPFWCollection") or device == "j700ap":
++        yield
++        return
++    board, required = BOARD_CAMERA_SETFILES.get(device, ("", ()))
++    upgraded = omarchy_isp.collection_class(upstream)
++
++    class CameraCollection(upgraded):
++        def __init__(self, source_path):
++            super().__init__(source_path)
++            names = {name for name, _ in self.files()}
++            missing = {"apple/isp_" + sensor + ".dat" for sensor in required} - names
++            if missing:
++                raise AsahiAdapterError(
++                    f"{board} camera tuning is missing: " + ", ".join(sorted(missing)))
++
++    old_isp = stub.ISPFWCollection
++    stub.ISPFWCollection = CameraCollection
++    try:
++        yield
++    except omarchy_isp.IspError as error:
++        raise AsahiAdapterError(f"camera tuning collection failed: {error}") from error
++    finally:
++        stub.ISPFWCollection = old_isp
++
++
+ @contextlib.contextmanager
+ def _installed_macos_wifi(installer):
+     """Collect BCM4388 rev C2 Wi-Fi, from the installed macOS when Recovery
+@@ -712,8 +902,8 @@ def stub_installer(sysinfo, dutil, osinfo):
+     collect_firmware = installer.collect_firmware
+ 
+     def collect_firmware_from_an_encrypted_recovery(pkg):
+-        with _newer_trackpad_keys(), _neo_peripheral_collectors(installer), \
+-                _installed_macos_wifi(installer) as radios:
++        with _newer_trackpad_keys(), _camera_tuning_collector(installer), \
++                _neo_peripheral_collectors(installer), _installed_macos_wifi(installer) as radios:
+             result = _collect_firmware(pkg)
+             if radios is not None:
+                 try:
+@@ -1358,9 +1548,14 @@ class AsahiStage1Adapter:
          board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members,
                               common_allowed=self.common_stage1)
          if board is not None:
@@ -218,7 +280,7 @@ index a085304..48abcd4 100644
          stage2 = ESP_STAGE2 if self.common_stage1 else BOARD_STAGE2.get(device_class)
          if stage2 is not None and self.osins.pkg.getinfo(stage2).file_size <= 0:
              raise AsahiAdapterError(f"this image has an empty {stage2}")
-@@ -1523,7 +1674,7 @@ class AsahiStage1Adapter:
+@@ -1523,7 +1718,7 @@ class AsahiStage1Adapter:
              self.osins.firmware_package = firmware_package
  
          self.osins.install(self.installer.ins)
@@ -227,7 +289,7 @@ index a085304..48abcd4 100644
              self.installer.sysinfo.device_class,
              self.os_firmware,
              self.osins.pkg.read,
-@@ -1552,6 +1703,10 @@ class AsahiStage1Adapter:
+@@ -1552,6 +1747,10 @@ class AsahiStage1Adapter:
                  requirement=self.recovery_requirement if self.use_helper_recovery else None,
                  authorized_owner=self.authorized_owner if self.use_helper_recovery else None,
                  expected_bootstrap=self.source_bootstrap if self.use_helper_recovery else None,
@@ -428,7 +490,7 @@ index bc8c722..f7cd91e 100644
              # there after the staged tree.
              command[at:at + 3] = ["-C", staging, "firmware", "-C", os.path.abspath(RECOVERY_FIRMWARE[1])]
 diff --git a/Engine/overlay/tests/test_omarchy_asahi.py b/Engine/overlay/tests/test_omarchy_asahi.py
-index a851f94..74fdbd1 100644
+index a851f94..64b6484 100644
 --- a/Engine/overlay/tests/test_omarchy_asahi.py
 +++ b/Engine/overlay/tests/test_omarchy_asahi.py
 @@ -125,6 +125,7 @@ from omarchy_asahi import (  # noqa: E402
@@ -696,6 +758,101 @@ index a851f94..74fdbd1 100644
      def test_a_member_outside_the_esp_is_refused(self):
          with self.assertRaises(AsahiAdapterError):
              esp_board_layout("j613ap", ["root.img"])
+@@ -2645,5 +2875,94 @@ class InstalledMacosWiFiTests(unittest.TestCase):
+         self.assertEqual(self.collect("j314sap", SimpleNamespace()), [("collect", "pkg")])
+ 
+ 
++
++class CameraTuningCollectionTests(unittest.TestCase):
++    """Every Mac collects camera setfiles with the upgraded registry (OMS-22)."""
++
++    def setUp(self):
++        self.installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class="j616cap"))
++        self.original_isp = object()
++        self.stub = SimpleNamespace(ISPFWCollection=self.original_isp)
++        self.firmware = SimpleNamespace(isp=object())
++        self.names = {"apple/isp_" + item + ".dat" for item in ("1921_01XX", "1922_02XX", "2224_01XX")}
++        test = self
++        class Collection:
++            def __init__(self, path):
++                self.path = path
++            def files(self):
++                return [(name, b"setfile") for name in test.names]
++        self.collection = Collection
++        self.stack = __import__("contextlib").ExitStack()
++        self.addCleanup(self.stack.close)
++        self.stack.enter_context(patch("omarchy_asahi.stub", self.stub))
++        self.stack.enter_context(patch("omarchy_asahi.asahi_firmware", self.firmware))
++        self.stack.enter_context(patch("omarchy_asahi.omarchy_isp.collection_class", return_value=self.collection))
++
++    def test_the_j616c_collects_its_imx958_setfile_and_restores_the_hook(self):
++        from omarchy_asahi import _camera_tuning_collector
++        with _camera_tuning_collector(self.installer):
++            self.assertIsNot(self.stub.ISPFWCollection, self.original_isp)
++            self.assertEqual({name for name, _ in self.stub.ISPFWCollection("recovery/usr/sbin").files()}, self.names)
++        self.assertIs(self.stub.ISPFWCollection, self.original_isp)
++
++    def test_a_j616c_without_its_setfile_stops_and_restores_the_hook(self):
++        from omarchy_asahi import _camera_tuning_collector
++        self.names.remove("apple/isp_2224_01XX.dat")
++        with self.assertRaisesRegex(AsahiAdapterError, "16-inch M4 Max camera tuning is missing: apple/isp_2224_01XX.dat"):
++            with _camera_tuning_collector(self.installer):
++                self.stub.ISPFWCollection("recovery/usr/sbin")
++        self.assertIs(self.stub.ISPFWCollection, self.original_isp)
++
++    def test_other_macs_get_the_upgraded_registry_without_a_requirement(self):
++        from omarchy_asahi import _camera_tuning_collector
++        self.installer.sysinfo.device_class = "j314sap"
++        self.names.remove("apple/isp_2224_01XX.dat")
++        with _camera_tuning_collector(self.installer):
++            self.assertIsNot(self.stub.ISPFWCollection, self.original_isp)
++            self.assertEqual({name for name, _ in self.stub.ISPFWCollection("recovery/usr/sbin").files()}, self.names)
++        self.assertIs(self.stub.ISPFWCollection, self.original_isp)
++
++    def test_the_neo_keeps_its_own_camera_collector(self):
++        from omarchy_asahi import _camera_tuning_collector
++        self.installer.sysinfo.device_class = "j700ap"
++        with _camera_tuning_collector(self.installer):
++            self.assertIs(self.stub.ISPFWCollection, self.original_isp)
++
++    def test_a_registry_error_becomes_an_adapter_error(self):
++        from omarchy_asahi import _camera_tuning_collector
++        import omarchy_isp
++        with self.assertRaisesRegex(AsahiAdapterError, "camera tuning collection failed: bad daemon"):
++            with _camera_tuning_collector(self.installer):
++                raise omarchy_isp.IspError("bad daemon")
++        self.assertIs(self.stub.ISPFWCollection, self.original_isp)
++
++    def test_firmware_collection_runs_under_the_camera_collector(self):
++        seen = {}
++        stub_module = self.stub
++        class Stub:
++            def __init__(self, *args):
++                pass
++            def load_identity(self):
++                pass
++            def install_files(self, cur_os):
++                pass
++            def collect_firmware(self, pkg):
++                seen["swapped"] = stub_module.ISPFWCollection is not test_original
++        test_original = self.original_isp
++        stub_module.StubInstaller = Stub
++        stub_module.AlsFWCollection = object()
++        stub_module.subprocess = SimpleNamespace(run=lambda *a, **k: None)
++        with patch("omarchy_asahi._is_encrypted", lambda path: False), patch(
++            "omarchy_asahi.os.path.join", lambda *parts: "/".join(str(p) for p in parts)
++        ), patch("omarchy_asahi._neo_peripheral_collectors"), patch(
++            "omarchy_asahi._installed_macos_wifi"), patch("omarchy_asahi._newer_trackpad_keys"), patch(
++            "omarchy_asahi._collect_neo_radios"), patch("omarchy_asahi._collect_neo_touch_id"):
++            installer = stub_installer(SimpleNamespace(device_class="j616cap"), "dutil", "osinfo")
++            installer.sysinfo = SimpleNamespace(device_class="j616cap")
++            installer.osi = SimpleNamespace(recovery="r", vgid="v")
++            installer.collect_firmware("pkg")
++        self.assertEqual(seen, {"swapped": True})
++        self.assertIs(stub_module.ISPFWCollection, self.original_isp)
++
+ if __name__ == "__main__":
+     unittest.main()
 diff --git a/Engine/overlay/tests/test_omarchy_firmware.py b/Engine/overlay/tests/test_omarchy_firmware.py
 index 9fbce3d..258c61b 100644
 --- a/Engine/overlay/tests/test_omarchy_firmware.py
@@ -996,7 +1153,7 @@ index 2f4ed8c..41f25d5 100644
           p_warning("If you need to file a bug report, please attach the log file:")
           p_warning(f"  {os.getcwd()}/installer.log")
 diff --git a/Engine/source-lock.json b/Engine/source-lock.json
-index 9588ec9..25042f7 100644
+index 9588ec9..5ea8d5e 100644
 --- a/Engine/source-lock.json
 +++ b/Engine/source-lock.json
 @@ -141,7 +141,7 @@
@@ -1004,7 +1161,7 @@ index 9588ec9..25042f7 100644
    },
    "downstream_overlay": {
 -    "version": "v0.9.2-omarchy.20261110.fb337ca4e5a0",
-+    "version": "v0.9.2-omarchy.20261116.e5ff013ee6b2",
++    "version": "v0.9.2-omarchy.20261116.f5386904f65a",
      "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
      "minimum_app_version": "2.3.0",
      "engine_modes": [
@@ -1022,7 +1179,7 @@ index 9588ec9..25042f7 100644
          "path": "overlay/src/omarchy_asahi.py",
          "destination": "src/omarchy_asahi.py",
 -        "sha256": "dd74b3799a889d446099bb7fa1f4115518acda26c9fc8c0c516d49f1fe57dc25"
-+        "sha256": "816254d1b360e25d37db2ff9a4ded4b5bb06683f4ea6a373bc1045a7f276a953"
++        "sha256": "ee573f3df0a85f76f34abf0ca37613ef4bfb54d82fb249efbfa8934be813cb23"
        },
        {
          "path": "overlay/src/omarchy_contract.py",
@@ -1031,7 +1188,7 @@ index 9588ec9..25042f7 100644
          "path": "overlay/tests/test_omarchy_asahi.py",
          "destination": "tests/test_omarchy_asahi.py",
 -        "sha256": "c5991393b140b54a4b33082286126dd0ea6da8fe09f7353ee13833cd48bf9033"
-+        "sha256": "5301b561f0e38265878a001052e383198454e48f1917882c3d7acf79b2b010f4"
++        "sha256": "b0eeed5314503359193aec53c329c61afec28450243a4826dd0fa2281702da67"
        },
        {
          "path": "overlay/tests/test_omarchy_contract.py",
@@ -1093,7 +1250,7 @@ index 9588ec9..25042f7 100644
 -    "filename": "installer-v0.9.2-omarchy.20261110.fb337ca4e5a0.tar.gz",
 -    "size_bytes": 17908690,
 -    "sha256": "1c762ce473573b01b34ab1dafc13ec742d25d5f4ebb38645c0260a0cce1714a9",
-+    "filename": "installer-v0.9.2-omarchy.20261116.e5ff013ee6b2.tar.gz",
++    "filename": "installer-v0.9.2-omarchy.20261116.f5386904f65a.tar.gz",
 +    "size_bytes": 17912085,
 +    "sha256": "45d55b29425c0b52684ca1a7e0ba2b95483694c1e956145f8db088ff47fa154d",
      "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
