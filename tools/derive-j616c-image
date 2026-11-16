@@ -48,7 +48,7 @@
 #     enrolls raw as raw-ctxr, OMS-24) and esp/m1n1/boot-ctxr-j616c.bin;
 #   - re-seals @factory and packages the payload with its installer_data.json.
 #
-# Written with AI assistance (Claude Code). Run on an aarch64 Linux host with
+# Run on an aarch64 Linux host with
 # Docker and passwordless sudo:
 #   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 OUTPUT_DIR
 # STAGE2 is build/aura.bin from aura STAGE2_COMMIT built with the aura PKGBUILD's

@@ -1557,7 +1557,7 @@ new file mode 100644
 index 0000000..fce23e1
 --- /dev/null
 +++ b/Recovery/Sources/MachOStage1.swift
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,586 @@
 +// SPDX-License-Identifier: MIT
 +// Mach-O Stage 1 checks and execute-window padding for M4-class Macs.
 +//
@@ -1566,7 +1566,6 @@ index 0000000..fce23e1
 +// b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT, Copyright (c) 2021 The Asahi
 +// Linux contributors and Aurora Silicon contributors). Only the access
 +// modifiers changed, and the Stage 1 key block (unused here) was left out.
-+// Ported with AI assistance (Claude Code).
 +
 +import Foundation
 +
@@ -2492,7 +2491,7 @@ index 0000000..8fa65bc
 @@ -0,0 +1,513 @@
 +// SPDX-License-Identifier: MIT
 +// Ported from aurora-silicon/aurora-installer macOS/Recovery/Tests/MachOBootObjectCheck.swift
-+// at b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT). Ported with AI assistance (Claude Code).
++// at b43c3d81a98dac404fe054bb39fe3611e3ad2e1f (MIT).
 +import Foundation
 +
 +@main struct MachOBootObjectCheck {
