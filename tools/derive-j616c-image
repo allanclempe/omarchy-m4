@@ -18,6 +18,8 @@
 #     the amps stay locked and there is no speaker sink (OMS-1). Also Aurora's
 #     aurora-audio: the edge image's build (4.1.aurora3-3) has no J616 speaker or
 #     mic graph, Aurora's (4.1.aurora2-16) does, though its pkgrel sorts lower;
+#   - pins the exact [aurora] builds it was tested with (AURORA_PINS: kernel,
+#     aura, U-Boot, asahi-scripts, Mesa, audio) and stops if the repo has moved on;
 #   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
 #     split, so USB-C Ethernet dongles on RTL8153B (and Realtek USB Wi-Fi and
 #     Bluetooth) ran without their firmware (OMS-7);
@@ -71,6 +73,21 @@ AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles aurora/aurora-audio)
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
 DONGLE_FIRMWARE=(core/linux-firmware-realtek)
+# The exact [aurora] builds this image is made and tested with. Aurora's repo keeps
+# only its latest build, so a pin can't fetch an older one: it stops the build when
+# the repo has moved on, so a new kernel, Stage 1 or Mesa never ships untested.
+# Bump these on purpose, and record why in JOURNEY.
+declare -A AURORA_PINS=(
+  [linux-aurora]=7.3.0.aurora1-40
+  [linux-aurora-headers]=7.3.0.aurora1-40
+  [aura]=1.0.0b13.1-1
+  [uboot-aurora]=2026.07.aurora11-1
+  [asahi-scripts]=20261023-9
+  [mesa-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
+  [vulkan-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
+  [aurora-audio]=4.1.aurora2-16
+  [speakersafetyd-aurora-profiles]=1-2
+)
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
@@ -218,6 +235,14 @@ PY
   in_chroot pacman -Sy --noconfirm >"$W/pacman.log" 2>&1 || fail "pacman -Sy failed (pacman.log)"
   in_chroot pacman -S --noconfirm aurora/aurora-keyring >>"$W/pacman.log" 2>&1 ||
     fail "could not install aurora-keyring"
+  # Before installing anything else: the repo must still offer exactly the pinned builds.
+  local pkg have moved=()
+  for pkg in "${!AURORA_PINS[@]}"; do
+    have=$(in_chroot pacman -Si "aurora/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    [[ $have == "${AURORA_PINS[$pkg]}" ]] || moved+=("$pkg: pinned ${AURORA_PINS[$pkg]}, [aurora] has ${have:-nothing}")
+  done
+  ((${#moved[@]} == 0)) ||
+    fail "[aurora] no longer offers the pinned builds; review them, then bump AURORA_PINS: $(printf '%s; ' "${moved[@]}")"
   in_chroot pacman -Rdd --noconfirm m1n1-aurora >>"$W/pacman.log" 2>&1 || fail "could not remove m1n1-aurora"
   in_chroot pacman -S --noconfirm "${AURORA_BOOT[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Aurora boot chain (pacman.log)"
@@ -259,6 +284,11 @@ PY
     speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
+  # And what got installed is exactly what was pinned.
+  for pkg in "${!AURORA_PINS[@]}"; do
+    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${AURORA_PINS[$pkg]}" ]] ||
+      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the pinned ${AURORA_PINS[$pkg]}"
+  done
 
   local kver
   kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
