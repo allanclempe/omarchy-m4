@@ -1,16 +1,16 @@
 diff --git a/Engine/overlay/src/omarchy_asahi.py b/Engine/overlay/src/omarchy_asahi.py
-index a085304..87b640e 100644
+index a085304..3660aac 100644
 --- a/Engine/overlay/src/omarchy_asahi.py
 +++ b/Engine/overlay/src/omarchy_asahi.py
-@@ -448,7 +448,116 @@ BOARD_STAGE1 = {
+@@ -448,9 +448,138 @@ BOARD_STAGE1 = {
          "esp/aurora/stage1-j613.bin", 0, "26.6.2",
          "a 13-inch M3 MacBook Air on macOS 26.6.2",
      ),
 +    # The 16-inch M4 Max installs only 26.6.2 OS firmware (its CHIP_MIN_VER):
 +    # Aurora's T6041 GPU, DCP and sleep paths are measured on a J616c booted
 +    # at EL2 through aura with a 26.6.2 stub (aurora-silicon/linux #1664). Its
-+    # Stage 1 is aura's raw Stage 1, carried in aura's Mach-O boot object
-+    # (BOARD_MACHO_STAGE1), enrolled unpadded: see there.
++    # Stage 1 is aura's raw Stage 1, enrolled raw after `bputil -nc` and
++    # loading the confined Stage 2 (BOARD_CONFINED_RAW_STAGE1): see there.
 +    "j616cap": BoardStage1(
 +        "esp/aurora/stage1-j616c.bin", 0, "26.6.2",
 +        "a 16-inch M4 Max MacBook Pro on macOS 26.6.2",
@@ -27,19 +27,39 @@ index a085304..87b640e 100644
 +# recovery_mode names how Recovery enrolls it: "macho-ctxr" pads it for the
 +# 128 MiB execute window, "macho-unpadded" enrolls it as it is.
 +MachOStage1 = collections.namedtuple("MachOStage1", "object stage2 next_object recovery_mode")
-+BOARD_MACHO_STAGE1 = {
-+    # On the J616c (T6041) the padded object never starts: the Mac reboots about
-+    # every 10 s before aura shows anything (in iBoot or at aura's entry). The unpadded object boots the confined Stage 2,
-+    # whose embedded U-Boot starts Linux, and Linux brings up all 14 cores.
-+    # Measured on a J616c with Stage 1 from aura 1.0.0b13, Stage 2 from aura
-+    # 94d8e6e4 and linux-aurora 7.3.0.aurora1-36. aura's docs say a Stage 2
-+    # refuses to start an OS under an unpadded Stage 1; that the U-Boot
-+    # handover is why this boots is a working hypothesis.
-+    "j616cap": MachOStage1(
-+        "esp/aurora/stage1-j616c.macho", "esp/m1n1/boot-ctxr-j616c.bin",
-+        "m1n1/boot-ctxr.bin", "macho-unpadded",
++BOARD_MACHO_STAGE1 = {}
++
++# Boards that enroll aura's raw Stage 1 but chainload the confined Stage 2 that
++# Aurora's update-m1n1 writes on M4-class chips (m1n1/boot-ctxr.bin). Recovery
++# enrolls it as "raw-ctxr": `bputil -nc` (Kernel CTRR off), then `kmutil
++# configure-boot --raw`, so no CTXR window is armed and every core is free
++# (aura docs/macho-boot-object.md, "Use"; recovery-enroll.md).
++#
++# The J616c (T6041) boots only this way. Its padded Mach-O object reboots the
++# Mac about every 10 s before aura shows anything, the same object Aurora's own
++# ExecuteWindowTool makes (kcrz 153141248), and an unpadded object is confined
++# with no window, so aura's Stage 2 refuses to start the OS ("this Stage 1 did
++# not arm a large enough window"), as aura's docs say it must. A raw Stage 1
++# enrolled after `bputil -nc` booted a fresh install to Linux on all 14 cores
++# (omarchy-m4 OMS-24, JOURNEY 9.30-9.31).
++ConfinedRawStage1 = collections.namedtuple("ConfinedRawStage1", "stage2 next_object recovery_mode")
++BOARD_CONFINED_RAW_STAGE1 = {
++    "j616cap": ConfinedRawStage1(
++        "esp/m1n1/boot-ctxr-j616c.bin", "m1n1/boot-ctxr.bin", "raw-ctxr",
 +    ),
  }
+ 
+ 
++def board_confined_stage2(device_class):
++    """(payload member, ESP path) of the confined Stage 2 this board loads, or None."""
++    board = BOARD_MACHO_STAGE1.get(device_class) or BOARD_CONFINED_RAW_STAGE1.get(device_class)
++    return None if board is None else (board.stage2, board.next_object)
++
++
++def board_recovery_mode(device_class):
++    """How the native Recovery app enrolls this board's Stage 1."""
++    board = BOARD_MACHO_STAGE1.get(device_class) or BOARD_CONFINED_RAW_STAGE1.get(device_class)
++    return "raw" if board is None else board.recovery_mode
 +MACHO_RAW_ENTRY = 0x800
 +MACHO_REQUIRED = ("__TEXT", "__TEXT_EXEC", "__PRELINK_INFO", "__LINKEDIT")
 +
@@ -116,10 +136,12 @@ index a085304..87b640e 100644
 +    if obj[start:end] != raw or obj[end:fileoff + filesize].count(0) != fileoff + filesize - end:
 +        raise AsahiAdapterError("Mach-O Stage 1 does not carry this Stage 1")
 +    return obj[:start] + filled + obj[end:]
- 
- 
++
++
  def fill_aurora_stage1(image, uuid, path, window_ms):
-@@ -502,13 +611,28 @@ def common_stage1_allowed(template, device_class, os_firmware):
+     if not CANONICAL_UUID.fullmatch(uuid):
+         raise AsahiAdapterError("ESP PARTUUID must be canonical lowercase")
+@@ -502,13 +631,28 @@ def common_stage1_allowed(template, device_class, os_firmware):
      return os_firmware in firmware
  
  
@@ -127,8 +149,8 @@ index a085304..87b640e 100644
 -    """The board's Stage 1 image from the payload, refused unless fillable."""
 +def board_next_object(device_class, next_object="m1n1/boot.bin"):
 +    """The Stage 2 path this board's Stage 1 chainloads."""
-+    macho = BOARD_MACHO_STAGE1.get(device_class)
-+    return macho.next_object if macho is not None else next_object
++    confined = board_confined_stage2(device_class)
++    return confined[1] if confined is not None else next_object
 +
 +
 +def read_board_stage1(board, read_member, next_object="m1n1/boot.bin", device_class=None):
@@ -151,7 +173,7 @@ index a085304..87b640e 100644
      return image
  
  
-@@ -524,11 +648,19 @@ def install_board_stage1(
+@@ -524,11 +668,19 @@ def install_board_stage1(
      use_common = common_allowed and common_image is not None
      board = COMMON_STAGE1 if use_common else board_stage1(device_class, os_firmware)
      if board is None:
@@ -161,8 +183,8 @@ index a085304..87b640e 100644
 +    image = (common_image if use_common
 +             else read_board_stage1(board, read_member, next_object, device_class))
 +    macho = None if use_common else BOARD_MACHO_STAGE1.get(device_class)
-+    if macho is not None:
-+        next_object = macho.next_object
++    if not use_common:
++        next_object = board_next_object(device_class, next_object)
      filled = fill_aurora_stage1(image, esp_uuid.lower(), next_object, board.window_ms)
      with open(boot_object, "wb") as fd:
          fd.write(filled)
@@ -173,7 +195,19 @@ index a085304..87b640e 100644
  
  
  ESP_SOURCE = "esp"
-@@ -552,14 +684,28 @@ def esp_board_layout(device_class, members, *, common_allowed=False):
+@@ -540,6 +692,11 @@ ESP_STAGE2 = "esp/m1n1/boot.bin"
+ # board's Stage 2.
+ BOARD_STAGE2 = {"j700ap": "esp/m1n1/boot-j700.bin"}
+ 
++# Payload members no board installs any more. Images derived before OMS-24
++# carry the J616c's Mach-O boot object, which its raw-ctxr mode doesn't use;
++# the ESP needs no copy of it.
++RETIRED_ESP_MEMBERS = {"esp/aurora/stage1-j616c.macho"}
++
+ 
+ def esp_board_layout(device_class, members, *, common_allowed=False):
+     """Each payload ESP member's path on this board's ESP; absent ones are not installed."""
+@@ -552,14 +709,37 @@ def esp_board_layout(device_class, members, *, common_allowed=False):
          board = BOARD_STAGE1.get(device_class)
          macs = board.macs if board is not None else device_class
          raise AsahiAdapterError(f"this image has no {own} for {macs}")
@@ -183,6 +217,10 @@ index a085304..87b640e 100644
 +        for needed in (confined.object, confined.stage2):
 +            if needed not in members:
 +                raise AsahiAdapterError(f"this image has no {needed} for {macs}")
++    confined_raw = None if common else BOARD_CONFINED_RAW_STAGE1.get(device_class)
++    if confined_raw is not None and confined_raw.stage2 not in members:
++        raise AsahiAdapterError(
++            f"this image has no {confined_raw.stage2} for {BOARD_STAGE1[device_class].macs}")
      prefix = ESP_SOURCE + "/"
      layout = {}
      for member in members:
@@ -196,13 +234,18 @@ index a085304..87b640e 100644
 +        elif macho is not None and member == macho.object:
 +            # Recovery stages the filled object; the ESP needs no copy.
 +            continue
++        elif confined_raw is not None and member == confined_raw.stage2:
++            layout[member] = confined_raw.next_object
++        elif member in RETIRED_ESP_MEMBERS:
++            continue
          elif (member == COMMON_STAGE1.member and not common
 +              or member in {board.stage2 for board in BOARD_MACHO_STAGE1.values()}
++              or member in {board.stage2 for board in BOARD_CONFINED_RAW_STAGE1.values()}
 +              or member in {board.object for board in BOARD_MACHO_STAGE1.values()}
                or member in BOARD_STAGE2.values()
                or (common and member in {board.member for board in BOARD_STAGE1.values()})
                or (own is not None and member == ESP_STAGE2)):
-@@ -680,6 +826,50 @@ def _neo_peripheral_collectors(installer):
+@@ -680,6 +860,50 @@ def _neo_peripheral_collectors(installer):
              stub.AlsFWCollection, stub.ISPFWCollection, stub.subprocess = old_als, old_isp, old_process
  
  
@@ -253,7 +296,7 @@ index a085304..87b640e 100644
  @contextlib.contextmanager
  def _installed_macos_wifi(installer):
      """Collect BCM4388 rev C2 Wi-Fi, from the installed macOS when Recovery
-@@ -712,8 +902,8 @@ def stub_installer(sysinfo, dutil, osinfo):
+@@ -712,8 +936,8 @@ def stub_installer(sysinfo, dutil, osinfo):
      collect_firmware = installer.collect_firmware
  
      def collect_firmware_from_an_encrypted_recovery(pkg):
@@ -264,7 +307,7 @@ index a085304..87b640e 100644
              result = _collect_firmware(pkg)
              if radios is not None:
                  try:
-@@ -1358,9 +1548,14 @@ class AsahiStage1Adapter:
+@@ -1358,9 +1582,15 @@ class AsahiStage1Adapter:
          board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members,
                               common_allowed=self.common_stage1)
          if board is not None:
@@ -273,14 +316,15 @@ index a085304..87b640e 100644
 +                              self.installer.sysinfo.device_class)
          device_class = self.installer.sysinfo.device_class
          esp_board_layout(device_class, esp_members, common_allowed=self.common_stage1)
-+        if (BOARD_MACHO_STAGE1.get(device_class) is not None
++        if (board_recovery_mode(device_class) != "raw"
 +                and not self.common_stage1 and not self.native_recovery_gui):
-+            # Only the native Recovery app pads and enrolls a Mach-O Stage 1.
++            # Only the native Recovery app enrolls a Stage 1 that loads the
++            # confined Stage 2 (a Mach-O object, or raw-ctxr).
 +            raise AsahiAdapterError("this Mac needs an image with the native Recovery app")
          stage2 = ESP_STAGE2 if self.common_stage1 else BOARD_STAGE2.get(device_class)
          if stage2 is not None and self.osins.pkg.getinfo(stage2).file_size <= 0:
              raise AsahiAdapterError(f"this image has an empty {stage2}")
-@@ -1523,7 +1718,7 @@ class AsahiStage1Adapter:
+@@ -1523,7 +1753,7 @@ class AsahiStage1Adapter:
              self.osins.firmware_package = firmware_package
  
          self.osins.install(self.installer.ins)
@@ -289,13 +333,14 @@ index a085304..87b640e 100644
              self.installer.sysinfo.device_class,
              self.os_firmware,
              self.osins.pkg.read,
-@@ -1552,6 +1747,10 @@ class AsahiStage1Adapter:
+@@ -1552,6 +1782,11 @@ class AsahiStage1Adapter:
                  requirement=self.recovery_requirement if self.use_helper_recovery else None,
                  authorized_owner=self.authorized_owner if self.use_helper_recovery else None,
                  expected_bootstrap=self.source_bootstrap if self.use_helper_recovery else None,
-+                **({} if macho_stage1 is None else {
++                **({} if self.common_stage1
++                   or board_recovery_mode(self.installer.sysinfo.device_class) == "raw" else {
 +                    "macho_stage1": macho_stage1,
-+                    "boot_mode": BOARD_MACHO_STAGE1[self.installer.sysinfo.device_class].recovery_mode,
++                    "boot_mode": board_recovery_mode(self.installer.sysinfo.device_class),
 +                }),
              )
          self._record_installation(log_only=True)
@@ -343,10 +388,10 @@ index 01efc02..272e816 100644
          if previous is not None and tuple(previous) != tuple(entry):
              raise IspError(f"conflicting ISP registry entry {entry.magic:#x}")
 diff --git a/Engine/overlay/src/omarchy_recovery.py b/Engine/overlay/src/omarchy_recovery.py
-index 8913f8b..3be872b 100644
+index 8913f8b..6e98dd4 100644
 --- a/Engine/overlay/src/omarchy_recovery.py
 +++ b/Engine/overlay/src/omarchy_recovery.py
-@@ -25,6 +25,18 @@ INSTALL_DATA_DIRECTORY = "Aurora/Recovery/InstallData"
+@@ -25,6 +25,22 @@ INSTALL_DATA_DIRECTORY = "Aurora/Recovery/InstallData"
  PAYLOAD_DIRECTORY = "aurora/recovery"
  MANIFEST_NAME = "omarchy-recovery-app.json"
  STAGE2_PATH = "m1n1/boot.bin"
@@ -354,10 +399,14 @@ index 8913f8b..3be872b 100644
 +# names and where the Stage 2 goes on the ESP. "macho-ctxr" is aura's Mach-O
 +# boot object of an M4-class Mac, which the app pads for the execute window
 +# and enrolls with --compress; it chainloads the confined Stage 2.
-+# "macho-unpadded" is the same object enrolled without the padding, for a chip
-+# whose padded object doesn't start (the J616c).
++# "macho-unpadded" is the same object enrolled without the padding. "raw-ctxr"
++# is the raw Stage 1 enrolled as raw (after `bputil -nc`), chainloading the
++# confined Stage 2 that Aurora's update-m1n1 writes on M4-class chips: the J616c
++# boots only this way (omarchy-m4 OMS-24).
++MACHO_BOOT_MODES = ("macho-ctxr", "macho-unpadded")
 +BOOT_MODES = {
 +    "raw": ("raw/aura-raw.bin", "raw/boot.bin", STAGE2_PATH),
++    "raw-ctxr": ("raw-ctxr/aura-raw.bin", "raw-ctxr/boot-ctxr.bin", "m1n1/boot-ctxr.bin"),
 +    "macho-ctxr": ("macho-ctxr/aura-boot.macho", "macho-ctxr/boot-ctxr.bin", "m1n1/boot-ctxr.bin"),
 +    "macho-unpadded": ("macho-unpadded/aura-boot.macho", "macho-unpadded/boot-ctxr.bin",
 +                       "m1n1/boot-ctxr.bin"),
@@ -365,7 +414,7 @@ index 8913f8b..3be872b 100644
  VENDOR_FIRMWARE = ("vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt")
  OPTIONAL_VENDOR_FIRMWARE = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
  UUID_PATTERN = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\Z")
-@@ -235,7 +247,8 @@ def source_bootstrap(dutil, source_os, authorized_owner=None, target_group=None)
+@@ -235,7 +251,8 @@ def source_bootstrap(dutil, source_os, authorized_owner=None, target_group=None)
                   "sourceGroupUUID": source_group, "ownerUUIDs": [selected]}
  
  
@@ -375,7 +424,7 @@ index 8913f8b..3be872b 100644
      osi = installer.osi
      system = Path(osi.system)
      info = installer.dutil.get("info", "-plist", str(system))
-@@ -261,7 +274,7 @@ def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owne
+@@ -261,7 +278,7 @@ def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owne
      return {
          "schema": 2, "volumeName": name, "systemUUID": identifier(info.get("VolumeUUID")),
          "groupUUID": group, "prebootUUID": preboot_uuid, "espUUID": esp_uuid,
@@ -384,7 +433,7 @@ index 8913f8b..3be872b 100644
          "allowCustomBootArguments": getattr(getattr(installer, "sysinfo", None), "device_class", "") == "j700ap",
      }
  
-@@ -360,7 +373,8 @@ def _payload(path, maximum=256 << 20):
+@@ -360,7 +377,8 @@ def _payload(path, maximum=256 << 20):
  
  def stage(installer, esp_uuid, esp_root, app_source=None,
            manifest_path=None, run=subprocess.run, source_os=None,
@@ -394,12 +443,12 @@ index 8913f8b..3be872b 100644
      """Called after OS/ESP installation and common stage-1 target patching.
  
      Preserve upstream's Finish Installation resource paths for resume checks;
-@@ -371,11 +385,17 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
+@@ -371,11 +389,17 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
      app_source = Path(app_source) if app_source is not None else template_root / APP_NAME
      manifest_path = Path(manifest_path) if manifest_path is not None else template_root / MANIFEST_NAME
      template = validate_source(app_source, manifest_path, run, requirement=requirement)
 -    config = target_config(installer, esp_uuid, esp_root, source_os, authorized_owner, expected_bootstrap)
-+    if boot_mode not in BOOT_MODES or (boot_mode == "raw") != (macho_stage1 is None):
++    if boot_mode not in BOOT_MODES or (boot_mode in MACHO_BOOT_MODES) != (macho_stage1 is not None):
 +        raise RecoveryError("Recovery boot mode does not match its Stage 1")
 +    stage1_name, stage2_name, stage2_path = BOOT_MODES[boot_mode]
 +    config = target_config(installer, esp_uuid, esp_root, source_os, authorized_owner, expected_bootstrap,
@@ -415,7 +464,7 @@ index 8913f8b..3be872b 100644
      # Copy only this installation's finalized package. Never put these
      # per-device inputs in the distributable application template.
      firmware = {
-@@ -404,11 +424,11 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
+@@ -404,11 +428,11 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
          'resources=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
          'exec "$resources/../../../Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" "$@"\n'
      )
@@ -490,7 +539,7 @@ index bc8c722..f7cd91e 100644
              # there after the staged tree.
              command[at:at + 3] = ["-C", staging, "firmware", "-C", os.path.abspath(RECOVERY_FIRMWARE[1])]
 diff --git a/Engine/overlay/tests/test_omarchy_asahi.py b/Engine/overlay/tests/test_omarchy_asahi.py
-index a851f94..64b6484 100644
+index a851f94..bc75d42 100644
 --- a/Engine/overlay/tests/test_omarchy_asahi.py
 +++ b/Engine/overlay/tests/test_omarchy_asahi.py
 @@ -125,6 +125,7 @@ from omarchy_asahi import (  # noqa: E402
@@ -501,7 +550,7 @@ index a851f94..64b6484 100644
      install_board_stage1,
      install_esp_board_layout,
      stub_installer,
-@@ -530,6 +531,110 @@ class AsahiStage1AdapterTests(unittest.TestCase):
+@@ -530,6 +531,117 @@ class AsahiStage1AdapterTests(unittest.TestCase):
          self.assertIn(b"180190f8-0000-4000-8000-000000000000", boot_object)
          self.assertIn(b";m1n1/boot.bin", boot_object)
  
@@ -538,16 +587,22 @@ index a851f94..64b6484 100644
 +        self.assertFalse(adapter.preflight_complete)
 +        self.assertEqual(installer.dutil.add_calls, [])
 +
-+    def test_an_m4_max_payload_without_its_macho_stage1_is_refused_before_disk_changes(self):
++    def test_an_m4_max_payload_without_a_macho_object_is_admitted(self):
++        # The J616c enrolls its raw Stage 1 (raw-ctxr); a Mach-O object is not needed.
 +        self._m4_max_payload(macho=False)
 +        installer = self._m4_max_on_26_6_2()
 +        adapter = self._adapter(installer)
++        adapter.recovery_app = "/private/job/Recovery.app"
++        adapter.recovery_manifest = "/private/job/recovery.json"
++        adapter.recovery_requirement = 'cdhash H"' + 'a' * 40 + '"'
++        adapter.authorized_owner = "mina"
 +
-+        with self.assertRaisesRegex(AsahiAdapterError, "stage1-j616c.macho"):
++        with patch("omarchy_asahi.omarchy_recovery.validate_source"), patch(
++            "omarchy_asahi.omarchy_recovery.source_bootstrap", return_value={"ownerUUIDs": ["o"]}
++        ):
 +            adapter.preflight(self.plan)
 +
-+        self.assertFalse(adapter.preflight_complete)
-+        self.assertEqual(installer.dutil.add_calls, [])
++        self.assertTrue(adapter.preflight_complete)
 +
 +    def test_an_m4_max_payload_without_its_confined_stage2_is_refused_before_disk_changes(self):
 +        self._m4_max_payload(stage2=None)
@@ -601,8 +656,9 @@ index a851f94..64b6484 100644
 +        self.assertTrue(boot_object.startswith(b"m1n1 j700 stage 1"))
 +        self.assertIn(b"180190f8-0000-4000-8000-000000000000", boot_object)
 +        self.assertIn(b";m1n1/boot-ctxr.bin", boot_object)
-+        self.assertEqual(staged["boot_mode"], "macho-unpadded")
-+        self.assertEqual(staged["macho_stage1"], aura_macho(boot_object))
++        # raw-ctxr: Recovery enrolls the filled raw image itself, no Mach-O object.
++        self.assertEqual(staged["boot_mode"], "raw-ctxr")
++        self.assertIsNone(staged["macho_stage1"])
 +        self.assertEqual((self.installed_esp / "m1n1/boot-ctxr.bin").read_bytes(),
 +                         b"m1n1 m4 max confined")
 +        self.assertTrue((self.installed_esp / "m1n1/boot.bin").exists())
@@ -612,7 +668,7 @@ index a851f94..64b6484 100644
      def _common_payload(self, stage1=None, stage2=b"common stage2"):
          with zipfile.ZipFile(self.payload) as archive:
              entries = {name: archive.read(name) for name in archive.namelist()}
-@@ -2019,6 +2124,33 @@ def j700_stage1(path=b"", window=0, uuid=b""):
+@@ -2019,6 +2131,33 @@ def j700_stage1(path=b"", window=0, uuid=b""):
      return b"m1n1 j700 stage 1" + block + b"\0" * 64 + b"STACKBOT"
  
  
@@ -646,11 +702,11 @@ index a851f94..64b6484 100644
  class BoardStage1Tests(unittest.TestCase):
      UUID = "97c92d03-2cb3-461f-9134-134a58cc9fdc"
  
-@@ -2103,6 +2235,74 @@ class BoardStage1Tests(unittest.TestCase):
+@@ -2103,6 +2242,97 @@ class BoardStage1Tests(unittest.TestCase):
                      install_board_stage1("j613ap", "26.6.2", package.__getitem__, self.UUID, str(target))
                  self.assertEqual(target.read_bytes(), b"asahi stage 1")
  
-+    def test_a_16_inch_m4_max_on_26_6_2_gets_the_filled_j616c_stage1_and_macho_object(self):
++    def test_a_16_inch_m4_max_on_26_6_2_gets_the_filled_j616c_stage1_to_enroll_raw(self):
 +        import struct as _struct
 +        raw = j700_stage1(window=4321)
 +        with tempfile.TemporaryDirectory() as root:
@@ -658,6 +714,8 @@ index a851f94..64b6484 100644
 +            package = {"esp/aurora/stage1-j616c.bin": raw,
 +                       "esp/aurora/stage1-j616c.macho": aura_macho(raw)}
 +            obj = install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++            # raw-ctxr: no Mach-O object for Recovery, even when the payload has one.
++            self.assertIsNone(obj)
 +            data = target.read_bytes()
 +            self.assertEqual(len(data), len(raw))
 +            offset = data.index(b"AURORA-S1-CFG01\0") + 16
@@ -665,8 +723,6 @@ index a851f94..64b6484 100644
 +            self.assertEqual(window, 0)
 +            self.assertEqual(uuid.rstrip(b"\0"), self.UUID.encode())
 +            self.assertEqual(path.rstrip(b"\0"), b";m1n1/boot-ctxr.bin")
-+            # The object carries exactly the filled raw image, every other byte unchanged.
-+            self.assertEqual(obj, aura_macho(data))
 +
 +    def test_other_boards_get_no_macho_object(self):
 +        with tempfile.TemporaryDirectory() as root:
@@ -683,7 +739,9 @@ index a851f94..64b6484 100644
 +                    install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
 +                self.assertEqual(target.read_bytes(), b"asahi stage 1")
 +
-+    def test_an_m4_max_image_without_or_with_a_foreign_macho_object_is_refused(self):
++    def test_an_m4_max_ignores_any_macho_object_in_the_image(self):
++        # The J616c enrolls raw, so whatever Mach-O object an older image carries
++        # (none, a foreign one, a malformed one) neither blocks nor changes Stage 1.
 +        raw = j700_stage1()
 +        other = j700_stage1(path=b";other")
 +        for obj in (None, aura_macho(other), aura_macho(raw, entry_offset=0x1000),
@@ -694,9 +752,30 @@ index a851f94..64b6484 100644
 +                package = {"esp/aurora/stage1-j616c.bin": raw}
 +                if obj is not None:
 +                    package["esp/aurora/stage1-j616c.macho"] = obj
-+                with self.assertRaises(AsahiAdapterError):
-+                    install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
-+                self.assertEqual(target.read_bytes(), b"asahi stage 1")
++                self.assertIsNone(
++                    install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target)))
++                data = target.read_bytes()
++                self.assertEqual(len(data), len(raw))
++                self.assertIn(b";m1n1/boot-ctxr.bin", data)
++                self.assertIn(self.UUID.encode(), data)
++
++    def test_an_m4_max_image_without_its_raw_stage1_is_refused(self):
++        with tempfile.TemporaryDirectory() as root:
++            target = self.write_generic(root)
++            package = {"esp/aurora/stage1-j616c.macho": aura_macho(j700_stage1())}
++            with self.assertRaisesRegex(AsahiAdapterError, "stage1-j616c.bin"):
++                install_board_stage1("j616cap", "26.6.2", package.__getitem__, self.UUID, str(target))
++            self.assertEqual(target.read_bytes(), b"asahi stage 1")
++
++    def test_only_the_j616c_enrolls_raw_ctxr(self):
++        from omarchy_asahi import board_recovery_mode, board_confined_stage2
++        self.assertEqual(board_recovery_mode("j616cap"), "raw-ctxr")
++        self.assertEqual(board_confined_stage2("j616cap"),
++                         ("esp/m1n1/boot-ctxr-j616c.bin", "m1n1/boot-ctxr.bin"))
++        for other in ("j700ap", "j613ap", "j314sap", "j616sap", ""):
++            with self.subTest(device_class=other):
++                self.assertEqual(board_recovery_mode(other), "raw")
++                self.assertIsNone(board_confined_stage2(other))
 +
 +    def test_an_m4_max_image_with_a_malformed_j616c_stage1_is_refused(self):
 +        package = {"esp/aurora/stage1-j616c.bin": b"not a stage 1"}
@@ -721,7 +800,7 @@ index a851f94..64b6484 100644
      def test_common_stage1_is_used_on_every_admitted_board_with_zero_delay(self):
          import struct as _struct
          package = {"esp/aurora/stage1.bin": j700_stage1(window=5000),
-@@ -2205,6 +2405,36 @@ class EspBoardLayoutTests(unittest.TestCase):
+@@ -2205,6 +2435,40 @@ class EspBoardLayoutTests(unittest.TestCase):
          with self.assertRaisesRegex(AsahiAdapterError, "no esp/m1n1/boot-j700.bin for the MacBook Neo"):
              esp_board_layout("j700ap", ["esp/m1n1/boot.bin"])
  
@@ -746,19 +825,23 @@ index a851f94..64b6484 100644
 +                self.assertNotIn("m1n1/boot-ctxr.bin", layout.values())
 +                self.assertEqual(layout.get(own or "esp/m1n1/boot.bin"), "m1n1/boot.bin")
 +
-+    def test_an_m4_max_payload_without_its_confined_stage2_or_object_is_refused(self):
-+        for missing in ("esp/m1n1/boot-ctxr-j616c.bin", "esp/aurora/stage1-j616c.macho"):
-+            with self.subTest(missing=missing):
-+                members = [m for m in self.M4_MAX_MEMBERS if m != missing]
-+                with self.assertRaisesRegex(
-+                    AsahiAdapterError, f"no {missing} for a 16-inch M4 Max MacBook Pro"
-+                ):
-+                    esp_board_layout("j616cap", members)
++    def test_an_m4_max_payload_without_its_confined_stage2_is_refused(self):
++        missing = "esp/m1n1/boot-ctxr-j616c.bin"
++        members = [m for m in self.M4_MAX_MEMBERS if m != missing]
++        with self.assertRaisesRegex(
++            AsahiAdapterError, f"no {missing} for a 16-inch M4 Max MacBook Pro"
++        ):
++            esp_board_layout("j616cap", members)
++
++    def test_an_m4_max_payload_without_the_retired_macho_object_is_fine(self):
++        members = [m for m in self.M4_MAX_MEMBERS if m != "esp/aurora/stage1-j616c.macho"]
++        self.assertEqual(esp_board_layout("j616cap", members),
++                         esp_board_layout("j616cap", self.M4_MAX_MEMBERS))
 +
      def test_a_member_outside_the_esp_is_refused(self):
          with self.assertRaises(AsahiAdapterError):
              esp_board_layout("j613ap", ["root.img"])
-@@ -2645,5 +2875,94 @@ class InstalledMacosWiFiTests(unittest.TestCase):
+@@ -2645,5 +2909,94 @@ class InstalledMacosWiFiTests(unittest.TestCase):
          self.assertEqual(self.collect("j314sap", SimpleNamespace()), [("collect", "pkg")])
  
  
@@ -959,10 +1042,10 @@ index 73ab264..b3f2ac6 100644
          with tempfile.TemporaryDirectory() as tmp:
              directory = Path(tmp)
 diff --git a/Engine/overlay/tests/test_omarchy_recovery.py b/Engine/overlay/tests/test_omarchy_recovery.py
-index 04f976d..490d7b4 100644
+index 04f976d..36697de 100644
 --- a/Engine/overlay/tests/test_omarchy_recovery.py
 +++ b/Engine/overlay/tests/test_omarchy_recovery.py
-@@ -183,6 +183,37 @@ class RecoveryTests(unittest.TestCase):
+@@ -183,6 +183,52 @@ class RecoveryTests(unittest.TestCase):
          self.assertFalse((app / "Contents/Resources/AuraPayloads").exists())
          self.assertTrue(all("--verify" in command for command in self.commands))
  
@@ -986,9 +1069,24 @@ index 04f976d..490d7b4 100644
 +    def test_the_unpadded_mode_stages_the_same_object_and_confined_stage2(self):
 +        self._stages_the_macho_object_and_confined_stage2("macho-unpadded")
 +
++    def test_raw_ctxr_stages_the_raw_stage1_and_confined_stage2(self):
++        (self.esp / "m1n1/boot-ctxr.bin").write_bytes(b"actual-confined-stage2")
++        result = recovery.stage(self.installer, ESP, str(self.esp), run=self.fake_run,
++                                macho_stage1=None, boot_mode="raw-ctxr")
++        config = result["configuration"]
++        self.assertEqual((config["bootMode"], config["stage2Path"]), ("raw-ctxr", "m1n1/boot-ctxr.bin"))
++        payloads = self.system / recovery.INSTALL_DATA_DIRECTORY / "AuraPayloads"
++        self.assertEqual((payloads / "raw-ctxr/aura-raw.bin").read_bytes(), self.boot.read_bytes())
++        self.assertEqual((payloads / "raw-ctxr/boot-ctxr.bin").read_bytes(), b"actual-confined-stage2")
++        self.assertFalse((payloads / "raw").exists())
++        manifest = json.loads((payloads / "manifest.json").read_text())
++        self.assertEqual(manifest["defaultMode"], "raw-ctxr")
++        self.assertEqual(manifest["modes"], {"raw-ctxr": {"espPath": "m1n1/boot-ctxr.bin"}})
++
 +    def test_a_boot_mode_without_its_stage1_is_refused_before_staging(self):
 +        for kwargs in ({"boot_mode": "macho-ctxr"}, {"boot_mode": "macho-unpadded"},
 +                       {"macho_stage1": b"object"},
++                       {"boot_mode": "raw-ctxr", "macho_stage1": b"object"},
 +                       {"boot_mode": "macho", "macho_stage1": b"object"},
 +                       {"boot_mode": "macho-ctxr", "macho_stage1": b""}):
 +            with self.subTest(kwargs=kwargs):
@@ -1153,7 +1251,7 @@ index 2f4ed8c..41f25d5 100644
           p_warning("If you need to file a bug report, please attach the log file:")
           p_warning(f"  {os.getcwd()}/installer.log")
 diff --git a/Engine/source-lock.json b/Engine/source-lock.json
-index 9588ec9..5ea8d5e 100644
+index 9588ec9..1bdf643 100644
 --- a/Engine/source-lock.json
 +++ b/Engine/source-lock.json
 @@ -141,7 +141,7 @@
@@ -1161,7 +1259,7 @@ index 9588ec9..5ea8d5e 100644
    },
    "downstream_overlay": {
 -    "version": "v0.9.2-omarchy.20261110.fb337ca4e5a0",
-+    "version": "v0.9.2-omarchy.20261116.f5386904f65a",
++    "version": "v0.9.2-omarchy.20261116.87a727c96a25",
      "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
      "minimum_app_version": "2.3.0",
      "engine_modes": [
@@ -1179,7 +1277,7 @@ index 9588ec9..5ea8d5e 100644
          "path": "overlay/src/omarchy_asahi.py",
          "destination": "src/omarchy_asahi.py",
 -        "sha256": "dd74b3799a889d446099bb7fa1f4115518acda26c9fc8c0c516d49f1fe57dc25"
-+        "sha256": "ee573f3df0a85f76f34abf0ca37613ef4bfb54d82fb249efbfa8934be813cb23"
++        "sha256": "df16877250e207ad88afcbe2f24d2fd5259b4425f0f541fc10e6a87db31a2dfb"
        },
        {
          "path": "overlay/src/omarchy_contract.py",
@@ -1188,7 +1286,7 @@ index 9588ec9..5ea8d5e 100644
          "path": "overlay/tests/test_omarchy_asahi.py",
          "destination": "tests/test_omarchy_asahi.py",
 -        "sha256": "c5991393b140b54a4b33082286126dd0ea6da8fe09f7353ee13833cd48bf9033"
-+        "sha256": "b0eeed5314503359193aec53c329c61afec28450243a4826dd0fa2281702da67"
++        "sha256": "7f9bb7d2aadc35189d6c6e36d3d61240db3bc4431c2023e9cc6a5b3e12249520"
        },
        {
          "path": "overlay/tests/test_omarchy_contract.py",
@@ -1218,7 +1316,7 @@ index 9588ec9..5ea8d5e 100644
          "path": "overlay/src/omarchy_recovery.py",
          "destination": "src/omarchy_recovery.py",
 -        "sha256": "4d495597d9d1b6e169fe55ac8d1ee9c30d969ee50e6987e58cd2d62e23f2bcfd"
-+        "sha256": "f1f6cbcb23ad52939e7307c1c8308a0b0101cbf824a5af66f74f5bacf9c023a7"
++        "sha256": "3136ffbd4e8dc81bf4c0e6ab04985035f61eb1c396e6e364838cdad913449ccd"
        },
        {
          "path": "overlay/src/omarchy_apple_aea.py",
@@ -1239,7 +1337,7 @@ index 9588ec9..5ea8d5e 100644
          "path": "overlay/tests/test_omarchy_recovery.py",
          "destination": "tests/test_omarchy_recovery.py",
 -        "sha256": "769dfa871dc59371099f7bea59f3e4209159ef4123522f31001626c4484f7541"
-+        "sha256": "d65e935e35b15a6484985a14194e0aad071e5446b1609aa91c025c092960724a"
++        "sha256": "05741d6524f3181d469d63e3904ea93fe4e04430bf1e2ce4a370f53025e066d9"
        }
      ]
    },
@@ -1250,9 +1348,9 @@ index 9588ec9..5ea8d5e 100644
 -    "filename": "installer-v0.9.2-omarchy.20261110.fb337ca4e5a0.tar.gz",
 -    "size_bytes": 17908690,
 -    "sha256": "1c762ce473573b01b34ab1dafc13ec742d25d5f4ebb38645c0260a0cce1714a9",
-+    "filename": "installer-v0.9.2-omarchy.20261116.f5386904f65a.tar.gz",
-+    "size_bytes": 17912085,
-+    "sha256": "45d55b29425c0b52684ca1a7e0ba2b95483694c1e956145f8db088ff47fa154d",
++    "filename": "installer-v0.9.2-omarchy.20261116.87a727c96a25.tar.gz",
++    "size_bytes": 17913054,
++    "sha256": "f6d62c20d71fda705f9fea85c7c62dc67ecf0c67c1c12c858d0598796a72613a",
      "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
      "signature": "absent",
      "metadata_sha256": "2e6181ce6b6e17c11039e04bfadade8d10ae0e11889885ad8c9960b68f179a5d"
@@ -1310,10 +1408,10 @@ index 51c8773..57cad92 100644
          if(!exited) {
              pid_t done=waitpid(child,&status,WNOHANG);
 diff --git a/Recovery/Sources/Account/RecoveryInstallData.swift b/Recovery/Sources/Account/RecoveryInstallData.swift
-index 8ebc0a5..d4c96cb 100644
+index 8ebc0a5..1845e48 100644
 --- a/Recovery/Sources/Account/RecoveryInstallData.swift
 +++ b/Recovery/Sources/Account/RecoveryInstallData.swift
-@@ -98,12 +98,23 @@ public enum RecoveryInstallData {
+@@ -98,12 +98,24 @@ public enum RecoveryInstallData {
        value["schema"] as? Int == 2,
        let files = value["files"] as? [String: [String: Any]]
      else { throw AccountSetupFailure("The old Recovery payload manifest is invalid.") }
@@ -1329,6 +1427,7 @@ index 8ebc0a5..d4c96cb 100644
 -    guard required.isSubset(of: files.keys), Set(files.keys).isSubset(of: allowed) else {
 +    let startup: [Set<String>] = [
 +      ["raw/aura-raw.bin", "raw/boot.bin"],
++      ["raw-ctxr/aura-raw.bin", "raw-ctxr/boot-ctxr.bin"],
 +      ["macho-ctxr/aura-boot.macho", "macho-ctxr/boot-ctxr.bin"],
 +      ["macho-unpadded/aura-boot.macho", "macho-unpadded/boot-ctxr.bin"],
 +    ]
@@ -1343,27 +1442,31 @@ index 8ebc0a5..d4c96cb 100644
      }
      var verified: [String: Data] = [:]
 diff --git a/Recovery/Sources/BootSelection.swift b/Recovery/Sources/BootSelection.swift
-index 4e1b996..c772a23 100644
+index 4e1b996..d202bd8 100644
 --- a/Recovery/Sources/BootSelection.swift
 +++ b/Recovery/Sources/BootSelection.swift
-@@ -3,19 +3,60 @@ import Foundation
+@@ -3,19 +3,66 @@ import Foundation
  enum AuraBootMode: String, Codable {
    case raw
    case macho
 +  /// M4-class Macs (T8132, T6040, T8140 and later): aura's Mach-O boot object,
 +  /// padded at enrollment so iBoot arms a 128 MiB execute window, which
 +  /// chainloads the confined Stage 2 at `m1n1/boot-ctxr.bin`. No board the engine
-+  /// admits stages it today; the J616c (T6041) uses `machoUnpadded`. The engine stages
++  /// admits stages it today; the J616c (T6041) uses `rawCtxr`. The engine stages
 +  /// the filled, unpadded object; Recovery pads it, checks what kmutil derives
 +  /// and enrolls it with `--compress` (aurora-silicon/aurora-installer's flow).
 +  case machoCtxr = "macho-ctxr"
-+  /// The same filled boot object enrolled unpadded, still with `--compress`, for
-+  /// chips where the padded object doesn't start: on the J616c (T6041) the Mac
-+  /// reboots about every 10 s before aura shows anything (in iBoot or at aura's
-+  /// entry), while the unpadded one boots the confined Stage 2, whose U-Boot
-+  /// starts Linux, which brings up every core. Recovery checks
-+  /// what kmutil derives for the unpadded size and enrolls it as it is.
++  /// The same filled boot object enrolled unpadded, still with `--compress`.
++  /// Recovery checks what kmutil derives for the unpadded size and enrolls it as
++  /// it is. On an M4-class chip it arms no usable window, so aura's Stage 2
++  /// refuses to start an OS under it; no board the engine admits stages it.
 +  case machoUnpadded = "macho-unpadded"
++  /// aura's raw Stage 1, enrolled raw after `bputil -nc` (Kernel CTRR off, so no
++  /// CTXR window confines the secondaries), chainloading the confined Stage 2 at
++  /// `m1n1/boot-ctxr.bin` that Aurora's update-m1n1 writes on M4-class chips. The
++  /// J616c (T6041) boots this way: its padded object never starts and its
++  /// unpadded one is refused by Stage 2 (omarchy-m4 OMS-24).
++  case rawCtxr = "raw-ctxr"
  
    var stage1Path: String {
 -    self == .raw ? "raw/aura-raw.bin" : "macho/aura-boot.macho"
@@ -1372,6 +1475,7 @@ index 4e1b996..c772a23 100644
 +    case .macho: "macho/aura-boot.macho"
 +    case .machoCtxr: "macho-ctxr/aura-boot.macho"
 +    case .machoUnpadded: "macho-unpadded/aura-boot.macho"
++    case .rawCtxr: "raw-ctxr/aura-raw.bin"
 +    }
    }
  
@@ -1382,6 +1486,7 @@ index 4e1b996..c772a23 100644
 +    case .macho: "macho/aura-stage2.pkg"
 +    case .machoCtxr: "macho-ctxr/boot-ctxr.bin"
 +    case .machoUnpadded: "macho-unpadded/boot-ctxr.bin"
++    case .rawCtxr: "raw-ctxr/boot-ctxr.bin"
 +    }
 +  }
 +
@@ -1391,7 +1496,7 @@ index 4e1b996..c772a23 100644
 +
 +  /// Where the installation's Stage 2 goes on the ESP.
 +  var espStage2Path: String {
-+    enrollsMachOBootObject ? "m1n1/boot-ctxr.bin" : "m1n1/boot.bin"
++    enrollsMachOBootObject || self == .rawCtxr ? "m1n1/boot-ctxr.bin" : "m1n1/boot.bin"
    }
  
 +  /// The code window the enrolled object is padded for, if any.
@@ -1401,7 +1506,7 @@ index 4e1b996..c772a23 100644
      var arguments = ["configure-boot", "-c", stage1, "-v", volume]
 -    if self == .raw {
 +    switch self {
-+    case .raw:
++    case .raw, .rawCtxr:
        arguments += ["--raw", "--entry-point", "2048", "--lowest-virtual-address", "0"]
 +    case .macho:
 +      break
@@ -1410,7 +1515,7 @@ index 4e1b996..c772a23 100644
      }
      return arguments
    }
-@@ -29,6 +70,17 @@ struct BootSelection: Codable {
+@@ -29,6 +76,17 @@ struct BootSelection: Codable {
      mode = machoEnabled ? .macho : .raw
      self.nestedVirtualization = machoEnabled && nestedVirtualization
    }
@@ -1429,7 +1534,7 @@ index 4e1b996..c772a23 100644
  
  enum RecoveryBootPolicy {
 diff --git a/Recovery/Sources/InstallConfiguration.swift b/Recovery/Sources/InstallConfiguration.swift
-index f185ccc..347c01c 100644
+index f185ccc..a4cf75b 100644
 --- a/Recovery/Sources/InstallConfiguration.swift
 +++ b/Recovery/Sources/InstallConfiguration.swift
 @@ -29,7 +29,13 @@ struct InstallConfiguration: Decodable {
@@ -1441,7 +1546,7 @@ index f185ccc..347c01c 100644
 +    // Macs, padded or not, boot only the confined one.
 +    let modes = [
 +      "raw": "m1n1/boot.bin", "macho-ctxr": "m1n1/boot-ctxr.bin",
-+      "macho-unpadded": "m1n1/boot-ctxr.bin",
++      "macho-unpadded": "m1n1/boot-ctxr.bin", "raw-ctxr": "m1n1/boot-ctxr.bin",
 +    ]
 +    guard config.schema == 2, modes[config.bootMode] == config.stage2Path,
        !config.volumeName.isEmpty, config.volumeName.count <= 80,
@@ -2041,7 +2146,7 @@ index 0000000..fce23e1
 +  static let loadHeaderOffset = 0x808
 +}
 diff --git a/Recovery/Sources/RecoveryActions.swift b/Recovery/Sources/RecoveryActions.swift
-index 4436edc..349b067 100644
+index 4436edc..f562327 100644
 --- a/Recovery/Sources/RecoveryActions.swift
 +++ b/Recovery/Sources/RecoveryActions.swift
 @@ -82,6 +82,80 @@ enum RecoveryActions {
@@ -2125,13 +2230,14 @@ index 4436edc..349b067 100644
    @discardableResult static func run(_ path: String, _ args: [String]) throws -> Data {
      let logged = path != "/usr/sbin/nvram"
      let log = logged ? CommandLog("$ " + ([path] + args).joined(separator: " ")) : nil
-@@ -349,13 +423,17 @@ enum RecoveryActions {
+@@ -349,13 +423,18 @@ enum RecoveryActions {
      }
      let config = try configuration.get()
      try check(
 -      selection.mode == .raw && !selection.nestedVirtualization,
 -      "This installation includes raw boot mode only.")
-+      [.raw, .machoCtxr, .machoUnpadded].contains(selection.mode) && !selection.nestedVirtualization
++      [.raw, .rawCtxr, .machoCtxr, .machoUnpadded].contains(selection.mode)
++        && !selection.nestedVirtualization
 +        && selection.mode.espStage2Path == config.stage2Path,
 +      "This installation's boot mode does not match its startup files.")
      try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
@@ -2145,7 +2251,7 @@ index 4436edc..349b067 100644
      // A successful setup must retain a usable per-device repair baseline.
      _ = try RecoveryBaseline.firmware(
        manifest: m, root: payloadRoot())
-@@ -422,7 +500,15 @@ enum RecoveryActions {
+@@ -422,7 +501,15 @@ enum RecoveryActions {
      try record(journal.phase)
      InstallerLog.shared.persist(to: operation.appendingPathComponent("installer.log"))
      let stage1Path = operation.appendingPathComponent("stage1")
@@ -2162,7 +2268,7 @@ index 4436edc..349b067 100644
      do {
        try RecoveryInstallationCoordinator.run(
          phase: journal.phase, persist: record,
-@@ -457,7 +543,11 @@ enum RecoveryActions {
+@@ -457,7 +544,11 @@ enum RecoveryActions {
              "The pending startup bundle changed; its recovery record was preserved.")
          },
          enroll: {
@@ -2175,7 +2281,7 @@ index 4436edc..349b067 100644
            try authorized(
              "/usr/bin/kmutil",
              selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
-@@ -660,7 +750,8 @@ enum RecoveryActions {
+@@ -660,7 +751,8 @@ enum RecoveryActions {
        hasPendingInstallation: FileManager.default.fileExists(atPath: pendingInstallation.path),
        verifyBundle: {
          let config = try configuration.get()
@@ -2185,7 +2291,7 @@ index 4436edc..349b067 100644
          let target = try esp().appendingPathComponent(config.stage2Path)
          try check(
            try Data(contentsOf: target) == expected,
-@@ -677,7 +768,8 @@ enum RecoveryActions {
+@@ -677,7 +769,8 @@ enum RecoveryActions {
      try recoveryOnly()
      let record = try installed()
      let config = try configuration.get()
@@ -2195,7 +2301,7 @@ index 4436edc..349b067 100644
      let target = try esp().appendingPathComponent(config.stage2Path)
      try check(
        try Data(contentsOf: target) == expected,
-@@ -757,7 +849,7 @@ extension RecoveryActions {
+@@ -757,7 +850,7 @@ extension RecoveryActions {
        let record = try installed()
        guard let name = record["mode"] as? String, let mode = AuraBootMode(rawValue: name),
          let path = record["stage2Path"] as? String,
@@ -2204,7 +2310,7 @@ index 4436edc..349b067 100644
        else {
          throw RecoveryFailure(message: "The installed boot mode is not recorded.")
        }
-@@ -771,7 +863,7 @@ extension RecoveryActions {
+@@ -771,7 +864,7 @@ extension RecoveryActions {
        files[path] = bytes
        let destination = try esp()
        let backup = state.appendingPathComponent("recover-" + UUID().uuidString + ".before")
@@ -2242,7 +2348,7 @@ index 1ca3bed..4ec82c8 100644
      guard required.isSubset(of: Set(names)),
        Set(names).isSubset(of: required.union([optionalVendorPath]))
 diff --git a/Recovery/Sources/main.swift b/Recovery/Sources/main.swift
-index 0e642cd..a3ad6c6 100644
+index 0e642cd..2b54740 100644
 --- a/Recovery/Sources/main.swift
 +++ b/Recovery/Sources/main.swift
 @@ -320,7 +320,13 @@ final class InstallerModel {
@@ -2260,11 +2366,20 @@ index 0e642cd..a3ad6c6 100644
  
    var steps: [String] {
      recoveryInterface
+@@ -414,7 +420,7 @@ final class InstallerModel {
+     }
+     password.removeAll(keepingCapacity: false)
+     operations = [
+-      "Selected Aura \(bootSelection.mode == .raw ? "raw" : "Mach-O") boot mode — simulated"
++      "Selected Aura \(bootSelection.mode.enrollsMachOBootObject ? "Mach-O" : "raw") boot mode — simulated"
+     ]
+     stage = .installing
+     installationTask = Task { @MainActor [weak self] in
 diff --git a/Recovery/Tests/BootSelectionCheck.swift b/Recovery/Tests/BootSelectionCheck.swift
-index 2344b16..5fbc115 100644
+index 2344b16..c921aaa 100644
 --- a/Recovery/Tests/BootSelectionCheck.swift
 +++ b/Recovery/Tests/BootSelectionCheck.swift
-@@ -35,8 +35,39 @@ import Foundation
+@@ -35,8 +35,55 @@ import Foundation
              && restored.nestedVirtualization == selection.nestedVirtualization)
        }
      }
@@ -2292,6 +2407,22 @@ index 2344b16..5fbc115 100644
 +    let raw = try BootSelection(configuredMode: "raw")
 +    precondition(raw.mode.espStage2Path == "m1n1/boot.bin")
 +    precondition(!raw.mode.enrollsMachOBootObject)
++    // raw-ctxr (J616c): the raw Stage 1 and raw enrollment, loading the confined Stage 2.
++    let rawCtxr = try BootSelection(configuredMode: "raw-ctxr")
++    precondition(rawCtxr.mode == .rawCtxr && !rawCtxr.nestedVirtualization)
++    precondition(!rawCtxr.mode.enrollsMachOBootObject)
++    precondition(rawCtxr.mode.espStage2Path == "m1n1/boot-ctxr.bin")
++    precondition(rawCtxr.mode.executeWindowSize == nil)
++    precondition(rawCtxr.mode.stage1Path == "raw-ctxr/aura-raw.bin")
++    precondition(rawCtxr.mode.stage2Path == "raw-ctxr/boot-ctxr.bin")
++    precondition(
++      rawCtxr.mode.enrollmentArguments(stage1: "/p/raw", volume: volume)
++        == ["configure-boot", "-c", "/p/raw", "-v", volume, "--raw", "--entry-point", "2048",
++          "--lowest-virtual-address", "0"])
++    precondition(
++      rawCtxr.mode.enrollmentArguments(stage1: "/p/raw", volume: volume)
++        == ["configure-boot", "-c", "/p/raw", "-v", volume]
++        + Array(raw.mode.enrollmentArguments(stage1: "/p/raw", volume: volume).dropFirst(5)))
 +    precondition(BootSelection().mode.executeWindowSize == nil)
 +    for refused in ["macho", "MACHO-CTXR", "macho-unpadded ", ""] {
 +      do {
@@ -2306,10 +2437,10 @@ index 2344b16..5fbc115 100644
    }
  }
 diff --git a/Recovery/Tests/InstallConfigurationCheck.swift b/Recovery/Tests/InstallConfigurationCheck.swift
-index af1e077..e4802f0 100644
+index af1e077..51a2830 100644
 --- a/Recovery/Tests/InstallConfigurationCheck.swift
 +++ b/Recovery/Tests/InstallConfigurationCheck.swift
-@@ -27,6 +27,31 @@ import Foundation
+@@ -27,6 +27,35 @@ import Foundation
          preconditionFailure("accepted invalid \(key)")
        } catch {}
      }
@@ -2325,10 +2456,14 @@ index af1e077..e4802f0 100644
 +    let decodedUnpadded = try InstallConfiguration.decode(
 +      JSONSerialization.data(withJSONObject: confined))
 +    precondition(decodedUnpadded.bootMode == "macho-unpadded")
++    confined["bootMode"] = "raw-ctxr"
++    let decodedRawCtxr = try InstallConfiguration.decode(
++      JSONSerialization.data(withJSONObject: confined))
++    precondition(decodedRawCtxr.bootMode == "raw-ctxr" && decodedRawCtxr.stage2Path == "m1n1/boot-ctxr.bin")
 +    for (mode, path) in [
 +      ("macho-ctxr", "m1n1/boot.bin"), ("raw", "m1n1/boot-ctxr.bin"),
 +      ("macho", "m1n1/boot-ctxr.bin"), ("macho-ctxr", "m1n1/boot-ctxr-j616c.bin"),
-+      ("macho-unpadded", "m1n1/boot.bin"),
++      ("macho-unpadded", "m1n1/boot.bin"), ("raw-ctxr", "m1n1/boot.bin"),
 +    ] {
 +      var mismatched = value
 +      mismatched["bootMode"] = mode
@@ -2341,7 +2476,7 @@ index af1e077..e4802f0 100644
      precondition(config.allowCustomBootArguments == nil)
      for allowed in [false, true] {
        var scoped = value
-@@ -61,6 +86,6 @@ import Foundation
+@@ -61,6 +90,6 @@ import Foundation
          preconditionFailure("accepted invalid bootstrap \(key)")
        } catch {}
      }

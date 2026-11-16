@@ -44,7 +44,8 @@
 #     after it rather than the Boot UUID every install shares (OMS-15);
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
-#   - stages esp/aurora/stage1-j616c.{bin,macho} and esp/m1n1/boot-ctxr-j616c.bin;
+#   - stages esp/aurora/stage1-j616c.bin (aura's raw Stage 1, which the installer
+#     enrolls raw as raw-ctxr, OMS-24) and esp/m1n1/boot-ctxr-j616c.bin;
 #   - re-seals @factory and packages the payload with its installer_data.json.
 #
 # Written with AI assistance (Claude Code). Run on an aarch64 Linux host with
@@ -54,7 +55,7 @@
 # Stage 2 flags (RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1
 # BUILTIN_LOGO=aurora); its sha256 must be STAGE2_SHA256.
 # RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
-# the macho-unpadded boot mode (OMS-11); it replaces the edge image's Recovery app, which
+# the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app, which
 # predates that mode and would refuse this Mac's installation configuration.
 set -euo pipefail
 
@@ -437,9 +438,11 @@ PY
     fail "the confined Stage 2 exceeds aura's 16 MiB slot"
   fi
 
-  log "Stage 1: aura's raw image and Mach-O boot object"
+  log "Stage 1: aura's raw image"
+  # The J616c enrolls this raw image after `bputil -nc` (the installer's raw-ctxr
+  # mode, OMS-24). Its Mach-O boot object isn't staged: padded it reboots this
+  # chip silently, unpadded aura's Stage 2 refuses to start the OS (JOURNEY 9.30-9.31).
   install -D -m 0644 "$T/usr/share/aura/stage1/aura-raw.bin" "$T/boot/efi/aurora/stage1-j616c.bin"
-  install -D -m 0644 "$T/usr/share/aura/stage1/aura-boot.macho" "$T/boot/efi/aurora/stage1-j616c.macho"
   # The builder's MacBook Neo contract (stage_board_boot_payloads): its raw
   # Stage 1 comes from the package that ships Stage 2, and boot-j700.bin is the
   # common bundle. m1n1-aurora is gone, so both now come from aura.
@@ -474,7 +477,7 @@ EOF
   rm -f "$T/boot/efi/.builder"
   find "$T/etc" -name '*.pacnew' | tee "$W/pacnew.txt"
 
-  log "replacing the Recovery app with one that knows macho-unpadded"
+  log "replacing the Recovery app with one that knows raw-ctxr"
   local recovery_dir=$T/boot/efi/aurora/recovery
   [[ -d $recovery_dir ]] || fail "the edge image carries no native Recovery app"
   rm -rf -- "$recovery_dir" && mkdir -p "$recovery_dir"
@@ -482,8 +485,8 @@ EOF
   install -m 0644 /recovery/omarchy-recovery-app.json "$recovery_dir/omarchy-recovery-app.json"
   # A 30-byte literal: Swift inlines strings of 15 bytes or fewer, which then
   # don't appear in the binary as one run of bytes.
-  grep -aq 'macho-unpadded/aura-boot.macho' "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
-    fail "the Recovery app does not know the macho-unpadded mode"
+  grep -aq 'raw-ctxr/aura-raw.bin' "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
+    fail "the Recovery app does not know the raw-ctxr mode"
 
   log "copying the ESP out"
   rm -rf "$W/payload/esp" && mkdir "$W/payload/esp"
