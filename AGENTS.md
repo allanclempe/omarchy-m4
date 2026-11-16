@@ -59,6 +59,9 @@ row below. A task whose fix lives only on the Mac isn't done.
   `tools/tests/` has their tests (plain Bash, run on Linux).
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
   stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
+- `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
+  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`. `patches/README.md` gives each patch's base
+  and how to apply and test it.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
   name collisions `[aurora]` causes by being first. It also covers the kernel dependency
