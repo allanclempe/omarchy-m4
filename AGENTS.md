@@ -25,6 +25,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | fstab mounts `/boot/efi` by PARTUUID | derivation installs `omarchy-esp-generator`, which mounts the device-tree ESP (not yet run) | OMS-12 |
 | Aurora's `mesa-aurora` and `vulkan-aurora` installed | derivation (not yet run) | OMS-14 |
 | `speakersafetyd-aurora-profiles` and Aurora's `aurora-audio` installed | derivation, PR #1 (not yet run); all nine audio checks pass on the Mac | OMS-1 |
+| Arch's `alsa-utils` swapped for Aurora's `alsa-utils-aurora` (pacman asked when installing Aurora's audio) | derivation removes `alsa-utils` and installs `alsa-utils-aurora`, pinned; found by the first run of the audio step (2026-11-16) | OMS-14 |
 | Update guards; Stage 2 trial disarmed | derivation: Stage 2 rebuilt from the pin, tried once by Aurora's trial, `owner-boot-chain` marker; kernel and Mesa update (not yet run) | OMS-13 |
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
 | `linux-firmware-realtek` installed (USB Ethernet firmware) | derivation, PR #12 (not yet run) | OMS-7 |

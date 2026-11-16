@@ -87,6 +87,7 @@ declare -A AURORA_PINS=(
   [vulkan-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
   [aurora-audio]=4.1.aurora2-16
   [speakersafetyd-aurora-profiles]=1-2
+  [alsa-utils-aurora]=1.2.16-1
 )
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
@@ -118,7 +119,11 @@ host() {
 mounts=()
 loops=()
 cleanup() {
-  local i
+  local rc=$? i
+  # The work volume goes with the container: on a failure, keep its logs.
+  if ((rc != 0)) && [[ -d /out && -n ${W:-} ]]; then
+    mkdir -p /out/failed-logs && cp -p "$W"/*.log "$W"/*.txt /out/failed-logs/ 2>/dev/null || true
+  fi
   for ((i = ${#mounts[@]} - 1; i >= 0; i--)); do umount "${mounts[i]}" 2>/dev/null || umount -l "${mounts[i]}" 2>/dev/null || true; done
   for i in "${loops[@]}"; do losetup -d "$i" 2>/dev/null || true; done
 }
@@ -261,8 +266,17 @@ PY
   done
 
   log "installing Aurora's speakersafetyd profiles and aurora-audio"
-  in_chroot pacman -S --noconfirm "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
+  # They need Aurora's alsa-utils-aurora, which conflicts with Arch's alsa-utils, and
+  # --noconfirm answers "no" to removing it. Swap it explicitly (OMS-14: this step had
+  # been done by hand on the Mac).
+  if in_chroot pacman -Qq alsa-utils 2>/dev/null | grep -qx alsa-utils; then
+    in_chroot pacman -Rdd --noconfirm alsa-utils >>"$W/pacman.log" 2>&1 || fail "could not remove Arch's alsa-utils"
+  fi
+  in_chroot pacman -S --noconfirm aurora/alsa-utils-aurora "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install Aurora's speaker packages (pacman.log)"
+  in_chroot pacman -Qq alsa-utils-aurora >/dev/null 2>&1 || fail "alsa-utils-aurora is not installed"
+  # Anything that needed alsa-utils must still be satisfied (alsa-utils-aurora provides it).
+  in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "missing dependencies after the alsa-utils swap (pacman.log)"
   grep -q '^\[Speaker/' "$T/usr/share/speakersafetyd/apple/j616.conf" 2>/dev/null ||
     fail "no speakersafetyd profile with speakers for J616 (apple/j616.conf)"
   for p in graph.json mic.json; do
