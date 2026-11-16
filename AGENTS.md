@@ -31,7 +31,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | WirePlumber state: raw mic route unmuted, hand-set default sink cleared | not needed if a fresh install starts unmuted; OMS-14 checks | OMS-9 |
 | `linux-firmware-realtek` installed (USB Ethernet firmware) | derivation, PR #12 (not yet run) | OMS-7 |
 | First attempt's partitions (disk0s7 to disk0s10) left on disk | removed before the reinstall | OMS-14 |
-| Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c (JOURNEY 9.34; build in progress) | OMS-24 |
+| Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c (JOURNEY 9.34; package built, install not yet run) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Camera setfile `isp_2224_01XX.dat` (not on the Mac yet) | installer patch: the engine collects it on every Mac (JOURNEY 9.32); needs the OMS-24 rebuild and reinstall | OMS-22 |
 
