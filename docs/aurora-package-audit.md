@@ -9,13 +9,17 @@ packages and the VA-API driver) come from the same `pacman -Q`/`-Qi` runs. Of Au
 `power-profiles-daemon` by Omarchy's `omarchy-power-profiles-daemon`, and `pipewire-session-manager`
 by Arch's `wireplumber` (`pacman -Qq` on the Mac). The rest fall into the groups below.
 
+This is a snapshot of the first install. The clean reinstall of 2026-11-16 (OMS-14) runs
+`linux-aurora 7.3.0.aurora1-40` with the same package choices, now pinned in the derivation
+(`AURORA_PINS`); JOURNEY 9.28 to 9.33 record what changed and what its first update did.
+
 The image's package list is `tools/derive-j616c-image` (`AURORA_BOOT`, `AURORA_MESA`,
 `AURORA_MESA_OPTIONAL`, `AURORA_AUDIO`). A package moves into it only through its task, after it's
 tested on the Mac. `AURORA_MESA_OPTIONAL` (`mesa-aurora-fex-guest`, `vulkan-lavapipe-aurora`) only
 upgrades those packages when the edge image already has them; this Mac has neither.
 
-Questions this audit raises for the M team are in `docs/questions-for-the-team.md` (the kernel,
-Aurora's builds, Aurora's defaults).
+This audit raises three questions for the M team, each marked below: the kernel, Aurora's builds,
+and Aurora's defaults. They are open.
 
 ## The kernel: the main open dependency
 
@@ -31,10 +35,12 @@ Basecamp (https://public.app.basecamp.com/p/bLeYEF6QUmZZaSPDHGmBK2Uf, relayed by
 2026-11-15), Ryan Murray ("Omarchy Borealis at Omacom", comment of 2026-10-29) promised to review
 and merge the M4 Max work and said it will go into Omarchy Mac's kernel trees after the M1–M3 and
 Neo release. By his account the port is Omarchy's own plan; its timing and branch are still open.
-Until then
-the J616c image depends on Aurora's kernel and its matching Mesa and audio packages. The M team
-decides whether an official M4 Max release ships Aurora's
-kernel or waits for the port (questions file, M team question 1).
+On 2026-11-16 omacom/linux-aurora `integration/aurora` was still `39d5f88`, with no T604x tree. The
+public sign of the port is omacom/omarchy-pkgs#2738, a draft test pin ("DO NOT MERGE") that builds
+`linux-aurora` 7.3 from `scottjones/aurora-linux` `824a2eb`, and that commit carries
+`arch/arm64/boot/dts/apple/t6041-j616c.dts`. Until a port like that is released, the J616c image
+depends on Aurora's kernel and its matching Mesa and audio packages. Whether an official M4 Max
+release ships Aurora's kernel or waits for the port is the M team's call (open question 1).
 
 ## Already Aurora's build
 
@@ -75,6 +81,10 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
   `speakerguardd` (Omarchy 0.1.0.aurora3-1), `speakersafetyd` and `triforce-lv2` (asahi-alarm).
   They came in as dependencies or through updates; none is in the derivation's lists. (`asahi-scripts`
   is Aurora's on purpose: the derivation installs it for Aurora's `update-m1n1`.)
+- **Seen again on the clean reinstall:** its first `omarchy update` (2026-11-16) switched `avd-fw`
+  (0.1-1 → 0.1.aurora3-1) and `aurora-bless` (0.4.4.aurora2-1 → 0.4.4.aurora5-1) to Aurora's builds,
+  as described above (JOURNEY 9.33). `alsa-utils-aurora` is now installed on purpose: Aurora's audio
+  packages need it, and the derivation swaps Arch's `alsa-utils` for it (JOURNEY 9.29).
 - **Would replace Omarchy's or Arch's on install:** `steam` (Omarchy 1.0.0.87-2), `gtk2` (Omarchy
   2.24.33-5), `mil-hwx-compiler` (Omarchy 0.1.0-1; Aurora's is 0.3.1-1), `firefox` (Arch 160.0-1;
   Aurora's 160.0-1.2), `kinfocenter` (both 6.8.2-1). None of these is installed on this Mac now,
@@ -94,14 +104,14 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
   with `iwd`.
 
 Whether `[aurora]` should stay first for everything or only for the boot-chain packages is a
-question for the M team (questions file, M team question 2).
+question for the M team (open question 2).
 
 ## Install: candidates for a report gap (decided in each task)
 
 | Report gap | Aurora packages | Installed now | Task |
 | --- | --- | --- | --- |
 | Touch ID / SEP unavailable | `aurora-sep` (pulls `fprintd-aurora`, `libfprint-aurora` "with the Aurora SEP driver", `aurora-touchid-rearm`, `aurora-xart`). Omarchy's M1–M3 and Neo image installs Touch ID at first boot with Aurora's `install-aurora-sep.sh` (omarchy-mac-installer `docs/one-image-m123-neo.md`); that script also edits `/etc/default/update-m1n1`, where the J616c image keeps its Stage 2 pin | no fprintd or libfprint at all, and no `install-aurora-sep.sh` | OMS-2 |
-| Ambient light not read; keyboard light follows no sensor | `iio-sensor-proxy-aurora` (replaces `iio-sensor-proxy`), `aurora-kbd-light`. These are userspace: the report classes `input.ambient-light` as "not yet supported by Aurora" at the always-on processor (AOP), so OMS-3 must first confirm the kernel exposes an ambient light IIO device | neither | OMS-3 |
+| Ambient light not read; keyboard light follows no sensor | `iio-sensor-proxy-aurora` (replaces `iio-sensor-proxy`), `aurora-kbd-light`. These are userspace. The kernel half is done: on `7.3.0.aurora1-40` the AOP exposes `aop-sensors-als` and reads lux (JOURNEY 9.32), so OMS-3 is down to these two packages | neither | OMS-3 |
 | No hardware video decode | `libva-v4l2-request-avd` 1.3.r11-1, built 2026-11-12 from omacom/libva-v4l2_request. Aurora's default ALARM image ships it and selects it with a system driver alias rather than a global environment override (alarm-aurora README) | Omarchy's `libva-v4l2_request-avd` 1.3.r11.r169, built 2026-10-14 (a different package name) | OMS-4 |
 | Wi-Fi first join on 5 GHz | `aurora-wifi-firmware` (keeps Wi-Fi and Bluetooth firmware in step with the installed macOS); `networkmanager-aurora` (Wake-on-LAN across sleep; pulls `aurora-keep-config`). `iwd-aurora` only adds OWE for the Neo's MT7932 | Arch `iwd` 3.12-2, `networkmanager` 1.58.1-3 | OMS-5 |
 
@@ -111,7 +121,7 @@ None of these answers a gap in the report, where battery, charge limit, idle dra
 CPU frequency, camera and trackpad all pass. Neither team has asked for them in Omarchy: three are
 Aurora's defaults for Aurora's own distributions, and Omarchy's edge image (the M team's choice)
 includes none of them. Left out of the J616c image. Raise with the M team if Omarchy should adopt
-Aurora's defaults for all Apple silicon Macs (questions file, M team question 3), or if the soak
+Aurora's defaults for all Apple silicon Macs (open question 3), or if the soak
 test finds a reason (a reboot that hangs for 10 minutes would argue for `aurora-system-fixes`'
 2-minute reboot watchdog).
 
