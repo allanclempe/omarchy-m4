@@ -7,10 +7,6 @@ under `build/`, `~/` or a machine name in sections 2 to 9 are working trees on t
 dev machines at the time, not files in the repo. Nothing has gone upstream yet: no PR to omacom or
 aurora-silicon.
 
-AI involvement: the research, code and builds were done with Claude Code (Claude Opus 5.5) at
-the owner's direction. Any commit made from this work must say so (Aurora's contributing guide
-requires it).
-
 Last updated: 2026-11-15.
 
 ---
