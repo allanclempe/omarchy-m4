@@ -134,7 +134,18 @@ Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d0
   Reading them off a photo produced a wrong PARTUUID once (JOURNEY 9.14).
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
-- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead. When it does, send
+  each change to the project that owns it:
+
+  | Change | Goes to |
+  | --- | --- |
+  | Kernel: drivers, device trees (`t6041-j616c.dts`), kernel config | a PR on aurora-silicon/linux, never omacom/linux-aurora |
+  | aura (Stage 1 and 2), Mesa, U-Boot, `[aurora]` packaging (alarm-aurora) | the aurora-silicon repo for it |
+  | The installer: admission, boot modes, engine, ESP creation | omacom/omarchy-mac-installer |
+  | Omarchy Mac packages, such as omarchy-mac-boot's boot check | omacom/omarchy-mac-pkgs |
+
+  Before opening one, check that no open PR carries kernel work into an omacom repo; move any
+  such PR to aurora-silicon/linux.
 - Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
   with enough context to ask them cold. Move a question to **Answered** when it's settled. That
   file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
