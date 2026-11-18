@@ -36,6 +36,29 @@ index 6cb7660..4f657b0 100755
  present=0
  for key in "${keys[@]}"; do
    [[ -e $key || -e $key.new ]] && present=1
+diff --git a/omarchy-mac/entrypoints/enable-fingerprint b/omarchy-mac/entrypoints/enable-fingerprint
+index 4134c47..a6f90ff 100755
+--- a/omarchy-mac/entrypoints/enable-fingerprint
++++ b/omarchy-mac/entrypoints/enable-fingerprint
+@@ -30,9 +30,17 @@ if [[ -e /etc/omarchy-mac/touchid-on ]]; then
+       echo "Touch ID was turned off while this ran, so setup goes on without it."
+       exit 0
+     elif [[ ! -e $options ]]; then
++      # The 16-inch M4 Max's kernel profile leaves the xART guard off (aurora
++      # 7.3.0.aurora1-40), and Touch ID was tried there only with it on, so keep
++      # Linux to its own xART records. Other Macs keep the kernel's level: the guard
++      # blocks matching on M1-family Macs.
++      driver_options="xart_writes=1 provision_keybag=1"
++      if tr '\0' '\n' </proc/device-tree/compatible 2>/dev/null | grep -Fxq apple,j616c; then
++        driver_options+=" xart_guard=1"
++      fi
+       { mkdir -p -m 0755 "${options%/*}" &&
+         printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
+-          "options apple_sep xart_writes=1 provision_keybag=1" >"$options.new" &&
++          "options apple_sep $driver_options" >"$options.new" &&
+         chmod 0644 "$options.new" && mv -fT "$options.new" "$options"; } ||
+         { rm -f "$options.new" 2>/dev/null; echo "Touch ID's driver options could not be written to $options" >&2; exit 1; }
+     fi
 diff --git a/omarchy-mac/lib/touchid-eligibility b/omarchy-mac/lib/touchid-eligibility
 index 252e98d..f593b8b 100755
 --- a/omarchy-mac/lib/touchid-eligibility
@@ -100,7 +123,7 @@ index 252e98d..f593b8b 100755
    exit 0
  fi
 diff --git a/omarchy-mac/lib/touchid-enable b/omarchy-mac/lib/touchid-enable
-index db387cb..afcc222 100755
+index db387cb..3ba13c0 100755
 --- a/omarchy-mac/lib/touchid-enable
 +++ b/omarchy-mac/lib/touchid-enable
 @@ -28,7 +28,8 @@ omarchy-hw-apple-silicon || exit 0
@@ -134,6 +157,27 @@ index db387cb..afcc222 100755
    # Rebuilt from the factory records asahi-installer leaves on the ESP and
    # checked against this Mac's iBoot System Container, like the root key.
    echo "Reading this Mac's Touch ID calibration..."
+@@ -162,11 +165,19 @@ preloaded=0
+ if [[ -d $module && ! -e $options && ! -e $loaded ]]; then
+   preloaded=1
+ fi
++# The 16-inch M4 Max's kernel profile leaves the xART guard off (aurora
++# 7.3.0.aurora1-40), and Touch ID was tried there only with it on, so keep
++# Linux to its own xART records. Other Macs keep the kernel's level: the guard
++# blocks matching on M1-family Macs.
++driver_options="xart_writes=1 provision_keybag=1"
++if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,j616c; then
++  driver_options+=" xart_guard=1"
++fi
+ # A write that fails partway never replaces the options, since a file without
+ # them would load a read-only driver at every boot.
+ { mkdir -p -m 0755 "${options%/*}" &&
+   printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
+-    "options apple_sep xart_writes=1 provision_keybag=1" >"$options.new" &&
++    "options apple_sep $driver_options" >"$options.new" &&
+   chmod 0644 "$options.new" && mv -fT "$options.new" "$options"; } ||
+   { rm -f "$options.new" 2>/dev/null; fail "the driver's options could not be written to $options"; }
+ mkdir -p -m 0755 "${loaded%/*}"
 diff --git a/omarchy-mac/lib/touchid-root-key b/omarchy-mac/lib/touchid-root-key
 index 0c8fbeb..5eee5e8 100755
 --- a/omarchy-mac/lib/touchid-root-key
@@ -161,7 +205,7 @@ index 0c8fbeb..5eee5e8 100755
  # What each record kind is called in a refusal.
  KINDS = {"MSRk": "sensor root key", "FSC2": "sealed calibration"}
 diff --git a/omarchy-mac/test/touchid-consent-test.sh b/omarchy-mac/test/touchid-consent-test.sh
-index f3c9508..a69d79d 100644
+index f3c9508..5321671 100644
 --- a/omarchy-mac/test/touchid-consent-test.sh
 +++ b/omarchy-mac/test/touchid-consent-test.sh
 @@ -140,6 +140,20 @@ for name, payload in (("j616s-key.bin", im4p), ("j616s-cal.bin", fsc2_im4p)):
@@ -185,7 +229,20 @@ index f3c9508..a69d79d 100644
  PY
  python3 -I "$work/factory.py" "$work/factory"
  # Any copy of the sensor key under the fixture other than the one named.
-@@ -718,6 +732,53 @@ PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 &&
+@@ -576,6 +590,12 @@ mkdir -p "$fixture/etc/modprobe.conf.new/in-the-way"
+ ! ask ready '' && grep -q 'options could not be written' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
+   fail "options that can't be written for an earlier agreement fail" "$(<"$fixture/out")"
+ rm -rf "$fixture/etc/modprobe.conf.new"
++machine apple,j616c apple,t6041 apple,arm-platform
++mkdir -p "$fixture/etc" && touch "$fixture/etc/touchid-on"
++ask ready '' && grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1 xart_guard=1' "$fixture/etc/modprobe.conf" ||
++  fail 'an M4 Max turned on before the driver options existed gets them with the xART guard on' "$(<"$fixture/out")"
++machine apple,j414c apple,t6021 apple,arm-platform
++mkdir -p "$fixture/etc" && touch "$fixture/etc/touchid-on"
+ rm "$fixture/etc/touchid-on"
+ ! ask ready n && grep -q 'experimental' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
+   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
+@@ -718,6 +738,55 @@ PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 &&
    fail "turning it off deletes an M4 Pro's sensor key"
  pass 'the 16-inch M4 Pro rebuilds its calibration and sensor key from its own factory records'
  
@@ -221,6 +278,8 @@ index f3c9508..a69d79d 100644
 +    fail "the M4 Max's ${file#*:} is rebuilt from its factory records, root-only" "$out"
 +done
 +! grep -Fxq calibration "$fixture/calls" || fail "the M4 Max's calibration is resealed, never carved"
++grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1 xart_guard=1' "$fixture/options-at-load" ||
++  fail "the M4 Max's driver loads with the xART guard on, as Touch ID was tried there"
 +j616c
 +cp "$work/factory/j616c-other-chip.tar.gz" "$fixture/esp/asahi/all_firmware.tar.gz"
 +container=$work/factory/j616c-isc.img

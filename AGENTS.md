@@ -35,7 +35,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c; the installer enrolled it on the acceptance install (JOURNEY 9.35) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
-| `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | no: from Aurora's kernel default or omarchy-mac's options, still to decide (JOURNEY 9.40, 9.44) | OMS-27 |
+| `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | in omacom/omarchy-mac-pkgs#160: omarchy-mac writes `xart_guard=1` on a J616c with the owner's agreement (JOURNEY 9.45); ships when #160 does | OMS-27 |
 
 ## Where things are
 
