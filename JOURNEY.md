@@ -847,3 +847,10 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - one boot from full power-off during the soak week;
   - Touch ID and keychain in macOS;
   - the test report.
+
+### 9.43 The J616c's Touch ID goes upstream, stacked on #140 (OMS-2, 2026-11-18)
+- **Sent upstream:** [omacom/omarchy-mac-pkgs#160](https://github.com/omacom/omarchy-mac-pkgs/pull/160), "Offer Touch ID on the 16-inch M4 Max (J616c)". It's one commit from the fork `allanclempe/omarchy-mac-pkgs`, branch `oms-2-touchid-j616c`, with the evidence from 9.41 and 9.42. It targets #140's branch `touchid-j616s` (omacom's own repo, at `b4d5c2f`), so it shows only the J616c change and retargets to `main` when #140 merges.
+- Allan sent it without asking #140's author first.
+- Before sending, the comment that called the J616c "admitted untried" now says both boards have enrolled, matched and matched after a restart. The two local commits became one.
+- omarchy-mac's suite: 124 ok, none failing. `patches/omarchy-mac-touchid-j616c.patch` is that commit's diff against `b4d5c2f`.
+- **What a fresh install still waits on:** #140 and #160 in an omarchy-mac release, and a `libfprint-git` with SEP interface v5 (#2737 on omarchy-pkgs).
