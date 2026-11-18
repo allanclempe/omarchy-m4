@@ -797,3 +797,37 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **What stayed:** the host-state store is a file on Linux's own disk, `/var/lib/aurora-sep-host-state.bin` (2,359,296 bytes, root, `0600`), not shared state; there is no keybag. It survives the reboot, and the probe's header now says so.
 - **`xart_guard 0`.** The kernel `-40` runs the J616c with the xART guard off (`diag/xart_guard 0`; policy `xart_guard=0`), although the profile in aurora-silicon/linux's current source inherits T6040's guard 1. With writes disabled the guard changed nothing here. For the enrol stage it means a write could rewrite xART session records that Linux didn't create, unless `xart_guard=1` is set. omarchy-mac's options file sets only `xart_writes=1 provision_keybag=1`. Whether to add `xart_guard=1` for the trial is open, and goes with the Aurora question on the T6041 profile.
 - Next: Allan reboots, as the driver takes one attach per boot. Then the enrol stage, after a macOS backup and a read-only image of the iBoot System Container.
+
+### 9.41 Touch ID enrols and matches on the J616c, through Omarchy's own setup (OMS-2, 2026-11-18)
+- After a reboot (the driver takes one attach per boot), the trial pieces were staged in a `0700` directory on the Mac (checksums compared at both ends) and installed by one script Allan ran with sudo:
+  - `libfprint-git 1:1.94.100.r10.g6f9479c-6`: omacom/omarchy-pkgs#2737's aarch64 CI build, SEP interface v4 and v5, sha256 `dbfb8b8f…a96a`;
+  - Arch's `fprintd 1.94.5-2`, installed first, so Omarchy's setup wouldn't put the repo's v4-only `-5` back;
+  - the four scripts from `patches/omarchy-mac-touchid-j616c.patch` over omarchy-mac 0.2.3-2's own; the installed copies matched omarchy-mac-pkgs `ea0097a`, and those files are unchanged up to #140's base `28abebe`;
+  - `/etc/modprobe.d/zz-oms2-xart-guard.conf`: `options apple_sep xart_guard=1`. The `-40` kernel runs the J616c with the guard off (9.40); this keeps Linux from rewriting xART records it didn't create.
+
+  With them, eligibility answered `available` (the installed scripts said `none`). The undo, `undo-trial.sh`, puts omarchy-mac's scripts back and removes the two packages and the guard file. It doesn't undo the enclave's state.
+- Before any write, the iBoot System Container was imaged read-only from Omarchy (9.2 MB compressed, kept off the repo, `0600`). Allan chose no macOS backup: nothing on macOS needs keeping, and a DFU restore plus a fresh install (OMS-14) is an acceptable worst case. FileVault's state is unchecked.
+- **`omarchy-setup-security-fingerprint`, unchanged Omarchy, end to end:**
+  - consent;
+  - `touchid-enable` rebuilt `apple/mesacal-j616c.bin` (130,831 bytes) and `apple/msrk-j616c.bin` (11,252 bytes) from the factory records on the ESP, sealed for `00006041`, both root `0600` under `/usr/lib/firmware/updates`;
+  - it recorded the agreement (`/etc/omarchy-mac/touchid-on`, `xart_writes=1 provision_keybag=1`) and loaded `apple_sep`, which created the keybag;
+  - enrolment took about ten touches, the first refused as "a wet finger";
+  - **verify: "✓ Matched."**;
+  - then the sudo, polkit and lock screen configuration.
+- **The driver after it:**
+  - `touchid ready`, `sensor online`, `sensor_attach attached`, `keybag present`, `restore empty` (no earlier enrolment to restore);
+  - `xart enabled`, `xart_guard 1`, `xart_guard_list loaded`, **`xart_guard_refusals 0`**, `xarm_failures 0`;
+  - `matching unverified`, which is what a warm-attach Mac reports with the guard on and nothing refused yet;
+  - omarchy-mac's status: `ready`; `fprintd` active.
+- **The kernel log:**
+  - user 1000 then had one enrolled identity in the enclave;
+  - the match ran under the `device-owner-biometry` unlock policy, which read satisfied after it;
+  - the lockout record was saved, and the template update persisted (user, then master).
+
+  So keybag creation, enrolment and a match all passed under the guard with no refusal: the case XART-SAFETY.md lists as untested for a warm-attach Mac. The same log shows macOS's user (501) in the enclave, locked before first unlock, as expected.
+- The verify log line names the enrolled template's id as a list of hex bytes, which the probe's filter didn't catch; it now replaces byte lists of eight or more too. The id isn't recorded here.
+- Still to do:
+  - sudo and the lock screen with a finger;
+  - a match after a cold boot (the enclave restoring the enrolment);
+  - Touch ID and keychain in macOS;
+  - the test report's `sep.attach`, `touch-id.ready` and `touch-id.unlock`.

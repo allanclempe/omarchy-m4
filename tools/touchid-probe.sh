@@ -25,7 +25,8 @@
 # expected to show, not something known yet on this Mac.
 #
 # It prints no device identifier: no ECID, serial, UUID or digest. Long hex
-# runs and UUIDs are replaced in place in every kernel log line, option and
+# runs, byte lists (8 or more, as the driver prints a template id) and UUIDs
+# are replaced in place in every kernel log line, option and
 # diag value; a line naming an ECID, serial, digest or nonce is withheld and
 # counted. Factory records are reduced to their kind (a seal to its chip); an
 # unknown record prints as "other".
@@ -53,7 +54,8 @@ section() { printf '\n== %s\n' "$*"; }
 # place, and a line that names an ECID, serial, digest or nonce is dropped and
 # counted, so a log keeps the lines that explain a failure.
 redact() {
-  sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]{4,}/<uuid withheld>/g; s/(0x)?[0-9a-fA-F]{16,}/<hex withheld>/g' |
+  sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]{4,}/<uuid withheld>/g; s/(0x)?[0-9a-fA-F]{16,}/<hex withheld>/g
+    s/([0-9a-fA-F]{2}[ :]){7,}[0-9a-fA-F]{2}/<bytes withheld>/g' |
     awk 'tolower($0) ~ /ecid|serial|digest|nonce/ { n++; next } { print }
       END { if (n) printf "(%d line(s) withheld: they named an identifier)\n", n }'
 }
