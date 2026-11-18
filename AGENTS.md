@@ -35,6 +35,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c; the installer enrolled it on the acceptance install (JOURNEY 9.35) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
+| `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | in omacom/omarchy-mac-pkgs#160: omarchy-mac writes `xart_guard=1` on a J616c with the owner's agreement (JOURNEY 9.45); ships when #160 does | OMS-27 |
 
 ## Where things are
 
@@ -44,6 +45,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
 - `tools/wifi-reload-timing.sh` times Wi-Fi's rejoin after a `brcmfmac` reload, plain and with the
   radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
+- `tools/touchid-probe.sh` checks Touch ID's state on the Mac without loading anything. With
+  `--load` it attaches the Secure Enclave read-only (no xART writes, no keybag) and reports how far
+  the driver got (JOURNEY 9.38). Run it at the Mac with sudo, and reboot after `--load`.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
@@ -61,7 +65,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
   stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
-  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150. `patches/README.md` gives each patch's base
+  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150.
+  `patches/omarchy-mac-touchid-j616c.patch` offers Touch ID on the J616c through omarchy-mac's own
+  consent path (OMS-2), on the head of draft omacom/omarchy-mac-pkgs#140; sent upstream as #160, which depends on it. `patches/README.md` gives each patch's base
   and how to apply and test it.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
@@ -110,7 +116,18 @@ Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d0
   Reading them off a photo produced a wrong PARTUUID once (JOURNEY 9.14).
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
-- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead. When it does, send
+  each change to the project that owns it:
+
+  | Change | Goes to |
+  | --- | --- |
+  | Kernel: drivers, device trees (`t6041-j616c.dts`), kernel config | a PR on aurora-silicon/linux, never omacom/linux-aurora |
+  | aura (Stage 1 and 2), Mesa, U-Boot, `[aurora]` packaging (alarm-aurora) | the aurora-silicon repo for it |
+  | The installer: admission, boot modes, engine, ESP creation | omacom/omarchy-mac-installer |
+  | Omarchy Mac packages, such as omarchy-mac-boot's boot check | omacom/omarchy-mac-pkgs |
+
+  Before opening one, check that no open PR carries kernel work into an omacom repo; move any
+  such PR to aurora-silicon/linux.
 - Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
   with enough context to ask them cold. Move a question to **Answered** when it's settled. That
   file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
@@ -127,6 +144,10 @@ branches after the key (`oms-12-short-title`) and use it as the commit scope (`f
 work is attributed.
 
 ## Soak test week
+
+Install the tester on the Mac with `curl -fsSL https://omarchy-m-testing.org/install | bash`, as Allan
+(not with sudo). It isn't pinned, so read what it fetches before running it on a new install; it isn't
+in the image, so a fresh install needs it again. Some checks, such as Touch ID's, need Allan at the Mac.
 
 Baseline: the post-install test report,
 https://omarchy-m-testing.org/reports/KkjcZekcyQ9BDAs9oYr7HoTn (omarchy-m-test 0.1.15,

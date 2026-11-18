@@ -732,3 +732,144 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - Allan, using the acceptance install (9.35) after the first `omarchy update`: the camera picture looks no better than before the fix. The setfile `isp_2224_01XX.dat` is installed and loads, and the kernel no longer logs "streaming without sensor tuning". So the missing setfile wasn't the cause, or not the whole cause, of the noise measured against macOS in 9.27 (about 26 dB lower PSNR, purple speckle in shadows).
 - Not measured yet: the 9.27 comparison repeated with the tuning loaded. Candidates from 9.27, none checked: per-module calibration (`iCCl`), which Aurora's camera-tuning doc says no kernel uploads yet; and the noise reduction and processing macOS applies that the Linux path may not. OMS-26 tracks it.
 - OMS-22's collection fix stays: it is still what the kernel asks for. The README no longer calls the camera's picture a comparison still to make, and AGENTS.md no longer implies the tuning fixed the picture.
+
+### 9.38 Touch ID: the kernel is ready, Omarchy's path doesn't reach the J616c (OMS-2, 2026-11-18)
+- Read from the packages and sources, nothing run on the Mac yet. The report (2026-11-14) has `/dev/sep-bio` absent, no fprintd or libfprint, and `apple,mesa-fingerprint` unclaimed.
+- **Kernel and Stage 2 are ready.**
+  - `linux-aurora 7.3.0.aurora1-40` builds the SEP driver as a module (`apple-sep.ko`, `apple_sep`), with a `T6041/J614c, J616c` profile. In aurora-silicon/linux's `profile.rs` that profile is T6040's (the J616s): warm attach, the Mesa sensor (`0x3356`) on spi2 at `0x429108000`, a nonce session with a sealed root key, xART guard 1. Its doc comment cites the J614c's ADT; no J614c or J616c hardware result is recorded.
+  - The J616c device tree has `sep@406600000` with `status = "disabled"`, as every T60xx tree does. The driver enables the node and its DART itself, through an OF changeset, once its profile matches (`dt.rs`). The fingerprint node at `/spi@429108000/fingerprint@0` is `okay` and names `apple/mesacal-j616c.bin` and `apple/msrk-j616c.bin`.
+  - The pinned Stage 2 (aura `94d8e6e4`) keeps iBoot's warm SEP registration on every chip after M1 and seeds the RNG from the ADT. Through the tree's `sep` alias it reserves the SEP firmware and publishes the LocalPolicy and iBoot manifests (`dt_set_sep`).
+  - The kernel's SEP biometric interface is v5 (`bio.rs`), as the J604 bring-up found.
+- **Omarchy's own Touch ID path doesn't reach the J616c.** omarchy-mac (omacom/omarchy-mac-pkgs) turns Touch ID on only with the owner's agreement, through Omarchy's fingerprint setup (`omarchy-lifecycle-dispatch enable-fingerprint`). It uses Omarchy's `libfprint-git`, whose aarch64 build carries Aurora's SEP driver as a patch, and stock `fprintd`. On this Mac its `touchid-eligibility` fails three ways before anything loads:
+  - it looks for the sensor under `/soc` only, so it answers `none`;
+  - its board list has no `apple,t6041`;
+  - it reads `firmware-name` with `tr -d '\0'`, running the J616c's two names together.
+
+  It also rebuilds only the Neo's sensor root key. And the shipped `libfprint-git` patch accepts interface v4 only (`AURORA_BIO_IFACE_VERSION 4`), so on Aurora's 7.3 kernel it can't drive Touch ID on any Mac. omacom/omarchy-pkgs#2737 is a test pin for v4 and v5.
+- **Upstream already has most of it for the M4 Pro.** Draft omacom/omarchy-mac-pkgs#140, "Offer Touch ID on the 16-inch M4 Pro (J616s)", on `28abebe`: it finds the sensor at the root, reads each `firmware-name` entry, admits `apple,j616s` on T6040, and rebuilds both the FSC2 calibration and the MSRk root key from the factory records asahi-installer leaves on the ESP (`asahi/all_firmware.tar.gz`), sealed for chip `00006040` and checked against this Mac's iBoot System Container. Its author reports enrol, `verify-match` and a match after a cold boot on a J616s.
+- **Aurora's own stack, `aurora-sep` 1-25, stays out of the image.** It pulls `fprintd-aurora` and `libfprint-aurora`, and leaves `/etc/default/update-m1n1` alone; only Aurora's `install-aurora-sep.sh` edits that file. But it loads the SEP at every boot with xART writes on, without asking. It makes a short power-button press suspend (`logind.conf.d/50-aurora-sep.conf`; the Touch ID sensor is the power button). It adds `pam_fprintd` to sudo and polkit through a pacman hook. And it conflicts with the `libfprint-git` Omarchy's fingerprint setup installs.
+- **Decided (Allan):** Omarchy's path, with a staged hardware trial. The image ships no SEP stack; the owner turns Touch ID on through Omarchy's fingerprint setup.
+- **`patches/omarchy-mac-touchid-j616c.patch`**, on #140's head `b4d5c2f`:
+  - eligibility admits `apple,j616c` on `apple,t6041` beside the J616s, through one `sealed_board` check; the 14-inch J614c stays unsupported until tried;
+  - enable rebuilds both files with `--chip 00006041`;
+  - `touchid-root-key` accepts `00006041`;
+  - `disable-fingerprint` deletes `msrk-j616c.bin`;
+  - the README says so.
+
+  A new test section covers eligibility (available, then no calibration and no root key as the records go), both files rebuilt root-only (`0600`), an M4 Pro seal refused on the M4 Max, a J614c and a J616s-on-T6041 unsupported, and disable deleting the key. It fails when the J616c is given the M4 Pro's chip. omarchy-mac's suite: 124 ok, none failing. shellcheck (`-S warning`, v0.10.0) reports the same warnings as #140's head, none new.
+- **`tools/touchid-probe.sh`** is the trial's first stage. Without `--load` it only reads: the tree, the packages, omarchy-mac's eligibility and status, the calibration files, and the kinds of factory record on the ESP (a seal named by chip only). With `--load` it loads `apple_sep` with `xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0`, never opens `/dev/sep-bio`, and prints the driver's diag attributes (profile, attach, key store, identity source, policy) and its kernel log, and warns if `diag/policy` doesn't show the four options it gave. UUIDs and long hex runs are replaced in every line it prints, a line naming an ECID, serial, digest or nonce is withheld and counted, and an unknown factory record prints as `other`. Any further SEP step needs a reboot first: the driver takes one attach per boot. Whether the enclave also starts clean after the reboot is for the trial to show.
+- **Still to do:**
+  - the probe, on the Mac;
+  - then, after a macOS backup and a read-only image of the iBoot System Container, the patched omarchy-mac's enable, an enrol, a match, and a match after a cold boot;
+  - `libfprint-git` with v5;
+  - whether the installer's `all_firmware.tar.gz` carries `com.apple.factorydata` on an M4 install.
+
+  The questions are with the M team and Aurora.
+- **The image is unchanged.** Nothing here goes into `tools/derive-j616c-image`: Touch ID reaches the J616c only through an omarchy-mac release with #140 and this patch, and a `libfprint-git` with v5. Until then the image's omarchy-mac reports the J616c's Touch ID as `none`, and the gap stays documented. For the trial, the patched scripts are copied to the Mac by hand; that is a test step, not a hand fix for the build table.
+
+### 9.39 Touch ID probe, read-only checks on the acceptance install (OMS-2, 2026-11-18)
+- Allan ran `tools/touchid-probe.sh` without `--load` at the Mac. A CDN cache served the version from before the review fixes, so its factory-record listing printed record names in full. They carry the Mac's ECID and component serial numbers, so that output stays off the repo. What follows has no identifiers.
+- As 9.38 predicted:
+  - kernel `7.3.0-1-40-ARCH`; `sep@406600000` disabled; the fingerprint node `okay`, naming `apple/mesacal-j616c.bin` and `apple/msrk-j616c.bin`;
+  - `/chosen/apfs-preboot-uuid` present, and the `iBootSystemContainer` link present;
+  - `apple_sep` not loaded, and no libfprint, fprintd or `aurora-sep` installed;
+  - omarchy-mac `0.2.3-2`: eligibility `none`, no status file, no agreement, no keybag;
+  - no calibration or root key installed.
+- **The factory records are on the ESP.** `/boot/efi/asahi/all_firmware.tar.gz` holds `com.apple.factorydata`, with one `MSRk`, one `FSC2`, one seal for chip `00006041` and two trust objects: what #140's path rebuilds the J616c's calibration and root key from. The old version's closing line "has no com.apple.factorydata" was the SIGPIPE false negative that review finding F7 fixed; the listing above it contradicts it.
+- **Also there:** the camera module's factory calibration record (`iCCl`), and others (`appv`, `fCfg`, `dCfg`, `ADCL`, `HmCA`, `sePk`, `lcrt`, `pcrt`, `scrt`, and their `mansta`/`mandev` manifests). So the installer already keeps `iCCl` on the ESP: relevant to OMS-26 and to the camera calibration question for the team.
+- Next: `--load` with the current probe, then a reboot.
+
+### 9.40 The Secure Enclave attaches on the J616c, read-only (OMS-2, 2026-11-18)
+- `tools/touchid-probe.sh --load` (the version at `1cfdfa5`, sha256 `976810ca…99d7d`, root-owned copy) was run over Tailscale SSH through a sudoers rule Allan added for that path only. It loaded `apple_sep` with `xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0` on the acceptance install, about 35 hours after boot. This is the first recorded run of the T6041 profile on hardware.
+- **The driver's diag attributes:**
+  - `profile T6041/J614c, J616c`, `boot warm`, `protocol variant5`, `abi 3`;
+  - `attach attached` in 824 ms, `ready_ms 3112`, `keystore open`;
+  - 12 endpoints: `cntl sbio scrd sse hdcp xars sks xarm hibe pnon skdl stac`;
+  - `os_identity chosen`, from `/chosen/apfs-preboot-uuid` (policy `identity_source=dt`);
+  - `xart disabled`, and the policy shows the four options as given;
+  - `matching blocked`, as a read-only load always reports; `keybag`, `touchid`, `sensor_attach` and `restore` stay `unknown`, since `/dev/sep-bio` wasn't opened (present, not opened);
+  - `hwrng registered`, `xarm_failures 0`, `unhandled_messages 0`.
+- **The kernel log:**
+  - the driver applied its changeset (the DART with offset `BIT(40)` and range `0..4 GiB`, then the SEP node, `status okay`);
+  - it found the shared xART store as one APFS-resolved `.gl` extent, with 170 slots, 12 live records, 0 malformed, 0 duplicate and 0 repaired, writes disabled;
+  - "created a new host-state store";
+  - 7 endpoints advertised in 18 messages, then "ready in 3112 ms: 12 endpoints … key store open".
+- **What stayed:** the host-state store is a file on Linux's own disk, `/var/lib/aurora-sep-host-state.bin` (2,359,296 bytes, root, `0600`), not shared state; there is no keybag. It survives the reboot, and the probe's header now says so.
+- **`xart_guard 0`.** The kernel `-40` runs the J616c with the xART guard off (`diag/xart_guard 0`; policy `xart_guard=0`), although the profile in aurora-silicon/linux's current source inherits T6040's guard 1. With writes disabled the guard changed nothing here. For the enrol stage it means a write could rewrite xART session records that Linux didn't create, unless `xart_guard=1` is set. omarchy-mac's options file sets only `xart_writes=1 provision_keybag=1`. Whether to add `xart_guard=1` for the trial is open, and goes with the Aurora question on the T6041 profile.
+- Next: Allan reboots, as the driver takes one attach per boot. Then the enrol stage, after a macOS backup and a read-only image of the iBoot System Container.
+
+### 9.41 Touch ID enrols and matches on the J616c, through Omarchy's own setup (OMS-2, 2026-11-18)
+- After a reboot (the driver takes one attach per boot), the trial pieces were staged in a `0700` directory on the Mac (checksums compared at both ends) and installed by one script Allan ran with sudo:
+  - `libfprint-git 1:1.94.100.r10.g6f9479c-6`: omacom/omarchy-pkgs#2737's aarch64 CI build, SEP interface v4 and v5, sha256 `dbfb8b8f…a96a`;
+  - Arch's `fprintd 1.94.5-2`, installed first, so Omarchy's setup wouldn't put the repo's v4-only `-5` back;
+  - the four scripts from `patches/omarchy-mac-touchid-j616c.patch` over omarchy-mac 0.2.3-2's own; the installed copies matched omarchy-mac-pkgs `ea0097a`, and those files are unchanged up to #140's base `28abebe`;
+  - `/etc/modprobe.d/zz-oms2-xart-guard.conf`: `options apple_sep xart_guard=1`. The `-40` kernel runs the J616c with the guard off (9.40); this keeps Linux from rewriting xART records it didn't create.
+
+  With them, eligibility answered `available` (the installed scripts said `none`). The undo, `undo-trial.sh`, puts omarchy-mac's scripts back and removes the two packages and the guard file. It doesn't undo the enclave's state.
+- Before any write, the iBoot System Container was imaged read-only from Omarchy (9.2 MB compressed, kept off the repo, `0600`). Allan chose no macOS backup: nothing on macOS needs keeping, and a DFU restore plus a fresh install (OMS-14) is an acceptable worst case. FileVault's state is unchecked.
+- **`omarchy-setup-security-fingerprint`, unchanged Omarchy, end to end:**
+  - consent;
+  - `touchid-enable` rebuilt `apple/mesacal-j616c.bin` (130,831 bytes) and `apple/msrk-j616c.bin` (11,252 bytes) from the factory records on the ESP, sealed for `00006041`, both root `0600` under `/usr/lib/firmware/updates`;
+  - it recorded the agreement (`/etc/omarchy-mac/touchid-on`, `xart_writes=1 provision_keybag=1`) and loaded `apple_sep`, which created the keybag;
+  - enrolment took about ten touches, the first refused as "a wet finger";
+  - **verify: "✓ Matched."**;
+  - then the sudo, polkit and lock screen configuration.
+- **The driver after it:**
+  - `touchid ready`, `sensor online`, `sensor_attach attached`, `keybag present`, `restore empty` (no earlier enrolment to restore);
+  - `xart enabled`, `xart_guard 1`, `xart_guard_list loaded`, **`xart_guard_refusals 0`**, `xarm_failures 0`;
+  - `matching unverified`, which is what a warm-attach Mac reports with the guard on and nothing refused yet;
+  - omarchy-mac's status: `ready`; `fprintd` active.
+- **The kernel log:**
+  - user 1000 then had one enrolled identity in the enclave;
+  - the match ran under the `device-owner-biometry` unlock policy, which read satisfied after it;
+  - the lockout record was saved, and the template update persisted (user, then master).
+
+  So keybag creation, enrolment and a match all passed under the guard with no refusal: the case XART-SAFETY.md lists as untested for a warm-attach Mac. The same log shows macOS's user (501) in the enclave, locked before first unlock, as expected.
+- The verify log line names the enrolled template's id as a list of hex bytes, which the probe's filter didn't catch; it now replaces byte lists of eight or more too. The id isn't recorded here.
+- Still to do:
+  - sudo and the lock screen with a finger;
+  - a match after a cold boot (the enclave restoring the enrolment);
+  - Touch ID and keychain in macOS;
+  - the test report's `sep.attach`, `touch-id.ready` and `touch-id.unlock`.
+
+### 9.42 Touch ID after a reboot: restored, and matched twice under the guard (OMS-2, 2026-11-18)
+- Allan rebooted the Mac (a restart, not a power-off), then used sudo after `sudo -k` and unlocked the lock screen with his finger. Both worked.
+- **The driver at this boot:**
+  - `restore restored`, `touchid ready`, `sensor_attach attached`, `keybag present`, omarchy-mac status `ready`;
+  - `xart_guard 1`, `xart_guard_list loaded`, `xart_guard_refusals 0`, `xarm_failures 0`, `matching unverified`.
+- **The kernel log:**
+  - at 21.7 s: "xART guard level 1: 10 session records exist, 0 created by Linux; the other 10 are protected";
+  - at 24.9 s: the master, owner and user catacombs all `Restored`, and the lockout record `EmptyTolerated`;
+  - at 25.6 s: "Touch ID: restored 1 enrolled identity/identities; enrolment survived reboot";
+  - at 45 s and 51 s: two matches, each with the unlock policy satisfied (generations 2 and 3), its lockout record saved and its template update persisted.
+- So creating the keybag, enrolling, matching, and matching after a restart left Linux with no session records of its own, and the guard refused nothing. On this warm-attach Mac, guard level 1 doesn't stand in the way of using Touch ID: XART-SAFETY.md lists that as untested.
+- Still to do:
+  - one boot from full power-off during the soak week;
+  - Touch ID and keychain in macOS;
+  - the test report.
+
+### 9.43 The J616c's Touch ID goes upstream, stacked on #140 (OMS-2, 2026-11-18)
+- **Sent upstream:** [omacom/omarchy-mac-pkgs#160](https://github.com/omacom/omarchy-mac-pkgs/pull/160), "Offer Touch ID on the 16-inch M4 Max (J616c)". It's one commit from the fork `allanclempe/omarchy-mac-pkgs`, branch `oms-2-touchid-j616c`, with the evidence from 9.41 and 9.42. It targets #140's branch `touchid-j616s` (omacom's own repo, at `b4d5c2f`), so it shows only the J616c change and retargets to `main` when #140 merges.
+- Allan sent it without asking #140's author first.
+- Before sending, the comment that called the J616c "admitted untried" now says both boards have enrolled, matched and matched after a restart. The two local commits became one.
+- omarchy-mac's suite: 124 ok, none failing. `patches/omarchy-mac-touchid-j616c.patch` is that commit's diff against `b4d5c2f`.
+- **What a fresh install still waits on:** #140 and #160 in an omarchy-mac release, and a `libfprint-git` with SEP interface v5 (#2737 on omarchy-pkgs).
+
+### 9.44 Corrections to 9.39–9.43 and the guard left open (OMS-2, OMS-27, 2026-11-18)
+- **9.43 was wrong about the comment.** The squash committed the J616c change without the reworded comment: the edit stayed in the working tree, so #160 went up still saying the J616c is "admitted untried". The rewording is now its own commit on #160 (`35a4fe7`, "Say the J616c has been tried"), and `patches/omarchy-mac-touchid-j616c.patch` is regenerated from it.
+- **#160 claimed polkit.** Its description said sudo, polkit and the lock screen work with a finger. Only sudo and the lock screen were tried (9.42); the setup configured polkit, but no polkit prompt has been tried. The description now says so.
+- **The guard is a hand step, and nothing ships it.** Every write in 9.41 and 9.42 ran under `xart_guard=1`, from a hand-made `/etc/modprobe.d/zz-oms2-xart-guard.conf`. The `-40` kernel runs the J616c with the guard off (9.40), omarchy-mac's agreement writes only `xart_writes=1 provision_keybag=1`, and #160 doesn't set it. So a fresh install with #140, #160 and a v5 libfprint would run with the guard off, which wasn't tried with writes on. 9.43's list of what a fresh install waits on lacks this. OMS-27 tracks it: Aurora's default for T6041, or `xart_guard=1` from omarchy-mac. AGENTS.md's hand-fix table has a row for it, and `patches/README.md` says the trial ran with the guard on.
+- **Sources for two claims:**
+  - "XART-SAFETY.md" in 9.41 and 9.42 is Aurora's xART safety document: `tools/aurora-sep/XART-SAFETY.md` in aurora-silicon/linux, also shipped as `/usr/share/doc/aurora-sep/XART-SAFETY.md` in `aurora-sep`. Its guard section lists matching and keybag creation under guard 1 on a warm-attach Mac as untested.
+  - "Review finding F7" in 9.39 was the first review of PR #21 (allanclempe/omarchy-m4#21). It found that the old probe piped `tar` into `grep -q` under `pipefail`, so a long listing could end early with SIGPIPE and print "has no com.apple.factorydata" falsely.
+- **The probe's filter** also hides two-digit byte lists separated by commas or with `0x` prefixes, and any bracketed list of 8 or more numbers, decimal or unpadded hex, as Rust's `{:?}` and `{:x?}` print a slice. Its matches stop at word boundaries. 9.41's template id was space-separated two-digit hex, which the earlier pattern already caught. `tools/tests/touchid-probe-redact-test.sh` has 15 cases: spaces, colons, commas, `0x`, decimal and unpadded lists, hex runs, UUIDs, withheld lines, and the lines that must be kept.
+- **#160 now targets `main`**, not #140's branch. Allan's call: a PR based on another PR's branch can be lost or tangled if that branch is squash-merged or deleted. omacom uses both styles (#156 is based on #155's branch; #145 targets `main` and says "Depends on #144"). #160 now opens with a note: "Depends on #140 (head `b4d5c2f`). The first commit is #140; the last two are this change. Merge #140 first." It shows #140's commit until #140 merges, and is mergeable.
+
+### 9.45 #160 turns the xART guard on for the J616c (OMS-27, 2026-11-18)
+- Allan chose to have omarchy-mac set the guard, rather than wait for Aurora's kernel default. Both reviewers recommended it, and it ships the configuration that was tried (9.41, 9.42).
+- **The commit** is [omacom/omarchy-mac-pkgs#160](https://github.com/omacom/omarchy-mac-pkgs/pull/160) `eb80585`, "Turn the xART guard on for the 16-inch M4 Max (J616c)". On a J616c, the owner's agreement now writes `options apple_sep xart_writes=1 provision_keybag=1 xart_guard=1`. Both writers do it: `touchid-enable`, and `enable-fingerprint` for a Mac agreed before the options file existed.
+  - Other Macs keep the kernel's level, since the guard blocks matching on M1-family Macs.
+  - A later kernel that defaults T6041 to guard 1 makes the option a no-op.
+- **Tests:** the consent test asserts both writers add the guard on a J616c, and the existing assertions keep every other Mac's line without it. The new assertions failed before the change. omarchy-mac's suite: 124 ok, none failing. shellcheck reports nothing new.
+- **#160's description** now says it writes the guard, and its note counts three commits of its own after #140's. `patches/omarchy-mac-touchid-j616c.patch` is regenerated. The AGENTS.md hand-fix row now points at #160: the hand-made `/etc/modprobe.d/zz-oms2-xart-guard.conf` on this Mac becomes redundant once omarchy-mac ships #160.
+- The question to Aurora on `-40`'s default stays open, and goes in the team post.
