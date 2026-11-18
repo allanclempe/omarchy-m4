@@ -12,7 +12,9 @@
 # --load loads aurora's apple_sep with xart_writes=0 provision_keybag=0
 # trusted_keys=0 filevault_api=0: the enclave's shared xART store in the iBoot
 # System Container is opened read-only, no identity keybag is created, and no
-# kernel key or FileVault API is registered. It never opens /dev/sep-bio, so
+# kernel key or FileVault API is registered. The driver does create its
+# host-state store on Linux's disk, /var/lib/aurora-sep-host-state.bin (root,
+# 0600), which stays after a reboot. It never opens /dev/sep-bio, so
 # Touch ID isn't activated. It reports the platform profile, the attach, the
 # key store, the identity source and the policy the driver chose, from the
 # driver's diag attributes, checks the policy it reports against the options

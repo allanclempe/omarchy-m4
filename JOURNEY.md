@@ -778,3 +778,22 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **The factory records are on the ESP.** `/boot/efi/asahi/all_firmware.tar.gz` holds `com.apple.factorydata`, with one `MSRk`, one `FSC2`, one seal for chip `00006041` and two trust objects: what #140's path rebuilds the J616c's calibration and root key from. The old version's closing line "has no com.apple.factorydata" was the SIGPIPE false negative that review finding F7 fixed; the listing above it contradicts it.
 - **Also there:** the camera module's factory calibration record (`iCCl`), and others (`appv`, `fCfg`, `dCfg`, `ADCL`, `HmCA`, `sePk`, `lcrt`, `pcrt`, `scrt`, and their `mansta`/`mandev` manifests). So the installer already keeps `iCCl` on the ESP: relevant to OMS-26 and to the camera calibration question for the team.
 - Next: `--load` with the current probe, then a reboot.
+
+### 9.40 The Secure Enclave attaches on the J616c, read-only (OMS-2, 2026-11-18)
+- `tools/touchid-probe.sh --load` (the version at `1cfdfa5`, sha256 `976810ca…99d7d`, root-owned copy) was run over Tailscale SSH through a sudoers rule Allan added for that path only. It loaded `apple_sep` with `xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0` on the acceptance install, about 35 hours after boot. This is the first recorded run of the T6041 profile on hardware.
+- **The driver's diag attributes:**
+  - `profile T6041/J614c, J616c`, `boot warm`, `protocol variant5`, `abi 3`;
+  - `attach attached` in 824 ms, `ready_ms 3112`, `keystore open`;
+  - 12 endpoints: `cntl sbio scrd sse hdcp xars sks xarm hibe pnon skdl stac`;
+  - `os_identity chosen`, from `/chosen/apfs-preboot-uuid` (policy `identity_source=dt`);
+  - `xart disabled`, and the policy shows the four options as given;
+  - `matching blocked`, as a read-only load always reports; `keybag`, `touchid`, `sensor_attach` and `restore` stay `unknown`, since `/dev/sep-bio` wasn't opened (present, not opened);
+  - `hwrng registered`, `xarm_failures 0`, `unhandled_messages 0`.
+- **The kernel log:**
+  - the driver applied its changeset (the DART with offset `BIT(40)` and range `0..4 GiB`, then the SEP node, `status okay`);
+  - it found the shared xART store as one APFS-resolved `.gl` extent, with 170 slots, 12 live records, 0 malformed, 0 duplicate and 0 repaired, writes disabled;
+  - "created a new host-state store";
+  - 7 endpoints advertised in 18 messages, then "ready in 3112 ms: 12 endpoints … key store open".
+- **What stayed:** the host-state store is a file on Linux's own disk, `/var/lib/aurora-sep-host-state.bin` (2,359,296 bytes, root, `0600`), not shared state; there is no keybag. It survives the reboot, and the probe's header now says so.
+- **`xart_guard 0`.** The kernel `-40` runs the J616c with the xART guard off (`diag/xart_guard 0`; policy `xart_guard=0`), although the profile in aurora-silicon/linux's current source inherits T6040's guard 1. With writes disabled the guard changed nothing here. For the enrol stage it means a write could rewrite xART session records that Linux didn't create, unless `xart_guard=1` is set. omarchy-mac's options file sets only `xart_writes=1 provision_keybag=1`. Whether to add `xart_guard=1` for the trial is open, and goes with the Aurora question on the T6041 profile.
+- Next: Allan reboots, as the driver takes one attach per boot. Then the enrol stage, after a macOS backup and a read-only image of the iBoot System Container.
