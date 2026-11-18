@@ -67,7 +67,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
   (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150.
   `patches/omarchy-mac-touchid-j616c.patch` offers Touch ID on the J616c through omarchy-mac's own
-  consent path (OMS-2), on the head of draft omacom/omarchy-mac-pkgs#140; sent upstream as #160, stacked on it. `patches/README.md` gives each patch's base
+  consent path (OMS-2), on the head of draft omacom/omarchy-mac-pkgs#140; sent upstream as #160, which depends on it. `patches/README.md` gives each patch's base
   and how to apply and test it.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
