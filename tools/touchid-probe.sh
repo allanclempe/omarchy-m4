@@ -15,17 +15,18 @@
 # kernel key or FileVault API is registered. It never opens /dev/sep-bio, so
 # Touch ID isn't activated. It reports the platform profile, the attach, the
 # key store, the identity source and the policy the driver chose, from the
-# driver's diag attributes, the module's effective parameters, and the
-# driver's kernel log.
+# driver's diag attributes, checks the policy it reports against the options
+# given, and prints the driver's kernel log.
 # The driver takes one attach per boot and can't be unloaded and loaded again,
 # so reboot after --load before any further SEP step. A reboot unloads the
 # driver; that the enclave also starts clean after it is what the trial is
 # expected to show, not something known yet on this Mac.
 #
-# It prints no device identifier: no ECID, serial, UUID or digest. Every
-# kernel log line and diag value passes one filter that withholds anything
-# that looks like one, and factory records are reduced to their kind (a seal
-# to its chip); an unknown record prints as "other".
+# It prints no device identifier: no ECID, serial, UUID or digest. Long hex
+# runs and UUIDs are replaced in place in every kernel log line, option and
+# diag value; a line naming an ECID, serial, digest or nonce is withheld and
+# counted. Factory records are reduced to their kind (a seal to its chip); an
+# unknown record prints as "other".
 set -uo pipefail
 
 load=0
@@ -46,16 +47,21 @@ diag_attrs=(abi profile boot protocol policy os_identity xart attach endpoints e
   hwrng attach_ms ready_ms xarm_failures unhandled_messages)
 
 section() { printf '\n== %s\n' "$*"; }
-# Lines that could carry an identifier: by name, or a long hex or UUID-like run.
-identifying='ecid|serial|uuid|digest|nonce|[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-'
-without_ids() { grep -viE "$identifying"; }
+# Hide what could be an identifier: a UUID or a long hex run is replaced in
+# place, and a line that names an ECID, serial, digest or nonce is dropped and
+# counted, so a log keeps the lines that explain a failure.
+redact() {
+  sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]{4,}/<uuid withheld>/g; s/(0x)?[0-9a-fA-F]{16,}/<hex withheld>/g' |
+    awk 'tolower($0) ~ /ecid|serial|digest|nonce/ { n++; next } { print }
+      END { if (n) printf "(%d line(s) withheld: they named an identifier)\n", n }'
+}
 nul_list() { [[ -r $1 ]] && tr '\0' ' ' <"$1" | sed 's/ *$//'; }
 compatible() { [[ -r $tree/compatible ]] && tr '\0' '\n' <"$tree/compatible" | grep -Fxq "$1"; }
 
 section "System"
 echo "kernel:      $(uname -r)"
 echo "compatible:  $(nul_list "$tree/compatible")"
-echo "cmdline:     $(grep -oE 'apple_sep[^ ]*' /proc/cmdline | tr '\n' ' ')"
+echo "cmdline:     $(grep -oE 'apple_sep[^ ]*' /proc/cmdline | tr '\n' ' ' | sed -E 's/(os_uuid_(hi|lo))=[^ ]*/\1=<withheld>/g' | redact)"
 [[ -r $tree/chosen/apfs-preboot-uuid ]] && echo "OS identity: /chosen/apfs-preboot-uuid present" ||
   echo "OS identity: /chosen/apfs-preboot-uuid MISSING"
 [[ -e /dev/disk/by-partlabel/iBootSystemContainer ]] && echo "iBoot System Container: link present" ||
@@ -78,7 +84,7 @@ pacman -Q omarchy omarchy-mac linux-aurora libfprint libfprint-git libfprint-aur
   aurora-sep python 2>&1 | sed "s/^error: package '\(.*\)' was not found/\1: not installed/"
 echo "fprintd: $(systemctl is-active fprintd.service 2>/dev/null)"
 for f in /usr/lib/modprobe.d/*sep* /etc/modprobe.d/*sep* /etc/modprobe.d/*touchid*; do
-  [[ -e $f ]] && echo "modprobe.d: $f: $(grep -v '^#' "$f" | tr '\n' ' ')"
+  [[ -e $f ]] && echo "modprobe.d: $f: $(grep -v '^#' "$f" | tr '\n' ' ' | sed -E 's/(os_uuid_(hi|lo))=[^ ]*/\1=<withheld>/g' | redact)"
 done
 
 section "omarchy-mac Touch ID"
@@ -127,11 +133,7 @@ systemctl is-active -q fprintd.service && { echo "refused: fprintd is running an
 since=$(date '+%Y-%m-%d %H:%M:%S')
 echo "modprobe apple_sep xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0"
 modprobe apple_sep xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0 ||
-  { echo "modprobe failed"; journalctl -k --since "$since" --no-pager | grep -iE 'sep' | without_ids | tail -40; exit 1; }
-echo "effective parameters:"
-for f in /sys/module/apple_sep/parameters/{xart_writes,provision_keybag,trusted_keys,filevault_api,xart_guard}; do
-  [[ -r $f ]] && printf '  %-20s %s\n' "${f##*/}" "$(<"$f")"
-done
+  { echo "modprobe failed"; journalctl -k --since "$since" --no-pager | grep -iE 'sep' | tail -40 | redact; exit 1; }
 
 dev=""
 for d in /sys/bus/platform/devices/*.sep; do [[ -d $d/diag ]] && dev=$d && break; done
@@ -140,8 +142,9 @@ if [[ -z $dev ]]; then
   echo "no SEP device with diag attributes after loading"
 else
   # The attach decides about 3 s after a warm probe; the key store can take
-  # most of a minute (J700: 43 s). Wait for both, up to 90 s.
-  for _ in $(seq 1 180); do
+  # most of a minute (J700: 43 s), and the driver gives it up to 90 s after
+  # the attach. Wait for both, up to 100 s.
+  for _ in $(seq 1 200); do
     attach=$(cat "$dev/diag/attach" 2>/dev/null) keystore=$(cat "$dev/diag/keystore" 2>/dev/null)
     [[ $attach == failed || ($attach != pending && $keystore != unknown) ]] && break
     sleep 0.5
@@ -150,18 +153,28 @@ else
   for a in "${diag_attrs[@]}"; do
     [[ -r $dev/diag/$a ]] || continue
     value=$(tr '\n' ' ' <"$dev/diag/$a" | sed 's/ *$//')
-    [[ -n $(without_ids <<<"$value") || -z $value ]] || value="(withheld: looks like an identifier)"
+    value=$(redact <<<"$value")
     printf '  %-20s %s\n' "$a" "$value"
   done
   [[ $(cat "$dev/diag/xart" 2>/dev/null) == disabled ]] && echo "xART writes: disabled, as asked" ||
     echo "WARNING: diag/xart does not read 'disabled'; do not open /dev/sep-bio, and reboot"
+  # Module parameters don't appear in sysfs for this Rust driver; diag/policy
+  # is where it reports the policy it chose.
+  policy=" $(cat "$dev/diag/policy" 2>/dev/null) "
+  if [[ $policy == "  " ]]; then
+    echo "policy: not reported by this driver (diag ABI before 3)"
+  else
+    for want in xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0; do
+      [[ $policy == *" $want "* ]] || echo "WARNING: diag/policy lacks $want; do not open /dev/sep-bio, and reboot"
+    done
+  fi
 fi
 echo "/dev/sep-bio: $([[ -e /dev/sep-bio ]] && echo present || echo absent) (not opened)"
 
 section "Kernel log since the load"
 journalctl -k --since "$since" --no-pager -o short-monotonic |
   grep -iE 'apple_sep|apple-sep|sep[:@ ]|secure enclave|xart|touch ?id|mesa|keystore|keybag' |
-  without_ids | tail -80
+  tail -80 | redact
 
 echo
 echo "Done. Reboot before any further SEP step: the driver takes one attach per boot."
