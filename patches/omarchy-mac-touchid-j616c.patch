@@ -37,7 +37,7 @@ index 6cb7660..4f657b0 100755
  for key in "${keys[@]}"; do
    [[ -e $key || -e $key.new ]] && present=1
 diff --git a/omarchy-mac/lib/touchid-eligibility b/omarchy-mac/lib/touchid-eligibility
-index 252e98d..7e213a0 100755
+index 252e98d..f593b8b 100755
 --- a/omarchy-mac/lib/touchid-eligibility
 +++ b/omarchy-mac/lib/touchid-eligibility
 @@ -30,7 +30,8 @@ can_extract() {
@@ -50,13 +50,12 @@ index 252e98d..7e213a0 100755
  for node in "$tree"/soc/*/fingerprint@* "$tree"/*/fingerprint@*; do
    if [[ -r $node/compatible ]] && tr '\0' '\n' <"$node/compatible" | grep -Fxq apple,mesa-fingerprint &&
      [[ ! -r $node/status || $(tr -d '\0' <"$node/status") == "okay" ]]; then
-@@ -46,6 +47,14 @@ elif [[ -z $sensor ]]; then
+@@ -46,6 +47,13 @@ elif [[ -z $sensor ]]; then
    exit 0
  fi
  
-+# The 16-inch M4 Pro and M4 Max. The J616s has enrolled and matched; the J616c
-+# shares its sensor and its driver profile, and is admitted untried, so this
-+# change waits for a J616c trial. Their sensor loads a calibration and a root key that are both
++# The 16-inch M4 Pro and M4 Max: on each, Touch ID has enrolled, matched, and
++# matched again after a restart. Their sensor loads a calibration and a root key that are both
 +# rebuilt from sealed factory records.
 +sealed_board() {
 +  { compatible apple,t6040 && compatible apple,j616s; } || { compatible apple,t6041 && compatible apple,j616c; }
@@ -65,7 +64,7 @@ index 252e98d..7e213a0 100755
  # The boards the aurora driver has a profile for. M1-family Macs cold-boot
  # their enclave behind an xART guard that blocks matching, so they wait.
  if compatible apple,t8103 || compatible apple,t6000 || compatible apple,t6001; then
-@@ -53,7 +62,7 @@ if compatible apple,t8103 || compatible apple,t6000 || compatible apple,t6001; t
+@@ -53,7 +61,7 @@ if compatible apple,t8103 || compatible apple,t6000 || compatible apple,t6001; t
    exit 0
  elif ! compatible apple,t8112 && ! compatible apple,t6020 && ! compatible apple,t6021 && ! compatible apple,t8140 &&
    ! { compatible apple,t8122 && { compatible apple,j613 || compatible apple,j615; }; } &&
@@ -74,7 +73,7 @@ index 252e98d..7e213a0 100755
    echo unsupported:board
    exit 0
  fi
-@@ -79,9 +88,10 @@ can_reseal() {
+@@ -79,9 +87,10 @@ can_reseal() {
    [[ -r $esp/asahi/all_firmware.tar.gz ]] && command -v "$python" >/dev/null
  }
  # The Neo's calibration must be the sealed form its installer writes, and the
@@ -88,7 +87,7 @@ index 252e98d..7e213a0 100755
    if ! installed "$calibration" && ! can_reseal; then
      echo unsupported:no-calibration
      exit 0
-@@ -90,8 +100,9 @@ elif ! installed "$calibration" && { compatible apple,t8140 || ! can_extract ext
+@@ -90,8 +99,9 @@ elif ! installed "$calibration" && { compatible apple,t8140 || ! can_extract ext
    echo unsupported:no-calibration
    exit 0
  fi
