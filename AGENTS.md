@@ -44,6 +44,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
 - `tools/wifi-reload-timing.sh` times Wi-Fi's rejoin after a `brcmfmac` reload, plain and with the
   radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
+- `tools/touchid-probe.sh` checks Touch ID's state on the Mac without loading anything. With
+  `--load` it attaches the Secure Enclave read-only (no xART writes, no keybag) and reports how far
+  the driver got (JOURNEY 9.38). Run it at the Mac with sudo, and reboot after `--load`.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
@@ -61,7 +64,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
   stay under those projects' licenses (omacom's repos are MIT, as is asahi-scripts).
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
-  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150. `patches/README.md` gives each patch's base
+  (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150.
+  `patches/omarchy-mac-touchid-j616c.patch` offers Touch ID on the J616c through omarchy-mac's own
+  consent path (OMS-2), on the head of draft omacom/omarchy-mac-pkgs#140. `patches/README.md` gives each patch's base
   and how to apply and test it.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the

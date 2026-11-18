@@ -732,3 +732,36 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - Allan, using the acceptance install (9.35) after the first `omarchy update`: the camera picture looks no better than before the fix. The setfile `isp_2224_01XX.dat` is installed and loads, and the kernel no longer logs "streaming without sensor tuning". So the missing setfile wasn't the cause, or not the whole cause, of the noise measured against macOS in 9.27 (about 26 dB lower PSNR, purple speckle in shadows).
 - Not measured yet: the 9.27 comparison repeated with the tuning loaded. Candidates from 9.27, none checked: per-module calibration (`iCCl`), which Aurora's camera-tuning doc says no kernel uploads yet; and the noise reduction and processing macOS applies that the Linux path may not. OMS-26 tracks it.
 - OMS-22's collection fix stays: it is still what the kernel asks for. The README no longer calls the camera's picture a comparison still to make, and AGENTS.md no longer implies the tuning fixed the picture.
+
+### 9.38 Touch ID: the kernel is ready, Omarchy's path doesn't reach the J616c (OMS-2, 2026-11-18)
+- Read from the packages and sources, nothing run on the Mac yet. The report (2026-11-14) has `/dev/sep-bio` absent, no fprintd or libfprint, and `apple,mesa-fingerprint` unclaimed.
+- **Kernel and Stage 2 are ready.**
+  - `linux-aurora 7.3.0.aurora1-40` builds the SEP driver as a module (`apple-sep.ko`, `apple_sep`), with a `T6041/J614c, J616c` profile. In aurora-silicon/linux's `profile.rs` that profile is T6040's (the J616s): warm attach, the Mesa sensor (`0x3356`) on spi2 at `0x429108000`, a nonce session with a sealed root key, xART guard 1. Its doc comment cites the J614c's ADT; no J614c or J616c hardware result is recorded.
+  - The J616c device tree has `sep@406600000` with `status = "disabled"`, as every T60xx tree does. The driver enables the node and its DART itself, through an OF changeset, once its profile matches (`dt.rs`). The fingerprint node at `/spi@429108000/fingerprint@0` is `okay` and names `apple/mesacal-j616c.bin` and `apple/msrk-j616c.bin`.
+  - The pinned Stage 2 (aura `94d8e6e4`) keeps iBoot's warm SEP registration on every chip after M1 and seeds the RNG from the ADT. Through the tree's `sep` alias it reserves the SEP firmware and publishes the LocalPolicy and iBoot manifests (`dt_set_sep`).
+  - The kernel's SEP biometric interface is v5 (`bio.rs`), as the J604 bring-up found.
+- **Omarchy's own Touch ID path doesn't reach the J616c.** omarchy-mac (omacom/omarchy-mac-pkgs) turns Touch ID on only with the owner's agreement, through Omarchy's fingerprint setup (`omarchy-lifecycle-dispatch enable-fingerprint`). It uses Omarchy's `libfprint-git`, whose aarch64 build carries Aurora's SEP driver as a patch, and stock `fprintd`. On this Mac its `touchid-eligibility` fails three ways before anything loads:
+  - it looks for the sensor under `/soc` only, so it answers `none`;
+  - its board list has no `apple,t6041`;
+  - it reads `firmware-name` with `tr -d '\0'`, running the J616c's two names together.
+
+  It also rebuilds only the Neo's sensor root key. And the shipped `libfprint-git` patch accepts interface v4 only (`AURORA_BIO_IFACE_VERSION 4`), so on Aurora's 7.3 kernel it can't drive Touch ID on any Mac. omacom/omarchy-pkgs#2737 is a test pin for v4 and v5.
+- **Upstream already has most of it for the M4 Pro.** Draft omacom/omarchy-mac-pkgs#140, "Offer Touch ID on the 16-inch M4 Pro (J616s)", on `28abebe`: it finds the sensor at the root, reads each `firmware-name` entry, admits `apple,j616s` on T6040, and rebuilds both the FSC2 calibration and the MSRk root key from the factory records asahi-installer leaves on the ESP (`asahi/all_firmware.tar.gz`), sealed for chip `00006040` and checked against this Mac's iBoot System Container. Its author reports enrol, `verify-match` and a match after a cold boot on a J616s.
+- **Aurora's own stack, `aurora-sep` 1-25, stays out of the image.** It pulls `fprintd-aurora` and `libfprint-aurora`, and leaves `/etc/default/update-m1n1` alone; only Aurora's `install-aurora-sep.sh` edits that file. But it loads the SEP at every boot with xART writes on, without asking. It makes a short power-button press suspend (`logind.conf.d/50-aurora-sep.conf`; the Touch ID sensor is the power button). It adds `pam_fprintd` to sudo and polkit through a pacman hook. And it conflicts with the `libfprint-git` Omarchy's fingerprint setup installs.
+- **Decided (Allan):** Omarchy's path, with a staged hardware trial. The image ships no SEP stack; the owner turns Touch ID on through Omarchy's fingerprint setup.
+- **`patches/omarchy-mac-touchid-j616c.patch`**, on #140's head `b4d5c2f`:
+  - eligibility admits `apple,j616c` on `apple,t6041` beside the J616s, through one `sealed_board` check; the 14-inch J614c stays unsupported until tried;
+  - enable rebuilds both files with `--chip 00006041`;
+  - `touchid-root-key` accepts `00006041`;
+  - `disable-fingerprint` deletes `msrk-j616c.bin`;
+  - the README says so.
+
+  A new test section covers eligibility (available, then no calibration and no root key as the records go), both files rebuilt root-only (`0600`), an M4 Pro seal refused on the M4 Max, a J614c and a J616s-on-T6041 unsupported, and disable deleting the key. It fails when the J616c is given the M4 Pro's chip. omarchy-mac's suite: 124 ok, none failing. shellcheck (`-S warning`, v0.10.0) reports the same warnings as #140's head, none new.
+- **`tools/touchid-probe.sh`** is the trial's first stage. Without `--load` it only reads: the tree, the packages, omarchy-mac's eligibility and status, the calibration files, and the kinds of factory record on the ESP (a seal named by chip only). With `--load` it loads `apple_sep` with `xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0`, never opens `/dev/sep-bio`, and prints the driver's diag attributes (profile, attach, key store, identity source, policy) and its kernel log. Any further SEP step needs a reboot first: the enclave takes one attach per boot.
+- **Still to do:**
+  - the probe, on the Mac;
+  - then, after a macOS backup and a read-only image of the iBoot System Container, the patched omarchy-mac's enable, an enrol, a match, and a match after a cold boot;
+  - `libfprint-git` with v5;
+  - whether the installer's `all_firmware.tar.gz` carries `com.apple.factorydata` on an M4 install.
+
+  The questions are with the M team and Aurora.
