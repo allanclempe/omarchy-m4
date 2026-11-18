@@ -873,3 +873,12 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **Tests:** the consent test asserts both writers add the guard on a J616c, and the existing assertions keep every other Mac's line without it. The new assertions failed before the change. omarchy-mac's suite: 124 ok, none failing. shellcheck reports nothing new.
 - **#160's description** now says it writes the guard, and its note counts three commits of its own after #140's. `patches/omarchy-mac-touchid-j616c.patch` is regenerated. The AGENTS.md hand-fix row now points at #160: the hand-made `/etc/modprobe.d/zz-oms2-xart-guard.conf` on this Mac becomes redundant once omarchy-mac ships #160.
 - The question to Aurora on `-40`'s default stays open, and goes in the team post.
+
+### 9.46 Touch ID after a boot from full power-off (OMS-2, 2026-11-18)
+- Allan shut the Mac down and started it again: the previous boot's journal ends with `poweroff.target` and `systemd-poweroff.service` queued, not a reboot. He then used sudo with his finger, and it worked.
+- **The driver at this boot:**
+  - `touchid ready`, `restore restored`, `xart_guard 1`, `xart_guard_refusals 0`, `matching unverified`;
+  - at 18.1 s: "xART guard level 1: 10 session records exist, 0 created by Linux; the other 10 are protected";
+  - at 22.0 s: "Touch ID: restored 1 enrolled identity/identities; enrolment survived reboot";
+  - at 32.7 s and 39.3 s: two matches, each with the unlock policy satisfied (generations 2 and 3).
+- So the enrolment survives a boot from full power-off as well as a restart (9.42). Still open on OMS-2: macOS's own Touch ID and keychain, and the report.
