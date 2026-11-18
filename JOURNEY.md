@@ -766,3 +766,15 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 
   The questions are with the M team and Aurora.
 - **The image is unchanged.** Nothing here goes into `tools/derive-j616c-image`: Touch ID reaches the J616c only through an omarchy-mac release with #140 and this patch, and a `libfprint-git` with v5. Until then the image's omarchy-mac reports the J616c's Touch ID as `none`, and the gap stays documented. For the trial, the patched scripts are copied to the Mac by hand; that is a test step, not a hand fix for the build table.
+
+### 9.39 Touch ID probe, read-only checks on the acceptance install (OMS-2, 2026-11-18)
+- Allan ran `tools/touchid-probe.sh` without `--load` at the Mac. A CDN cache served the version from before the review fixes, so its factory-record listing printed record names in full. They carry the Mac's ECID and component serial numbers, so that output stays off the repo. What follows has no identifiers.
+- As 9.38 predicted:
+  - kernel `7.3.0-1-40-ARCH`; `sep@406600000` disabled; the fingerprint node `okay`, naming `apple/mesacal-j616c.bin` and `apple/msrk-j616c.bin`;
+  - `/chosen/apfs-preboot-uuid` present, and the `iBootSystemContainer` link present;
+  - `apple_sep` not loaded, and no libfprint, fprintd or `aurora-sep` installed;
+  - omarchy-mac `0.2.3-2`: eligibility `none`, no status file, no agreement, no keybag;
+  - no calibration or root key installed.
+- **The factory records are on the ESP.** `/boot/efi/asahi/all_firmware.tar.gz` holds `com.apple.factorydata`, with one `MSRk`, one `FSC2`, one seal for chip `00006041` and two trust objects: what #140's path rebuilds the J616c's calibration and root key from. The old version's closing line "has no com.apple.factorydata" was the SIGPIPE false negative that review finding F7 fixed; the listing above it contradicts it.
+- **Also there:** the camera module's factory calibration record (`iCCl`), and others (`appv`, `fCfg`, `dCfg`, `ADCL`, `HmCA`, `sePk`, `lcrt`, `pcrt`, `scrt`, and their `mansta`/`mandev` manifests). So the installer already keeps `iCCl` on the ESP: relevant to OMS-26 and to the camera calibration question for the team.
+- Next: `--load` with the current probe, then a reboot.
