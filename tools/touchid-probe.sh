@@ -164,9 +164,12 @@ else
   if [[ $policy == "  " ]]; then
     echo "policy: not reported by this driver (diag ABI before 3)"
   else
+    missing=0
     for want in xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0; do
-      [[ $policy == *" $want "* ]] || echo "WARNING: diag/policy lacks $want; do not open /dev/sep-bio, and reboot"
+      [[ $policy == *" $want "* ]] ||
+        { echo "WARNING: diag/policy lacks $want; do not open /dev/sep-bio, and reboot"; missing=1; }
     done
+    ((missing)) || echo "policy: all four options as asked"
   fi
 fi
 echo "/dev/sep-bio: $([[ -e /dev/sep-bio ]] && echo present || echo absent) (not opened)"
