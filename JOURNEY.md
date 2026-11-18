@@ -831,3 +831,19 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - a match after a cold boot (the enclave restoring the enrolment);
   - Touch ID and keychain in macOS;
   - the test report's `sep.attach`, `touch-id.ready` and `touch-id.unlock`.
+
+### 9.42 Touch ID after a reboot: restored, and matched twice under the guard (OMS-2, 2026-11-18)
+- Allan rebooted the Mac (a restart, not a power-off), then used sudo after `sudo -k` and unlocked the lock screen with his finger. Both worked.
+- **The driver at this boot:**
+  - `restore restored`, `touchid ready`, `sensor_attach attached`, `keybag present`, omarchy-mac status `ready`;
+  - `xart_guard 1`, `xart_guard_list loaded`, `xart_guard_refusals 0`, `xarm_failures 0`, `matching unverified`.
+- **The kernel log:**
+  - at 21.7 s: "xART guard level 1: 10 session records exist, 0 created by Linux; the other 10 are protected";
+  - at 24.9 s: the master, owner and user catacombs all `Restored`, and the lockout record `EmptyTolerated`;
+  - at 25.6 s: "Touch ID: restored 1 enrolled identity/identities; enrolment survived reboot";
+  - at 45 s and 51 s: two matches, each with the unlock policy satisfied (generations 2 and 3), its lockout record saved and its template update persisted.
+- So creating the keybag, enrolling, matching, and matching after a restart left Linux with no session records of its own, and the guard refused nothing. On this warm-attach Mac, guard level 1 doesn't stand in the way of using Touch ID: XART-SAFETY.md lists that as untested.
+- Still to do:
+  - one boot from full power-off during the soak week;
+  - Touch ID and keychain in macOS;
+  - the test report.
