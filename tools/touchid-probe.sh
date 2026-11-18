@@ -15,14 +15,17 @@
 # kernel key or FileVault API is registered. It never opens /dev/sep-bio, so
 # Touch ID isn't activated. It reports the platform profile, the attach, the
 # key store, the identity source and the policy the driver chose, from the
-# driver's diag attributes (none of which names a user, a finger or a key),
-# and the driver's kernel log.
-# The enclave takes one attach per boot and the driver can't be unloaded and
-# loaded again, so reboot after --load before any further SEP step. A reboot
-# is also the undo: nothing --load does survives it.
+# driver's diag attributes, the module's effective parameters, and the
+# driver's kernel log.
+# The driver takes one attach per boot and can't be unloaded and loaded again,
+# so reboot after --load before any further SEP step. A reboot unloads the
+# driver; that the enclave also starts clean after it is what the trial is
+# expected to show, not something known yet on this Mac.
 #
-# It prints no device identifier: no ECID, serial, UUID or digest. Seal records
-# are named by chip only.
+# It prints no device identifier: no ECID, serial, UUID or digest. Every
+# kernel log line and diag value passes one filter that withholds anything
+# that looks like one, and factory records are reduced to their kind (a seal
+# to its chip); an unknown record prints as "other".
 set -uo pipefail
 
 load=0
@@ -43,6 +46,9 @@ diag_attrs=(abi profile boot protocol policy os_identity xart attach endpoints e
   hwrng attach_ms ready_ms xarm_failures unhandled_messages)
 
 section() { printf '\n== %s\n' "$*"; }
+# Lines that could carry an identifier: by name, or a long hex or UUID-like run.
+identifying='ecid|serial|uuid|digest|nonce|[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-'
+without_ids() { grep -viE "$identifying"; }
 nul_list() { [[ -r $1 ]] && tr '\0' ' ' <"$1" | sed 's/ *$//'; }
 compatible() { [[ -r $tree/compatible ]] && tr '\0' '\n' <"$tree/compatible" | grep -Fxq "$1"; }
 
@@ -96,11 +102,15 @@ done
 
 section "Factory records on the ESP"
 if mountpoint -q "$esp" && [[ -r $archive ]]; then
-  # Record kinds only; a seal is named by chip, never by ECID.
-  tar -tzf "$archive" 2>/dev/null | grep -i 'com\.apple\.factorydata/' | sed 's|.*/||' | grep -v '^$' |
-    sed -E 's/^(seal)-([0-9A-Fa-f]{8})-.*/\1 for chip \2/; s/^(MSRk|FSC2|FSCl|trustobject)-.*/\1/' |
-    sort | uniq -c | sed 's/^ */  /'
-  tar -tzf "$archive" 2>/dev/null | grep -qi 'com\.apple\.factorydata/' || echo "  $archive has no com.apple.factorydata"
+  # Record kinds only; a seal is named by chip, never by ECID, and any other
+  # name is "other", so an unexpected one can't print an identifier.
+  records=$(tar -tzf "$archive" 2>/dev/null | grep -i 'com\.apple\.factorydata/.' | sed 's|.*/||' | grep -v '^$')
+  if [[ -n $records ]]; then
+    sed -E 's/^seal-([0-9A-Fa-f]{8})-.*/seal for chip \1/; t; s/^(MSRk|FSC2|FSCl|trustobject)-.*/\1/; t; s/.*/other/' \
+      <<<"$records" | sort | uniq -c | sed 's/^ */  /'
+  else
+    echo "  $archive has no com.apple.factorydata"
+  fi
 else
   echo "no $archive (is $esp mounted?)"
 fi
@@ -117,25 +127,31 @@ systemctl is-active -q fprintd.service && { echo "refused: fprintd is running an
 since=$(date '+%Y-%m-%d %H:%M:%S')
 echo "modprobe apple_sep xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0"
 modprobe apple_sep xart_writes=0 provision_keybag=0 trusted_keys=0 filevault_api=0 ||
-  { echo "modprobe failed"; journalctl -k --since "$since" --no-pager | grep -iE 'sep' | tail -40; exit 1; }
+  { echo "modprobe failed"; journalctl -k --since "$since" --no-pager | grep -iE 'sep' | without_ids | tail -40; exit 1; }
+echo "effective parameters:"
+for f in /sys/module/apple_sep/parameters/{xart_writes,provision_keybag,trusted_keys,filevault_api,xart_guard}; do
+  [[ -r $f ]] && printf '  %-20s %s\n' "${f##*/}" "$(<"$f")"
+done
 
 dev=""
 for d in /sys/bus/platform/devices/*.sep; do [[ -d $d/diag ]] && dev=$d && break; done
 if [[ -z $dev ]]; then
   # The module loaded but enabled no SEP: no profile, or the probe failed.
-  sleep 5
   echo "no SEP device with diag attributes after loading"
 else
   # The attach decides about 3 s after a warm probe; the key store can take
   # most of a minute (J700: 43 s). Wait for both, up to 90 s.
   for _ in $(seq 1 180); do
     attach=$(cat "$dev/diag/attach" 2>/dev/null) keystore=$(cat "$dev/diag/keystore" 2>/dev/null)
-    [[ $attach != pending && $keystore != unknown ]] && break
+    [[ $attach == failed || ($attach != pending && $keystore != unknown) ]] && break
     sleep 0.5
   done
   echo "device: ${dev##*/}"
   for a in "${diag_attrs[@]}"; do
-    [[ -r $dev/diag/$a ]] && printf '  %-20s %s\n' "$a" "$(tr '\n' ' ' <"$dev/diag/$a" | sed 's/ *$//')"
+    [[ -r $dev/diag/$a ]] || continue
+    value=$(tr '\n' ' ' <"$dev/diag/$a" | sed 's/ *$//')
+    [[ -n $(without_ids <<<"$value") || -z $value ]] || value="(withheld: looks like an identifier)"
+    printf '  %-20s %s\n' "$a" "$value"
   done
   [[ $(cat "$dev/diag/xart" 2>/dev/null) == disabled ]] && echo "xART writes: disabled, as asked" ||
     echo "WARNING: diag/xart does not read 'disabled'; do not open /dev/sep-bio, and reboot"
@@ -145,7 +161,7 @@ echo "/dev/sep-bio: $([[ -e /dev/sep-bio ]] && echo present || echo absent) (not
 section "Kernel log since the load"
 journalctl -k --since "$since" --no-pager -o short-monotonic |
   grep -iE 'apple_sep|apple-sep|sep[:@ ]|secure enclave|xart|touch ?id|mesa|keystore|keybag' |
-  grep -viE 'ecid|serial|uuid|digest' | tail -80
+  without_ids | tail -80
 
 echo
-echo "Done. Reboot before any further SEP step: the enclave takes one attach per boot."
+echo "Done. Reboot before any further SEP step: the driver takes one attach per boot."

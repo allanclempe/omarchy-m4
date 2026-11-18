@@ -35,6 +35,8 @@ To change it, apply it to a branch at the base commit, commit there, and regener
 
 omarchy-mac's Touch ID eligibility admits `apple,j616c` on `apple,t6041` beside #140's J616s (one `sealed_board` check; the 14-inch J614c stays unsupported until tried). `touchid-enable` rebuilds `apple/mesacal-j616c.bin` (FSC2) and `apple/msrk-j616c.bin` (MSRk) with `touchid-root-key --chip 00006041`, which now accepts that chip. `disable-fingerprint` deletes `msrk-j616c.bin`, and the package README names the J616c. `test/touchid-consent-test.sh` gains a J616c section, which fails when the J616c is given the M4 Pro's chip.
 
+The J616c is admitted untried: the patch must not go upstream or into an image before the trial on the Mac shows the SEP attach, an enrol and a match (JOURNEY 9.38).
+
 It needs #140 under it. Apply and test it:
 
 ```

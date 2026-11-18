@@ -765,3 +765,4 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - whether the installer's `all_firmware.tar.gz` carries `com.apple.factorydata` on an M4 install.
 
   The questions are with the M team and Aurora.
+- **The image is unchanged.** Nothing here goes into `tools/derive-j616c-image`: Touch ID reaches the J616c only through an omarchy-mac release with #140 and this patch, and a `libfprint-git` with v5. Until then the image's omarchy-mac reports the J616c's Touch ID as `none`, and the gap stays documented. For the trial, the patched scripts are copied to the Mac by hand; that is a test step, not a hand fix for the build table.
