@@ -144,6 +144,9 @@ work is attributed.
 
 ## Soak test week
 
+Install the tester on the Mac with `curl -fsSL https://omarchy-m-testing.org/install | bash` (it isn't
+in the image, so a fresh install needs it again). Some checks, such as Touch ID's, need Allan at the Mac.
+
 Baseline: the post-install test report,
 https://omarchy-m-testing.org/reports/KkjcZekcyQ9BDAs9oYr7HoTn (omarchy-m-test 0.1.15,
 2026-11-14): 47 pass, 0 fail, 12 gaps, 14 skips. GPU passes on Aurora's driver (OpenGL 4.6,
