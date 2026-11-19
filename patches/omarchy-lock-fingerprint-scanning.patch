@@ -110,7 +110,7 @@ index 9f4aa69..05b1c17 100644
      }
  
 diff --git a/shell/plugins/lock/Service.qml b/shell/plugins/lock/Service.qml
-index a02708e..b3d67f6 100644
+index a02708e..62e9823 100644
 --- a/shell/plugins/lock/Service.qml
 +++ b/shell/plugins/lock/Service.qml
 @@ -22,6 +22,13 @@ Item {
@@ -201,7 +201,7 @@ index a02708e..b3d67f6 100644
        authenticatingPassword: false
        failureMessage: ""
        failedAttempts: 0
-@@ -684,6 +716,34 @@ Item {
+@@ -684,6 +716,40 @@ Item {
      onTriggered: root.timeoutFingerprintReach()
    }
  
@@ -222,7 +222,10 @@ index a02708e..b3d67f6 100644
 +  // Quickshell depends on) watches fprintd's device for the shell, and its
 +  // lines are read as they come: gdbus flushes each one. It keeps watching
 +  // through fprintd's idle exits and restarts. If gdbus can't run, nothing
-+  // restarts it: the lock works as before, without the scan feedback.
++  // restarts it: the lock works as before, without the scan feedback, and
++  // the exit is logged so a trial can see it. The watch reports changes, so
++  // a finger that landed while the displays were off, with the watch
++  // stopped, shows no scan on the wake; its verdict still comes.
 +  Process {
 +    id: fingerprintMonitorProc
 +    objectName: "fingerprintMonitor"
@@ -230,6 +233,9 @@ index a02708e..b3d67f6 100644
 +    running: root.fingerprintMonitoring
 +    stdout: SplitParser {
 +      onRead: function(line) { root.applyFingerprintMonitorLine(line) }
++    }
++    onExited: function(exitCode) {
++      if (root.fingerprintMonitoring) root.logEvent("fingerprint-monitor-exited: code=" + exitCode)
 +    }
 +  }
 +
@@ -492,10 +498,10 @@ index 0000000..1336a3b
 +}
 diff --git a/test/shell.d/lock-fingerprint-scan-test.sh b/test/shell.d/lock-fingerprint-scan-test.sh
 new file mode 100755
-index 0000000..636d59c
+index 0000000..eec1e8a
 --- /dev/null
 +++ b/test/shell.d/lock-fingerprint-scan-test.sh
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,44 @@
 +#!/bin/bash
 +
 +set -euo pipefail
@@ -528,5 +534,15 @@ index 0000000..636d59c
 +JS
 +
 +require_quickshell "lock fingerprint scan test"
++
++# A new lock service asks fprintd-list about enrolment, and the fixture's
++# wiring check waits for that answer before it sends its stand-in line. Where
++# this machine's lock has fingerprint PAM, the real fprintd-list can take
++# longer than that wait to start the daemon, and an answer of no enrolment
++# landing late would settle the attempt under the check. A stub answers at
++# once, with an enrolment.
++qml_fixture_scratch
++printf '#!/bin/bash\nprintf "Fingerprints for user %%s on Stub:\\n - #0: right-index-finger\\n" "$1"\n' >"$QML_FIXTURE_TMP/bin/fprintd-list"
++chmod +x "$QML_FIXTURE_TMP/bin/fprintd-list"
 +
 +run_qml_fixture lock-fingerprint-scan "the lock shows the reader matching a finger" Ui Commons
