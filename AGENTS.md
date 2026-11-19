@@ -36,6 +36,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
+| `sudo` and polkit skip Touch ID over SSH: a `pam_exec` gate line in `/etc/pam.d/sudo` and `polkit-1`, script at `/usr/local/bin/omarchy-session-remote` (not yet applied, JOURNEY 9.50) | no: the fix is Omarchy's own code, `patches/omarchy-fingerprint-remote-gate.patch` for basecamp/omarchy, not yet sent; the image gets it with the `omarchy` package once upstream ships it, and an installed Mac by its migration on `omarchy update` | OMS-35 |
 
 ## Where things are
 
@@ -64,6 +65,9 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
   (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150. `patches/README.md` gives each patch's base
   and how to apply and test it.
+- `patches/omarchy-fingerprint-remote-gate.patch` makes Omarchy's `sudo` and polkit skip the
+  fingerprint prompt when the session came in over SSH (OMS-35, JOURNEY 9.50), against
+  basecamp/omarchy `b20d7876`; not sent upstream.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
   name collisions `[aurora]` causes by being first. It also covers the kernel dependency

@@ -6,6 +6,26 @@ Changes to other projects' repositories, kept here as plain `git diff` output so
 | --- | --- | --- | --- |
 | `j616c-installer.patch` | omacom/omarchy-mac-installer | `a576543` (PR #212's head) | J616c developer admission, the Mach-O Stage 1 Recovery modes (`macho-unpadded`, `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix |
 | `omarchy-mac-boot-aurora.patch` | omacom/omarchy-mac-pkgs | `28abebee14de05c35a2caa8dd257d056d15a641e` (main, 2026-11-09, "Merge pull request #110") | Teaches omarchy-mac-boot's `omarchy-apple-silicon-boot-check` to verify Aurora's Stage 2 (OMS-16, JOURNEY 9.24). Also applies to main `76d8b72`; sent upstream as [omacom/omarchy-mac-pkgs#150](https://github.com/omacom/omarchy-mac-pkgs/pull/150) (9.36) |
+| `omarchy-fingerprint-remote-gate.patch` | basecamp/omarchy | `b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab` (master, 2026-11-19, "Keep colors in terminal windows an agent opens (#19507)") | Skips fingerprint authentication for `sudo` and polkit when the session authenticating came in over SSH, so the password is asked for at once instead of after pam_fprintd's timeout (OMS-35, JOURNEY 9.50). Not sent upstream |
+
+## omarchy-fingerprint-remote-gate.patch
+
+Omarchy's fingerprint setup puts `auth sufficient pam_fprintd.so` at the top of `/etc/pam.d/sudo` and `/etc/pam.d/polkit-1`, behind a `pam_exec` gate (`omarchy-hw-laptop-closed`, `success=1`) that skips it while the lid is shut. Over SSH no one is at the sensor, and pam_fprintd reads no keyboard, so a `sudo` there waits for its timeout (30 s by default) before asking for the password. The patch adds a second gate, `bin/omarchy-session-remote` (hidden), which asks logind whether the session its parent process belongs to is `Remote` (OpenSSH's and Tailscale's sessions are). It goes in front of the clamshell gate with `success=2`, skipping that gate and pam_fprintd together; a process in no session (a terminal under the user manager) or a logind that doesn't answer counts as local, so the reader stays on wherever it can be reached. The setup adds the three lines where missing, the removal deletes them, migration `1795140000.sh` adds the gate to existing stacks in front of the clamshell gate (and leaves a stack without that gate alone), and the manual says what happens over SSH. Tests: `test/shell.d/session-remote-test.sh` (new), and additions to `fingerprint-package-test.sh` (the stacks as setup leaves them, run with real `sed` on a scratch `pam.d`) and `security-fingerprint-remove-test.sh`.
+
+Apply and test it on any Linux with bash, jq and python (logind is stubbed; `test/cli` lints the command metadata):
+
+```
+git clone https://github.com/basecamp/omarchy && cd omarchy
+git checkout b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab
+git apply /path/to/aurora-m4/patches/omarchy-fingerprint-remote-gate.patch
+bash test/shell.d/session-remote-test.sh
+bash test/shell.d/fingerprint-package-test.sh
+bash test/shell.d/security-fingerprint-remove-test.sh
+bash test/shell.d/privileged-heredoc-test.sh
+./test/cli
+```
+
+To change it, apply it to a branch at the base commit, commit there, and regenerate it with `git diff b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab HEAD > patches/omarchy-fingerprint-remote-gate.patch`.
 
 ## omarchy-mac-boot-aurora.patch
 

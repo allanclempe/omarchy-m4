@@ -1,0 +1,386 @@
+diff --git a/bin/omarchy-remove-security-fingerprint b/bin/omarchy-remove-security-fingerprint
+index 2eac922b..e1b842a6 100755
+--- a/bin/omarchy-remove-security-fingerprint
++++ b/bin/omarchy-remove-security-fingerprint
+@@ -23,16 +23,16 @@ fi
+ 
+ 
+ remove_pam_config() {
+-  # Remove from sudo (both the fingerprint module and its clamshell gate)
+-  if grep -Eq 'pam_fprintd\.so|omarchy-hw-laptop-closed' /etc/pam.d/sudo; then
++  # Remove from sudo (the fingerprint module and its clamshell and remote gates)
++  if grep -Eq 'pam_fprintd\.so|omarchy-hw-laptop-closed|omarchy-session-remote' /etc/pam.d/sudo; then
+     echo "Removing fingerprint authentication from sudo..."
+-    sudo sed -i -e '/pam_fprintd\.so/d' -e '/omarchy-hw-laptop-closed/d' /etc/pam.d/sudo
++    sudo sed -i -e '/pam_fprintd\.so/d' -e '/omarchy-hw-laptop-closed/d' -e '/omarchy-session-remote/d' /etc/pam.d/sudo
+   fi
+ 
+-  # Remove from polkit (both the fingerprint module and its clamshell gate)
+-  if [[ -f /etc/pam.d/polkit-1 ]] && grep -Eq 'pam_fprintd\.so|omarchy-hw-laptop-closed' /etc/pam.d/polkit-1; then
++  # Remove from polkit (the fingerprint module and its clamshell and remote gates)
++  if [[ -f /etc/pam.d/polkit-1 ]] && grep -Eq 'pam_fprintd\.so|omarchy-hw-laptop-closed|omarchy-session-remote' /etc/pam.d/polkit-1; then
+     echo "Removing fingerprint authentication from polkit..."
+-    sudo sed -i -e '/pam_fprintd\.so/d' -e '/omarchy-hw-laptop-closed/d' /etc/pam.d/polkit-1
++    sudo sed -i -e '/pam_fprintd\.so/d' -e '/omarchy-hw-laptop-closed/d' -e '/omarchy-session-remote/d' /etc/pam.d/polkit-1
+   fi
+ }
+ 
+diff --git a/bin/omarchy-session-remote b/bin/omarchy-session-remote
+new file mode 100755
+index 00000000..da261c6a
+--- /dev/null
++++ b/bin/omarchy-session-remote
+@@ -0,0 +1,25 @@
++#!/bin/bash
++
++# omarchy:summary=Returns true when the calling session is remote (SSH), so no one is at this machine
++# omarchy:hidden=true
++
++# The process whose session is asked about is the caller: the shell that ran
++# this, or, from pam_exec, the program authenticating (sudo, polkit's helper).
++# logind marks a session that came in over the network, OpenSSH's and
++# Tailscale's alike, Remote=yes; a seat's desktop session is not, and the
++# terminals it opens run under the user manager, in no session at all, so a
++# PID logind doesn't know counts as local. So does a logind that doesn't
++# answer: this runs in sudo's and polkit's PAM stack where fingerprint login
++# is set up, so it must neither hold up every sudo nor skip the reader on a
++# guess.
++pid=${OMARCHY_SESSION_PID:-$PPID}
++
++session=$(busctl --timeout=2 call org.freedesktop.login1 /org/freedesktop/login1 \
++  org.freedesktop.login1.Manager GetSessionByPID u "$pid" 2>/dev/null) || exit 1
++session=${session#o \"}
++session=${session%\"}
++[[ $session == /org/freedesktop/login1/session/* ]] || exit 1
++
++remote=$(busctl --timeout=2 get-property org.freedesktop.login1 "$session" \
++  org.freedesktop.login1.Session Remote 2>/dev/null) || exit 1
++[[ $remote == "b true" ]]
+diff --git a/bin/omarchy-setup-security-fingerprint b/bin/omarchy-setup-security-fingerprint
+index c1d8cb5d..650a42b9 100755
+--- a/bin/omarchy-setup-security-fingerprint
++++ b/bin/omarchy-setup-security-fingerprint
+@@ -6,45 +6,58 @@
+ set -e
+ 
+ 
+-setup_pam_config() {
+-  # A clamshell gate runs before pam_fprintd in every stack: when the lid is
+-  # shut the reader is unreachable, so it skips fingerprint (success=1) and PAM
+-  # drops straight to the password prompt instead of blocking on the reader
+-  # until it times out. Lid open → fingerprint, then password as the fallback.
+-  #
+-  # pam_exec needs a literal absolute path (no env expansion). Point at the
+-  # fixed /usr/bin path the omarchy package always provides, so the gate keeps
+-  # working across package installs and dev-link — the latter overlays
+-  # $OMARCHY_PATH trees but leaves /usr/bin untouched.
+-  local fprintd_gate="auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
+-
+-  # Configure sudo
+-  if ! grep -q pam_fprintd.so /etc/pam.d/sudo; then
+-    echo "Configuring sudo for fingerprint authentication..."
+-    sudo sed -i '1i auth      sufficient pam_fprintd.so' /etc/pam.d/sudo
++# Two gates run before pam_fprintd in every stack, each skipping fingerprint
++# when the reader can't be reached from where the prompt is answered, so PAM
++# drops straight to the password prompt instead of blocking on the reader
++# until it times out. The clamshell gate, immediately before pam_fprintd,
++# skips exactly it (success=1) while the lid is shut. The remote gate, in
++# front of the clamshell gate, skips both (success=2) when the session
++# authenticating came in over SSH: no one is at the sensor to touch it, and
++# the prompt would only hold the session until pam_fprintd gives up. Lid open
++# and at the machine → fingerprint, then password as the fallback.
++#
++# pam_exec needs a literal absolute path (no env expansion). Point at the
++# fixed /usr/bin paths the omarchy package always provides, so the gates keep
++# working across package installs and dev-link — the latter overlays
++# $OMARCHY_PATH trees but leaves /usr/bin untouched.
++fprintd_gate="auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
++remote_gate="auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-session-remote"
++
++# Puts pam_fprintd and its two gates, in order, into the PAM stack $1, named
++# $2 in what it says. Each line is added only where missing, so a rerun
++# changes nothing and an existing stack gains only what it lacks.
++gate_pam_stack() {
++  local stack=$1 name=$2
++  if ! grep -q 'pam_fprintd\.so' "$stack"; then
++    echo "Configuring $name for fingerprint authentication..."
++    sudo sed -i '1i auth      sufficient pam_fprintd.so' "$stack"
+   fi
+-  if ! grep -q 'omarchy-hw-laptop-closed' /etc/pam.d/sudo; then
+-    echo "Adding clamshell gate to sudo..."
++  if ! grep -q 'omarchy-hw-laptop-closed' "$stack"; then
++    echo "Adding clamshell gate to $name..."
+     # Insert immediately before pam_fprintd so success=1 skips exactly it.
+-    sudo sed -i "/pam_fprintd\.so/i $fprintd_gate" /etc/pam.d/sudo
++    sudo sed -i "/pam_fprintd\.so/i $fprintd_gate" "$stack"
+   fi
++  if ! grep -q 'omarchy-session-remote' "$stack"; then
++    echo "Adding remote session gate to $name..."
++    # Insert immediately before the clamshell gate so success=2 skips it and
++    # pam_fprintd, and nothing else.
++    sudo sed -i "/omarchy-hw-laptop-closed/i $remote_gate" "$stack"
++  fi
++}
++
++setup_pam_config() {
++  gate_pam_stack /etc/pam.d/sudo sudo
+ 
+-  # Configure polkit
+   if [[ -f /etc/pam.d/polkit-1 ]]; then
+-    if ! grep -q 'pam_fprintd.so' /etc/pam.d/polkit-1; then
+-      echo "Configuring polkit for fingerprint authentication..."
+-      sudo sed -i '1i auth      sufficient pam_fprintd.so' /etc/pam.d/polkit-1
+-    fi
+-    if ! grep -q 'omarchy-hw-laptop-closed' /etc/pam.d/polkit-1; then
+-      echo "Adding clamshell gate to polkit..."
+-      sudo sed -i "/pam_fprintd\.so/i $fprintd_gate" /etc/pam.d/polkit-1
+-    fi
++    gate_pam_stack /etc/pam.d/polkit-1 polkit
+   else
+     echo "Creating polkit configuration with fingerprint authentication..."
+-    # omarchy:heredoc-expands paths=none -- $fprintd_gate is the literal PAM
+-    # line defined above, shared with the two sed insertions so the gate cannot
+-    # drift between files. The only path in it is the fixed /usr/bin one.
++    # omarchy:heredoc-expands paths=none -- $remote_gate and $fprintd_gate are
++    # the literal PAM lines defined above, shared with the sed insertions so the
++    # gates cannot drift between files. The only paths in them are the fixed
++    # /usr/bin ones.
+     sudo tee /etc/pam.d/polkit-1 >/dev/null <<EOF
++$remote_gate
+ $fprintd_gate
+ auth      sufficient pam_fprintd.so
+ auth      include system-auth
+diff --git a/manual/37-hardware-authentication.md b/manual/37-hardware-authentication.md
+index f89c5951..4b46350e 100644
+--- a/manual/37-hardware-authentication.md
++++ b/manual/37-hardware-authentication.md
+@@ -8,7 +8,7 @@ That'll install the fingerprint package, collect your print, verify it, and you'
+ 
+ Once the lock screen has turned the display off, the sensor rests to save power, so wake the screen with any key or the touchpad before touching it.
+ 
+-When your laptop lid is closed, the fingerprint prompt is automatically skipped, so you go straight to the password prompt instead of waiting on a sensor you can't reach. If you otherwise need to work on an external keyboard that doesn't have a sensor, just hit `CTRL + C`, when you're prompted for your fingerprint during `sudo`.
++When your laptop lid is closed, the fingerprint prompt is automatically skipped, so you go straight to the password prompt instead of waiting on a sensor you can't reach. The same happens when you're logged in over SSH, where no one is at the sensor to touch it: `sudo` and system authorization prompts ask for your password right away. If you otherwise need to work on an external keyboard that doesn't have a sensor, just hit `CTRL + C`, when you're prompted for your fingerprint during `sudo`.
+ 
+ You can remove the fingerprint authentication under _Remove > Security > Fingerprint_ in the Omarchy menu.
+ 
+diff --git a/migrations/1795140000.sh b/migrations/1795140000.sh
+new file mode 100644
+index 00000000..12fdca6f
+--- /dev/null
++++ b/migrations/1795140000.sh
+@@ -0,0 +1,23 @@
++echo "Skip fingerprint auth for sudo and polkit over SSH (password when no one is at the sensor)"
++
++# Existing fingerprint setups gate pam_fprintd behind the lid state only, so a
++# sudo or pkexec over SSH blocks on a reader no one is at for the full
++# pam_fprintd timeout before offering the password. Insert the remote session
++# gate in front of the clamshell gate, which sits immediately before
++# pam_fprintd: success=2 skips both. New setups already get it from
++# omarchy-setup-security-fingerprint. A stack with pam_fprintd but no
++# clamshell gate was edited by an administrator and is left alone.
++#
++# The gate points at the fixed /usr/bin path the omarchy package always
++# provides, so it keeps working across package installs and dev-link.
++# pam_exec needs a literal absolute path — it does not expand env vars.
++
++gate="auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-session-remote"
++
++for pam in /etc/pam.d/sudo /etc/pam.d/polkit-1; do
++  if [[ -f $pam ]] &&
++    grep -q 'omarchy-hw-laptop-closed' "$pam" &&
++    ! grep -q 'omarchy-session-remote' "$pam"; then
++    sudo sed -i "/omarchy-hw-laptop-closed/i $gate" "$pam"
++  fi
++done
+diff --git a/test/shell.d/fingerprint-package-test.sh b/test/shell.d/fingerprint-package-test.sh
+index 0330862a..e3881eab 100755
+--- a/test/shell.d/fingerprint-package-test.sh
++++ b/test/shell.d/fingerprint-package-test.sh
+@@ -26,8 +26,14 @@ case "$1" in
+   -v) echo "sudo authenticated" >> "$CALL_LOG"; exit "${SUDO_V_STATUS:-0}" ;;
+   pacman | fprintd-enroll) exec "$@" ;;
+   omarchy-lifecycle-dispatch) echo "dispatch ${*:2}" >> "$CALL_LOG"; exit "${ENABLE_STATUS:-0}" ;;
+-  sed) printf 'pam %s\n' "$*" >> "$CALL_LOG" ;;
+-  tee) printf 'pam %s\n' "$*" >> "$CALL_LOG"; cat >/dev/null ;;
++  sed | tee)
++    # PAM edits are logged, or run for real on the scratch stacks with PAM_REAL.
++    if [[ -n ${PAM_REAL:-} ]]; then
++      exec "$@"
++    fi
++    printf 'pam %s\n' "$*" >> "$CALL_LOG"
++    [[ $1 == sed ]] || cat >/dev/null
++    ;;
+   *) echo "Unexpected privileged call: $*" >> "$CALL_LOG"; exit 99 ;;
+ esac
+ STUB
+@@ -299,6 +305,50 @@ INSTALLED=$'libfprint-git\nfprintd\nusbutils' SCAN_TYPE=press SUDO_CACHED=0 run_
+   fail "an authenticated sudo is not asked again" "$(cat "$scratch/output")"
+ pass "sudo is authenticated, and named, before the enrollment instructions"
+ 
++# The PAM stacks as setup leaves them, with sed and tee run for real on a
++# scratch /etc/pam.d. The remote gate must come first with success=2, since
++# PAM's success=N skips the next N modules: it skips the clamshell gate and
++# pam_fprintd, while the clamshell gate's success=1 goes on skipping exactly
++# pam_fprintd. A rerun changes nothing, a stack from before the remote gate
++# gains only that, and a polkit stack written from scratch has the same lines.
++pam_dir="$scratch/pam.d"
++mkdir -p "$pam_dir"
++pam_script="$scratch/omarchy-setup-security-fingerprint-pam"
++sed -e "s|/etc/pam.d/omarchy-lock-fingerprint|$TEST_LOCK_PAM|g" -e "s|/etc/pam.d/|$pam_dir/|g" \
++  "$ROOT/bin/omarchy-setup-security-fingerprint" > "$pam_script"
++chmod +x "$pam_script"
++run_pam_setup() {
++  PAM_REAL=1 INSTALLED=$'libfprint-git\nfprintd\nusbutils' ENROLL_STATUS=0 VERIFY_STATUS=0 \
++    OMARCHY_PATH="$scratch" "$pam_script" > "$scratch/output" 2>&1 ||
++    fail "setup on a scratch /etc/pam.d succeeds" "$(cat "$scratch/output")"
++}
++gated_stack=$'auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-session-remote
++auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed
++auth      sufficient pam_fprintd.so'
++printf 'auth include system-auth\naccount include system-auth\n' > "$pam_dir/sudo"
++rm -f "$pam_dir/polkit-1"
++run_pam_setup
++[[ $(<"$pam_dir/sudo") == "$gated_stack"$'\nauth include system-auth\naccount include system-auth' ]] ||
++  fail "sudo gets the remote gate, the clamshell gate and pam_fprintd, in that order, at the top" "$(cat "$pam_dir/sudo")"
++[[ $(head -3 "$pam_dir/polkit-1") == "$gated_stack" ]] ||
++  fail "a polkit stack written from scratch starts with the same three lines" "$(cat "$pam_dir/polkit-1")"
++pass "sudo and a new polkit stack get the remote gate, the clamshell gate and pam_fprintd, in that order"
++
++before=$(cat "$pam_dir/sudo" "$pam_dir/polkit-1")
++run_pam_setup
++[[ $(cat "$pam_dir/sudo" "$pam_dir/polkit-1") == "$before" ]] ||
++  fail "a rerun leaves gated stacks alone" "$(cat "$pam_dir/sudo" "$pam_dir/polkit-1")"
++pass "a rerun leaves gated stacks alone"
++
++older_stack=${gated_stack#*$'\n'}
++printf '%s\n' "$older_stack" 'auth include system-auth' > "$pam_dir/sudo"
++printf '%s\n' "$older_stack" 'auth include system-auth' > "$pam_dir/polkit-1"
++run_pam_setup
++[[ $(<"$pam_dir/sudo") == "$gated_stack"$'\nauth include system-auth' &&
++  $(<"$pam_dir/polkit-1") == "$gated_stack"$'\nauth include system-auth' ]] ||
++  fail "a stack with only the clamshell gate gains the remote gate in front of it" "$(cat "$pam_dir/sudo" "$pam_dir/polkit-1")"
++pass "a stack with only the clamshell gate gains the remote gate in front of it"
++
+ # What fprintd prints when it can't go on (a claimed device, no fingers) is
+ # shown; its routine lines are not.
+ [[ $(printf '%s\n' 'Using device /net/reactivated/Fprint/Device/0' \
+diff --git a/test/shell.d/security-fingerprint-remove-test.sh b/test/shell.d/security-fingerprint-remove-test.sh
+index cdb64b5d..f5ec9049 100755
+--- a/test/shell.d/security-fingerprint-remove-test.sh
++++ b/test/shell.d/security-fingerprint-remove-test.sh
+@@ -50,6 +50,9 @@ fi
+ if [[ $* == "omarchy-lifecycle-dispatch disable-fingerprint" ]]; then
+   exit "${TEST_HOOK_FAIL:-0}"
+ fi
++if [[ $1 == sed ]]; then
++  exec /usr/bin/sed "${@:2}"
++fi
+ [[ $# == 4 && $1 == rm && $2 == -rf && $3 == -- && $4 == "$TEST_FPRINT/$TEST_EXPECTED_USER" ]] || exit 91
+ [[ ${TEST_DELETE_FAIL:-0} == 0 ]] || exit 92
+ exec /usr/bin/rm -rf -- "$4"
+@@ -125,6 +128,18 @@ grep -Fq "sudo rm -rf -- $test_tmp/fprint/alice" "$log" || fail "deletion preced
+ grep -Fq "alice's local saved fingerprints have been removed" "$output" || fail "success describes local saved files"
+ pass "direct user ignores spoofed USER and leaves other accounts alone"
+ 
++# pam_fprintd goes with its two gates, and nothing else in the stack does.
++printf '%s\n' \
++  'auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-session-remote' \
++  'auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed' \
++  'auth      sufficient pam_fprintd.so' 'auth include system-auth' >"$test_tmp/etc/pam.d/sudo"
++mkdir -p "$test_tmp/fprint/alice"
++run_remove || fail "removal with a gated sudo stack succeeds" "$(cat "$output")"
++[[ $(<"$test_tmp/etc/pam.d/sudo") == 'auth include system-auth' ]] ||
++  fail "removal takes pam_fprintd and both gates out of sudo, and nothing else" "$(cat "$test_tmp/etc/pam.d/sudo")"
++: >"$test_tmp/etc/pam.d/sudo"
++pass "removal takes pam_fprintd and both gates out of sudo, and nothing else"
++
+ # A match-on-chip reader keeps prints in the device too: fprintd deletes them
+ # there before anything else goes.
+ [[ $(grep -m1 '^sudo ' "$log") == 'sudo fprintd-delete alice' ]] || fail "fprintd deletes the prints first" "$(cat "$log")"
+diff --git a/test/shell.d/session-remote-test.sh b/test/shell.d/session-remote-test.sh
+new file mode 100644
+index 00000000..1cfc64e6
+--- /dev/null
++++ b/test/shell.d/session-remote-test.sh
+@@ -0,0 +1,81 @@
++#!/bin/bash
++
++set -euo pipefail
++
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++
++test_tmp=$(mktemp -d)
++trap 'rm -rf "$test_tmp"' EXIT
++
++stub_bin="$test_tmp/bin"
++mkdir -p "$stub_bin"
++busctl_log="$test_tmp/busctl.log"
++
++# logind as busctl shows it: the session the asked-about PID belongs to
++# (OMARCHY_TEST_SESSION, none when empty) and that session's Remote property
++# (OMARCHY_TEST_REMOTE; "fail" for a logind that doesn't answer).
++cat >"$stub_bin/busctl" <<'SH'
++#!/bin/bash
++printf '%s\n' "$*" >>"$BUSCTL_LOG"
++case "$*" in
++  *"GetSessionByPID u $OMARCHY_TEST_SESSION_PID")
++    [[ -n ${OMARCHY_TEST_SESSION:-} ]] || { echo "Call failed: PID $OMARCHY_TEST_SESSION_PID does not belong to any known session" >&2; exit 1; }
++    printf 'o "%s"\n' "$OMARCHY_TEST_SESSION"
++    ;;
++  *"$OMARCHY_TEST_SESSION org.freedesktop.login1.Session Remote")
++    [[ ${OMARCHY_TEST_REMOTE:-} != "fail" ]] || exit 1
++    printf '%s\n' "${OMARCHY_TEST_REMOTE:-}"
++    ;;
++  *) exit 1 ;;
++esac
++SH
++chmod +x "$stub_bin/busctl"
++
++run_remote() {
++  : >"$busctl_log"
++  BUSCTL_LOG="$busctl_log" PATH="$stub_bin:$PATH" \
++    OMARCHY_TEST_SESSION_PID=4242 OMARCHY_SESSION_PID=4242 \
++    OMARCHY_TEST_SESSION="$1" OMARCHY_TEST_REMOTE="$2" \
++    "$ROOT/bin/omarchy-session-remote"
++}
++
++ssh_session=/org/freedesktop/login1/session/_318
++seat_session=/org/freedesktop/login1/session/_32
++
++run_remote "$ssh_session" 'b true' || fail "an SSH session is remote"
++pass "an SSH session is remote"
++
++if run_remote "$seat_session" 'b false'; then
++  fail "the seat's session is not remote"
++fi
++pass "the seat's session is not remote"
++
++# A terminal on the desktop runs under the user manager, in no session logind
++# knows, and so does a sudo it runs. That is local, and nothing more is asked.
++if run_remote '' ''; then
++  fail "a process in no session is not remote"
++fi
++(( $(wc -l <"$busctl_log") == 1 )) || fail "a process in no session is asked about once" "$(cat "$busctl_log")"
++pass "a process in no session is not remote, and logind isn't asked for more"
++
++for answer in '' 'not-a-property' 'fail'; do
++  if run_remote "$ssh_session" "$answer"; then
++    fail "a logind that does not answer leaves the session local" "$answer"
++  fi
++done
++pass "a logind that does not answer leaves the session local"
++
++# This runs in sudo's and polkit's PAM stack, so a stalled logind must not
++# hold up every sudo.
++run_remote "$ssh_session" 'b true' >/dev/null
++! grep -qv '^--timeout=2 ' "$busctl_log" || fail "logind gets a short timeout, not busctl's 25 s" "$(cat "$busctl_log")"
++pass "logind gets a short timeout, not busctl's 25 s"
++
++# From pam_exec the caller is the program authenticating, this script's
++# parent; here that is the bash that runs it, whose PID the stub expects. The
++# trailing exit keeps that bash from replacing itself with the one command.
++: >"$busctl_log"
++BUSCTL_LOG="$busctl_log" PATH="$stub_bin:$PATH" OMARCHY_TEST_SESSION="$ssh_session" OMARCHY_TEST_REMOTE='b true' \
++  bash -c 'OMARCHY_TEST_SESSION_PID=$$ "$1"; exit $?' bash "$ROOT/bin/omarchy-session-remote" ||
++  fail "without a PID given, the parent's session is asked about" "$(cat "$busctl_log")"
++pass "without a PID given, the parent's session is asked about"
