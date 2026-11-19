@@ -906,3 +906,22 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - a fresh install from that image, where Omarchy's setup offers Touch ID and enrols with no hand step;
   - a first `omarchy update` after it;
   - macOS's own Touch ID check (OMS-2) before installing.
+
+### 9.48 Review of the Touch ID image work: corrections and what's open (OMS-28, 2026-11-20)
+- **libfprint's interface test now runs in emulated builds.** 9.47's build skipped all of libfprint's `check()` under qemu-user, including its Aurora interface test, the plain-Python check of the v4 and v5 handling that is the point of `-6`. Only meson's umockdev device tests fail under qemu. So the build script now keeps the interface test and skips only `meson test`.
+  - For the pinned build, the test was run natively here on the same sources: libfprint `6f9479c` with omarchy-pkgs `2f4d1968`'s patches, applied as the aarch64 `prepare()` applies them. It passed.
+  - The device tests ran in omacom's native aarch64 CI at that commit.
+- **Five scripts, not four.** #160's change touches two entrypoints and three libs (plus the consent test). 9.41 and 9.47 said "four scripts"; AGENTS.md and `patches/README.md` now say five.
+- **The pins can't be rebuilt byte for byte.** Each package records its build date, so `tools/build-touchid-packages` gives new sha256s on every run, and the derivation refuses those, by design. Rebuilding means re-pinning `TOUCHID_PINS` on purpose. The derivation needs the pinned files themselves. They are in `~/aurora-m4-work/oms28-touchid-pkgs` on dev-machine-01, and have to reach the Lima VM for a derivation run. Where they're kept for good is open.
+- **The derivation's checks:**
+  - The `[omarchy]` version check now runs beside the `[aurora]` pin check, before anything is installed, and lists every mismatch in one message.
+  - Both options writers (`touchid-enable` and `enable-fingerprint`) are checked for `xart_guard=1`, not just one.
+- **The image's pacman.conf** has `LocalFileSigLevel = Optional`, as the soak-test Mac shows, so `pacman -U` of the unsigned local packages works.
+- **The soak-test Mac still lacks the `IgnorePkg` guard.** It runs `fprintd` and `libfprint-git -6` installed by hand (9.41), and its pacman.conf ignores only `m1n1-aurora`. Its next `omarchy update` would replace `fprintd` with `fprintd-aurora`, and `libfprint-aurora` would push `libfprint-git` out. Until it's reinstalled from an image with the line, it needs this, with Allan's approval:
+  ```
+  grep -n '^IgnorePkg' /etc/pacman.conf
+  sudo sed -i 's/^IgnorePkg = m1n1-aurora$/IgnorePkg = m1n1-aurora fprintd-aurora/' /etc/pacman.conf
+  pacman-conf IgnorePkg
+  ```
+  The first line should print `IgnorePkg = m1n1-aurora`, and the last should list both names. The undo is the same `sed` with the two patterns swapped.
+- `docs/aurora-package-audit.md`'s Touch ID row now says what the image has. The README lists `tools/build-touchid-packages` and says the derivation needs the pinned packages.

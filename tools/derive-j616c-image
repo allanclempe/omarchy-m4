@@ -278,6 +278,14 @@ PY
   done
   ((${#moved[@]} == 0)) ||
     fail "[aurora] no longer offers the pinned builds; review them, then bump AURORA_PINS: $(printf '%s; ' "${moved[@]}")"
+  # And [omarchy] must still offer the builds the Touch ID packages sit above:
+  # a newer one may carry #140, #160 or v5 itself, and is reviewed first.
+  for pkg in "${!TOUCHID_ABOVE[@]}"; do
+    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    [[ $have == "${TOUCHID_ABOVE[$pkg]}" ]] || moved+=("$pkg: expected ${TOUCHID_ABOVE[$pkg]}, [omarchy] has ${have:-nothing}")
+  done
+  ((${#moved[@]} == 0)) ||
+    fail "[omarchy] has moved past the Touch ID packages' base; review it, then rebuild or drop TOUCHID_PINS: $(printf '%s; ' "${moved[@]}")"
   in_chroot pacman -Rdd --noconfirm m1n1-aurora >>"$W/pacman.log" 2>&1 || fail "could not remove m1n1-aurora"
   in_chroot pacman -S --noconfirm "${AURORA_BOOT[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Aurora boot chain (pacman.log)"
@@ -324,12 +332,7 @@ PY
     fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
   log "installing Touch ID's packages (OMS-28)"
-  local file pkg have
-  for pkg in "${!TOUCHID_ABOVE[@]}"; do
-    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
-    [[ $have == "${TOUCHID_ABOVE[$pkg]}" ]] ||
-      fail "[omarchy] offers $pkg ${have:-nothing}, not ${TOUCHID_ABOVE[$pkg]}: review it, then rebuild or drop TOUCHID_PINS"
-  done
+  local file
   mkdir -p "$T/tmp/touchid"
   for file in "${!TOUCHID_PINS[@]}"; do
     [[ $(sha256sum "/touchid/$file" | cut -d' ' -f1) == "${TOUCHID_PINS[$file]}" ]] || fail "/touchid/$file is not the pinned build"
@@ -346,8 +349,9 @@ PY
     fail "Touch ID's packages are installed as '$(in_chroot pacman -Q omarchy-mac libfprint-git | tr '\n' ' ')'"
   grep -q 'apple,j616c' "$T/usr/lib/omarchy-mac/touchid-eligibility" ||
     fail "the installed omarchy-mac doesn't admit the J616c's Touch ID"
-  grep -q 'xart_guard=1' "$T/usr/lib/omarchy-mac/touchid-enable" ||
-    fail "the installed omarchy-mac doesn't turn the J616c's xART guard on"
+  for file in "$T/usr/lib/omarchy-mac/touchid-enable" "$T/usr/lib/omarchy/mac/enable-fingerprint"; do
+    grep -q 'xart_guard=1' "$file" || fail "the installed omarchy-mac's ${file##*/} doesn't turn the J616c's xART guard on"
+  done
   [[ ! -e $T/etc/omarchy-mac/touchid-on && ! -e $T/etc/modprobe.d/omarchy-mac-touchid.conf ]] ||
     fail "the image has Touch ID agreed on; only the owner may"
 

@@ -52,7 +52,7 @@ To change it, commit on a branch at `b4d5c2f` and regenerate it with `git diff b
 
 ## omarchy-mac-0.2.3-touchid-j616c.patch
 
-The same change as `omarchy-mac-touchid-j616c.patch` with #140 under it, on the omarchy-mac that omacom actually ships (0.2.3, `ea0097a`) rather than on #140's base (0.2.6). It is `git diff` of the four scripts and the consent test, from #140's base `28abebe` to #160's head `eb80585`, applied to `ea0097a` with a three-way merge. The README change is left out, since it doesn't apply to 0.2.3 and isn't needed to run. `tools/build-touchid-packages` adds it to omacom's 0.2.3-2 recipe as pkgrel `2.1` and checks it against `PATCH_SHA256`.
+The same change as `omarchy-mac-touchid-j616c.patch` with #140 under it, on the omarchy-mac that omacom actually ships (0.2.3, `ea0097a`) rather than on #140's base (0.2.6). It is `git diff` of the five scripts (two entrypoints, three libs) and the consent test, from #140's base `28abebe` to #160's head `eb80585`, applied to `ea0097a` with a three-way merge. The README change is left out, since it doesn't apply to 0.2.3 and isn't needed to run. `tools/build-touchid-packages` adds it to omacom's 0.2.3-2 recipe as pkgrel `2.1` and checks it against `PATCH_SHA256`. The package's `/usr/share/omarchy-mac/source-revision` still says `ea0097a`: the recipe writes its base commit, and the patch shows only in the pkgrel.
 
 On `ea0097a` with the patch, every omarchy-mac test file gives the same result as without it, except `touchid-consent-test.sh`, which gains the J616s and J616c sections (6 ok to 8 ok). `setup-test.sh` stops on this Linux host either way.
 

@@ -16,6 +16,10 @@
 # Needs git and a docker that runs linux/arm64 containers: natively on an
 # aarch64 host, or through qemu-user's binfmt on x86_64 (much slower).
 #
+# The packages carry their build date, so a rebuild gives new sha256s: rebuilding
+# means re-pinning TOUCHID_PINS on purpose, and the pinned files themselves are
+# what the derivation needs, not a fresh build.
+#
 # Drop this, and the derivation's TOUCHID_PINS, once omacom ships an
 # omarchy-mac with #140 and #160 and a libfprint-git that takes interface v5.
 set -euo pipefail
@@ -81,10 +85,12 @@ PY
 # packages' own tests fail for qemu's reasons, not theirs: libfprint's umockdev
 # tests can't read a pty's attributes, and omarchy-mac's lock test can't find
 # its waiting flock by command line, which qemu prefixes. There each recipe's
-# check() is replaced by one that says so. omarchy-mac's Touch ID tests run
-# natively first instead (its scripts are bash, the same on every
-# architecture), and libfprint's ran in omacom's native aarch64 CI at this
-# commit. A native build runs every check() unchanged.
+# check() is cut down. libfprint keeps its Aurora interface test (plain
+# Python, which checks the v4 and v5 handling) and skips only meson's device
+# tests; omarchy-mac's Touch ID tests run natively first instead (its scripts
+# are bash, the same on every architecture). libfprint's device tests ran in
+# omacom's native aarch64 CI at this commit. A native build runs every check()
+# unchanged.
 checks="each package's check(), natively"
 if [[ $(uname -m) != aarch64 ]]; then
   addon=$work/omarchy-mac-pkgs
@@ -93,10 +99,20 @@ if [[ $(uname -m) != aarch64 ]]; then
   git -C "$addon" apply "$patch"
   bash "$addon/omarchy-mac/test/touchid-consent-test.sh" >"$out/touchid-consent-test.log" 2>&1 ||
     fail "omarchy-mac's Touch ID tests failed with the patch; see $out/touchid-consent-test.log"
-  for recipe in "$pkgs/pkgbuilds/libfprint-git/PKGBUILD" "$pkgs/pkgbuilds/omarchy-mac/PKGBUILD"; do
-    printf '\n# build-touchid-packages: emulated build, see its header.\ncheck() { echo "check() skipped: built under qemu-user"; }\n' >>"$recipe"
-  done
-  checks="omarchy-mac's touchid-consent-test.sh natively on $(uname -m) ($(grep -c '^ok' "$out/touchid-consent-test.log") ok); check() skipped under qemu-user"
+  cat >>"$pkgs/pkgbuilds/libfprint-git/PKGBUILD" <<'RECIPE'
+
+# build-touchid-packages: emulated build, see its header. The interface test
+# runs; meson's umockdev device tests don't work under qemu-user.
+check() {
+  python "$srcdir/aurora-touchid-interface-test.py" \
+    libfprint/libfprint/drivers/aurora/aurora.c \
+    libfprint/libfprint/drivers/aurora/aurora-bio.h
+  echo "meson test skipped: built under qemu-user"
+}
+RECIPE
+  printf '\n# build-touchid-packages: emulated build, see its header.\ncheck() { echo "check() skipped: built under qemu-user"; }\n' \
+    >>"$pkgs/pkgbuilds/omarchy-mac/PKGBUILD"
+  checks="omarchy-mac's touchid-consent-test.sh natively on $(uname -m) ($(grep -c '^ok' "$out/touchid-consent-test.log") ok); libfprint's interface test under qemu-user, its meson tests and omarchy-mac's check() skipped there"
 fi
 
 # omacom's own build, in its builder image, for aarch64 against edge.
