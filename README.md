@@ -96,6 +96,7 @@ Updates rebuild Stage 2, and Aurora's trial boot tries each rebuild once before 
 | [`tools/image/`](tools/image) | Files the derivation installs into the image: a systemd generator that mounts `/boot/efi` and `/boot` from the install the Mac booted, and a drop-in that counts the Stage 2 trial guard from disk unlock. |
 | [`tools/tests/`](tools/tests) | Tests for those files. Plain Bash; run them as a normal user on Linux. |
 | [`tools/aura-usb/`](tools/aura-usb) | Sends a Stage 2 to aura over a USB-C cable and records its console, without touching the Mac's disk. |
+| [`tools/camera-lab/`](tools/camera-lab) | A terminal menu with a live preview, run on the Mac, for toggling the camera filter's settings and FFmpeg post filters side by side, and a clip mode that measures each variant on the same frames. |
 | [`tools/wifi-reload-timing.sh`](tools/wifi-reload-timing.sh) | Times Wi-Fi's rejoin after a driver reload, with and without turning the radio off first. Run it at the Mac. |
 | [`tools/esp-overwrite-same-size.py`](tools/esp-overwrite-same-size.py) | Replaces a same-size file on an unmounted FAT ESP, for when macOS can't mount it (macOS 26.7.3 on this Mac couldn't). |
 
