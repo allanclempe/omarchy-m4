@@ -1,18 +1,19 @@
 diff --git a/shell/plugins/lock/FingerprintModel.js b/shell/plugins/lock/FingerprintModel.js
-index b489c7e..201d50d 100644
+index b489c7e..69ccfab 100644
 --- a/shell/plugins/lock/FingerprintModel.js
 +++ b/shell/plugins/lock/FingerprintModel.js
-@@ -15,6 +15,9 @@ var REACH_TIMEOUT_MS = 20000
+@@ -15,6 +15,10 @@ var REACH_TIMEOUT_MS = 20000
  var SLEEP_GAP_MS = 2000
  // Ignore transient misses while the asynchronous resume restart lands.
  var RESUME_GRACE_MS = 5000
-+// A finger the reader reported but never released ends its scan here: a match
-+// takes well under a second, and a scan the daemon forgot must not pulse on.
++// A finger the reader reported but never released ends its scan here. The
++// verdict or the finger leaving ends it first on a working reader; this is
++// for a daemon that forgot to clear the status, so the icon can't pulse on.
 +var SCAN_TIMEOUT_MS = 5000
  
  function retryDelayMs(streak) {
    if (streak <= 0) return MATCH_RETRY_MS
-@@ -67,6 +70,19 @@ function isUnavailable(streak) {
+@@ -67,6 +71,19 @@ function isUnavailable(streak) {
    return streak >= UNAVAILABLE_AFTER
  }
  
@@ -32,7 +33,7 @@ index b489c7e..201d50d 100644
  if (typeof module !== "undefined") {
    module.exports = {
      MATCH_RETRY_MS: MATCH_RETRY_MS,
-@@ -81,6 +97,8 @@ if (typeof module !== "undefined") {
+@@ -81,6 +98,8 @@ if (typeof module !== "undefined") {
      REACH_TIMEOUT_MS: REACH_TIMEOUT_MS,
      SLEEP_GAP_MS: SLEEP_GAP_MS,
      RESUME_GRACE_MS: RESUME_GRACE_MS,
@@ -42,7 +43,7 @@ index b489c7e..201d50d 100644
      classifyProbe: classifyProbe,
      inResumeGrace: inResumeGrace,
 diff --git a/shell/plugins/lock/LockView.qml b/shell/plugins/lock/LockView.qml
-index 9f4aa69..a36da9c 100644
+index 9f4aa69..05b1c17 100644
 --- a/shell/plugins/lock/LockView.qml
 +++ b/shell/plugins/lock/LockView.qml
 @@ -12,6 +12,8 @@ Item {
@@ -99,7 +100,7 @@ index 9f4aa69..a36da9c 100644
 +        // on its own where animations are off.
 +        SequentialAnimation {
 +          objectName: "fingerprintPulse"
-+          running: fingerprintIcon.visible && root.fingerprintScanning && !Style.reduceMotion
++          running: fingerprintIcon.visible && !root.fingerprintUnavailable && root.fingerprintScanning && !Style.reduceMotion
 +          loops: Animation.Infinite
 +          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 0.3; duration: Style.duration(420); easing.type: Easing.InOutQuad }
 +          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 1.0; duration: Style.duration(420); easing.type: Easing.InOutQuad }
@@ -237,10 +238,10 @@ index a02708e..b3d67f6 100644
      command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
 diff --git a/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
 new file mode 100644
-index 0000000..f9d3116
+index 0000000..1336a3b
 --- /dev/null
 +++ b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,248 @@
 +import QtQuick
 +import Quickshell
 +import qs.Commons
@@ -348,6 +349,44 @@ index 0000000..f9d3116
 +    }
 +  }
 +
++  // The monitor's lines reach the scan through the process's own parser,
++  // which the direct calls above don't exercise: a printf stands in for gdbus
++  // and prints one finger landing, read once the event loop turns. A new
++  // service asks fprintd-list about enrolment on creation, and that answer
++  // (none, in this scratch home) lands in the event loop too and settles any
++  // attempt, so the stand-in starts only once it has.
++  property var wiringService: null
++
++  function startWiring() {
++    var service = load("/shell/plugins/lock/Service.qml").createObject(host, { omarchyPath: rootPath })
++    if (!service) throw new Error("Service failed to instantiate for the wiring check")
++    wiringService = service
++    wiringTimer.phase = 1
++    wiringTimer.start()
++  }
++
++  function armWiring() {
++    var service = wiringService
++    var monitor = findByObjectName(service, "fingerprintMonitor")
++    monitor.command = ["printf", "%s\\n", root.presentLine]
++    service.fingerprintConfigured = true
++    service.lockRequested = true
++    service.fingerprintAuthenticating = true
++    check(!service.fingerprintScanning, "nothing is scanning before the monitor's line arrives")
++  }
++
++  function finishWiring() {
++    var service = wiringService
++    wiringService = null
++    if (!service) return
++    try {
++      check(service.fingerprintScanning, "a finger the monitor process reports starts the scan")
++    } finally {
++      service.lockRequested = false
++      service.destroy()
++    }
++  }
++
 +  function runView() {
 +    var view = load("/shell/plugins/lock/LockView.qml").createObject(host, { width: 800, height: 600, loadBackground: false })
 +    if (!view) throw new Error("LockView failed to instantiate")
@@ -383,6 +422,19 @@ index 0000000..f9d3116
 +      view.fingerprintScanning = true
 +      view.fingerprintConfigured = false
 +      check(!pulse.running, "nothing pulses without a reader to show")
++
++      view.fingerprintConfigured = true
++      view.fingerprintUnavailable = true
++      check(!pulse.running, "the crossed-out icon of an unreachable reader never pulses")
++      view.fingerprintUnavailable = false
++
++      // `omarchy toggle animations` turns the shell's motion off; the field
++      // still says it is checking.
++      var motion = Style.reduceMotion
++      Style.reduceMotion = true
++      check(!pulse.running, "the pulse stays off with animations off")
++      check(placeholder.text === checking, "the field still says it is checking with animations off")
++      Style.reduceMotion = motion
 +    } finally {
 +      view.destroy()
 +    }
@@ -402,6 +454,33 @@ index 0000000..f9d3116
 +    onTriggered: {
 +      try {
 +        root.runService()
++        root.startWiring()
++      } catch (error) {
++        root.failures.push("lock fingerprint scan fixture threw: " + error)
++        root.writeResult()
++      }
++    }
++  }
++
++  Timer {
++    id: wiringTimer
++    interval: 400
++    repeat: false
++    property int phase: 0
++    onTriggered: {
++      if (phase === 1) {
++        try {
++          root.armWiring()
++          phase = 2
++          start()
++        } catch (error) {
++          root.failures.push("lock fingerprint scan fixture threw: " + error)
++          root.writeResult()
++        }
++        return
++      }
++      try {
++        root.finishWiring()
 +        root.runView()
 +      } catch (error) {
 +        root.failures.push("lock fingerprint scan fixture threw: " + error)
@@ -413,10 +492,10 @@ index 0000000..f9d3116
 +}
 diff --git a/test/shell.d/lock-fingerprint-scan-test.sh b/test/shell.d/lock-fingerprint-scan-test.sh
 new file mode 100755
-index 0000000..7ca9733
+index 0000000..636d59c
 --- /dev/null
 +++ b/test/shell.d/lock-fingerprint-scan-test.sh
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,34 @@
 +#!/bin/bash
 +
 +set -euo pipefail
@@ -443,10 +522,9 @@ index 0000000..7ca9733
 +assertEqual(model.parseFingerPresent(''), null, 'an empty line is not a finger')
 +assertEqual(model.parseFingerPresent(undefined), null, 'no line is not a finger')
 +
-+// A scan the daemon never ends is bounded well inside the attempt's own reach
-+// timeout, and long after any real match has returned its verdict.
++// A scan the daemon never ends is bounded, and the bound leaves a slow reader
++// time to return its verdict first.
 +assert(model.SCAN_TIMEOUT_MS >= 2000, 'the scan bound leaves a slow reader time to match')
-+assert(model.SCAN_TIMEOUT_MS < model.REACH_TIMEOUT_MS, "the scan bound ends before the attempt's reach timeout")
 +JS
 +
 +require_quickshell "lock fingerprint scan test"
