@@ -6,6 +6,7 @@ Changes to other projects' repositories, kept here as plain `git diff` output so
 | --- | --- | --- | --- |
 | `j616c-installer.patch` | omacom/omarchy-mac-installer | `a576543` (PR #212's head) | J616c developer admission, the Mach-O Stage 1 Recovery modes (`macho-unpadded`, `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix |
 | `omarchy-mac-boot-aurora.patch` | omacom/omarchy-mac-pkgs | `28abebee14de05c35a2caa8dd257d056d15a641e` (main, 2026-11-09, "Merge pull request #110") | Teaches omarchy-mac-boot's `omarchy-apple-silicon-boot-check` to verify Aurora's Stage 2 (OMS-16, JOURNEY 9.24). Also applies to main `76d8b72`; sent upstream as [omacom/omarchy-mac-pkgs#150](https://github.com/omacom/omarchy-mac-pkgs/pull/150) (9.36) |
+| `omarchy-mac-0.2.3-touchid-j616c.patch` | omacom/omarchy-mac-pkgs | `ea0097a` (omarchy-mac 0.2.3, what omacom's `[omarchy]` ships as `0.2.3-2`) | #140 and #160's script and test changes on 0.2.3, for the image's omarchy-mac `0.2.3-2.1` (OMS-28, JOURNEY 9.47). `tools/build-touchid-packages` applies it; not sent upstream, as #160 is the upstream form |
 | `omarchy-mac-touchid-j616c.patch` | omacom/omarchy-mac-pkgs | `b4d5c2f` (the head of draft [#140](https://github.com/omacom/omarchy-mac-pkgs/pull/140), "Offer Touch ID on the 16-inch M4 Pro (J616s)", on `28abebe`) | Extends #140 to the 16-inch M4 Max: omarchy-mac offers Touch ID on the J616c and rebuilds its sealed calibration and sensor root key for chip `00006041` (OMS-2, JOURNEY 9.38). Sent upstream as [omacom/omarchy-mac-pkgs#160](https://github.com/omacom/omarchy-mac-pkgs/pull/160), against `main`, depending on #140 (9.43, 9.44) |
 
 ## omarchy-mac-boot-aurora.patch
@@ -48,3 +49,11 @@ bash omarchy-mac/test/all
 ```
 
 To change it, commit on a branch at `b4d5c2f` and regenerate it with `git diff b4d5c2f HEAD > patches/omarchy-mac-touchid-j616c.patch`. If #140 moves, rebase onto its new head and update the base here.
+
+## omarchy-mac-0.2.3-touchid-j616c.patch
+
+The same change as `omarchy-mac-touchid-j616c.patch` with #140 under it, on the omarchy-mac that omacom actually ships (0.2.3, `ea0097a`) rather than on #140's base (0.2.6). It is `git diff` of the four scripts and the consent test, from #140's base `28abebe` to #160's head `eb80585`, applied to `ea0097a` with a three-way merge. The README change is left out, since it doesn't apply to 0.2.3 and isn't needed to run. `tools/build-touchid-packages` adds it to omacom's 0.2.3-2 recipe as pkgrel `2.1` and checks it against `PATCH_SHA256`.
+
+On `ea0097a` with the patch, every omarchy-mac test file gives the same result as without it, except `touchid-consent-test.sh`, which gains the J616s and J616c sections (6 ok to 8 ok). `setup-test.sh` stops on this Linux host either way.
+
+When #160 changes, regenerate it: apply `git diff 28abebe <#160's head> -- . ':(exclude)omarchy-mac/README.md'` to `ea0097a` with `git apply -3`, take `git diff --cached ea0097a`, then update `PATCH_SHA256` and rebuild.

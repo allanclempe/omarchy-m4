@@ -97,6 +97,9 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
   `fprintd`, `iio-sensor-proxy-aurora` replaces `iio-sensor-proxy` (the same mechanism the
   derivation guards against for `m1n1-aurora`). None of the replaced packages is installed on this
   Mac (`pacman -Qq`), so nothing is swapped today; installing one later would pull Aurora's in.
+  The exception since OMS-28: the image installs `fprintd` for Touch ID, so the derivation adds
+  `fprintd-aurora` to `IgnorePkg`. Without it, `-Syu` would replace `fprintd` with Aurora's, whose
+  `libfprint-aurora` would push out the `libfprint-git` Omarchy's Touch ID path uses.
 - **Conflicts declared by the Aurora package:** `networkmanager-aurora` conflicts with
   `networkmanager` and depends on `aurora-keep-config`. `upower-aurora` conflicts with `upower`
   and depends on `aurora-keep-config` (it has no Replaces, so it must be swapped in explicitly).

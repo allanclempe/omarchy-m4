@@ -1,0 +1,119 @@
+#!/bin/bash
+# Build the two packages that give the J616c image Touch ID (OMS-28):
+#   - omarchy-mac 0.2.3-2.1: omacom's 0.2.3-2 recipe (omarchy-mac-pkgs ea0097a)
+#     with patches/omarchy-mac-0.2.3-touchid-j616c.patch on top, which is
+#     omacom/omarchy-mac-pkgs#140 and #160 (J616s, then J616c with its xART
+#     guard) applied to 0.2.3. The script and test changes only; the README
+#     change doesn't apply to 0.2.3 and isn't needed to run.
+#   - libfprint-git 1:1.94.100.r10.g6f9479c-6: omacom/omarchy-pkgs#2737, which
+#     accepts the 7.3 kernel's SEP interface v5 as well as v4.
+# Both come from omacom/omarchy-pkgs at OMARCHY_PKGS_COMMIT, built with that
+# commit's own bin/build for aarch64 against the edge mirror, as omacom's CI
+# builds a package. tools/derive-j616c-image takes the output directory and
+# checks each package against its pinned sha256.
+#
+# Usage: build-touchid-packages OUTPUT_DIR
+# Needs git and a docker that runs linux/arm64 containers: natively on an
+# aarch64 host, or through qemu-user's binfmt on x86_64 (much slower).
+#
+# Drop this, and the derivation's TOUCHID_PINS, once omacom ships an
+# omarchy-mac with #140 and #160 and a libfprint-git that takes interface v5.
+set -euo pipefail
+
+# omacom/omarchy-pkgs#2737's head: libfprint-git pkgrel 6. Its omarchy-mac
+# recipe is master's 0.2.3-2 (f9d0eda), unchanged.
+OMARCHY_PKGS_COMMIT=2f4d1968c84e24009a15988461ef8bf295e4a453
+OMARCHY_MAC_BASE=(0.2.3 2 ea0097a523191bcf3c6997e8d3a162ea13a1fe67)
+OMARCHY_MAC_PKGREL=2.1
+PATCH_SHA256=11d68ed82d0f7e635aa90bb727720bbf9c373f36561b88d9169f8d325fc1e4e5
+
+fail() { printf 'build-touchid-packages: %s\n' "$*" >&2; exit 1; }
+
+[[ $# == 1 ]] || fail "usage: $0 OUTPUT_DIR"
+out=$1
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+patch=$here/../patches/omarchy-mac-0.2.3-touchid-j616c.patch
+[[ $(sha256sum "$patch" | cut -d' ' -f1) == "$PATCH_SHA256" ]] ||
+  fail "$patch is not the pinned patch (PATCH_SHA256); bump it on purpose"
+mkdir -p "$out"
+[[ -z $(ls -A "$out") ]] || fail "$out is not empty"
+out=$(cd "$out" && pwd)
+
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+pkgs=$work/omarchy-pkgs
+git clone -q --filter=blob:none --no-checkout https://github.com/omacom/omarchy-pkgs.git "$pkgs"
+git -C "$pkgs" checkout -q "$OMARCHY_PKGS_COMMIT"
+
+# omarchy-mac: the 0.2.3-2 recipe, with the patch applied to the add-on tree
+# its prepare() copies, and the pkgrel above the repo's.
+recipe=$pkgs/pkgbuilds/omarchy-mac
+cp "$patch" "$recipe/omarchy-mac-touchid-j616c.patch"
+python3 -I - "$recipe/PKGBUILD" "$OMARCHY_MAC_PKGREL" "$PATCH_SHA256" "${OMARCHY_MAC_BASE[@]}" <<'PY'
+import re, sys
+path, pkgrel, patch_sha, base_ver, base_rel, base_commit = sys.argv[1:]
+s = open(path).read()
+
+def once(old, new):
+    global s
+    if s.count(old) != 1:
+        sys.exit(f"omarchy-mac's PKGBUILD changed: expected one {old!r}")
+    s = s.replace(old, new)
+
+once(f"\npkgver={base_ver}\n", f"\npkgver={base_ver}\n")
+once(f"\npkgrel={base_rel}\n", f"\n# OMS-28: omacom/omarchy-mac-pkgs#140 and #160 on 0.2.3, for the J616c image.\npkgrel={pkgrel}\n")
+once(f"\n_commit={base_commit}\n", f"\n_commit={base_commit}\n")
+m = re.search(r'^source=\((.*)\)$', s, re.M)
+if not m or s.count('\nsource=(') != 1:
+    sys.exit("omarchy-mac's PKGBUILD changed: expected one one-line source=()")
+s = s.replace(m.group(0), f'source=({m.group(1)} "omarchy-mac-touchid-j616c.patch")')
+m = re.search(r"^sha256sums=\((.*)\)$", s, re.M)
+if not m or s.count('\nsha256sums=(') != 1:
+    sys.exit("omarchy-mac's PKGBUILD changed: expected one one-line sha256sums=()")
+s = s.replace(m.group(0), f"sha256sums=({m.group(1)} '{patch_sha}')")
+once('  cp -a "$srcdir/omarchy-mac-pkgs/omarchy-mac" "$srcdir/addon"\n',
+     '  cp -a "$srcdir/omarchy-mac-pkgs/omarchy-mac" "$srcdir/addon"\n'
+     '  patch -d "$srcdir/addon" -Np2 <"$srcdir/omarchy-mac-touchid-j616c.patch"\n')
+open(path, "w").write(s)
+PY
+
+# On a host that isn't aarch64 the build runs under qemu-user, where the
+# packages' own tests fail for qemu's reasons, not theirs: libfprint's umockdev
+# tests can't read a pty's attributes, and omarchy-mac's lock test can't find
+# its waiting flock by command line, which qemu prefixes. There each recipe's
+# check() is replaced by one that says so. omarchy-mac's Touch ID tests run
+# natively first instead (its scripts are bash, the same on every
+# architecture), and libfprint's ran in omacom's native aarch64 CI at this
+# commit. A native build runs every check() unchanged.
+checks="each package's check(), natively"
+if [[ $(uname -m) != aarch64 ]]; then
+  addon=$work/omarchy-mac-pkgs
+  git clone -q --filter=blob:none --no-checkout https://github.com/omacom/omarchy-mac-pkgs.git "$addon"
+  git -C "$addon" checkout -q "${OMARCHY_MAC_BASE[2]}"
+  git -C "$addon" apply "$patch"
+  bash "$addon/omarchy-mac/test/touchid-consent-test.sh" >"$out/touchid-consent-test.log" 2>&1 ||
+    fail "omarchy-mac's Touch ID tests failed with the patch; see $out/touchid-consent-test.log"
+  for recipe in "$pkgs/pkgbuilds/libfprint-git/PKGBUILD" "$pkgs/pkgbuilds/omarchy-mac/PKGBUILD"; do
+    printf '\n# build-touchid-packages: emulated build, see its header.\ncheck() { echo "check() skipped: built under qemu-user"; }\n' >>"$recipe"
+  done
+  checks="omarchy-mac's touchid-consent-test.sh natively on $(uname -m) ($(grep -c '^ok' "$out/touchid-consent-test.log") ok); check() skipped under qemu-user"
+fi
+
+# omacom's own build, in its builder image, for aarch64 against edge.
+(cd "$pkgs" && CONTAINER_ENGINE=docker bin/build --mirror edge --arch aarch64 --package libfprint-git omarchy-mac) \
+  >"$out/build.log" 2>&1 || fail "bin/build failed; see $out/build.log"
+
+built=$pkgs/build-output/edge/aarch64
+for name in "libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64" "omarchy-mac-0.2.3-$OMARCHY_MAC_PKGREL-aarch64"; do
+  file=$(find "$built" -maxdepth 1 -name "$name.pkg.tar.*" ! -name '*.sig' | head -1)
+  [[ -n $file ]] || fail "bin/build made no $name package"
+  cp "$file" "$out/"
+done
+(cd "$out" && sha256sum ./*.pkg.tar.* | sed 's| \./| |' >SHA256SUMS)
+{
+  echo "omarchy-pkgs $OMARCHY_PKGS_COMMIT"
+  echo "omarchy-mac-pkgs ${OMARCHY_MAC_BASE[2]} + patches/omarchy-mac-0.2.3-touchid-j616c.patch $PATCH_SHA256"
+  echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(uname -m)"
+  echo "tests: $checks"
+} >"$out/BUILDINFO"
+cat "$out/SHA256SUMS"

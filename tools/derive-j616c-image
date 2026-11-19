@@ -27,7 +27,8 @@
 #     ANS that Stage 1 powers off; no aura release has it yet), installed at
 #     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
 #     kernel, U-Boot or aura update rebuilds boot-ctxr.bin with it;
-#   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura;
+#   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura, and
+#     fprintd-aurora, which declares replaces=fprintd (OMS-28);
 #   - keeps updates safe without hand guards (OMS-13): the kernel, Mesa, U-Boot
 #     and aura update from [aurora]; every boot-chain change rebuilds Stage 2
 #     from the pinned aura Stage 2 and Aurora's trial boots it once (committed
@@ -46,14 +47,22 @@
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.bin (aura's raw Stage 1, which the installer
 #     enrolls raw as raw-ctxr, OMS-24) and esp/m1n1/boot-ctxr-j616c.bin;
+#   - offers Touch ID through Omarchy's own fingerprint setup (OMS-28): it installs
+#     omarchy-mac 0.2.3-2.1 (omacom's 0.2.3 with omarchy-mac-pkgs#140 and #160,
+#     which admit the J616c and turn its xART guard on) and libfprint-git -6
+#     (omarchy-pkgs#2737, SEP interface v5), both built by
+#     tools/build-touchid-packages and pinned by sha256 (TOUCHID_PINS), plus fprintd,
+#     so the setup installs nothing. Nothing turns Touch ID on until the owner agrees;
 #   - re-seals @factory and packages the payload with its installer_data.json.
 #
 # Run on an aarch64 Linux host with
 # Docker and passwordless sudo:
-#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 OUTPUT_DIR
+#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 TOUCHID_DIR OUTPUT_DIR
 # STAGE2 is build/aura.bin from aura STAGE2_COMMIT built with the aura PKGBUILD's
 # Stage 2 flags (RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1
 # BUILTIN_LOGO=aurora); its sha256 must be STAGE2_SHA256.
+# TOUCHID_DIR is a tools/build-touchid-packages output; its packages must match
+# TOUCHID_PINS.
 # RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
 # the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app, which
 # predates that mode and would refuse this Mac's installation configuration.
@@ -90,6 +99,18 @@ declare -A AURORA_PINS=(
   [speakersafetyd-aurora-profiles]=1-2
   [alsa-utils-aurora]=1.2.16-1
 )
+# Touch ID (OMS-28): the packages tools/build-touchid-packages made, by sha256, and
+# the [omarchy] builds they sit above. The build stops when [omarchy] offers
+# anything newer, so a new omarchy-mac or libfprint-git is reviewed first: it
+# may carry #140 and #160 and v5 itself, and the pins can go.
+declare -A TOUCHID_PINS=(
+  [omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst]=e5cc85eb2975e40078dce8bf9dc7ecc253a2ca8d0a8304d567611efab807c1fb
+  [libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst]=856fab055b76bc8858be27453d30a3d70b2ea51d1f6ddb94cd8df2feebc62daa
+)
+declare -A TOUCHID_ABOVE=(
+  [omarchy-mac]=0.2.3-2
+  [libfprint-git]=1:1.94.100.r10.g6f9479c-5
+)
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
@@ -98,11 +119,15 @@ log() { printf '[%4ss] %s\n' "$SECONDS" "$*"; }
 fail() { printf 'derive-j616c-image: %s\n' "$*" >&2; exit 1; }
 
 host() {
-  local edge=$1 rootfs=$2 key=$3 recovery=$4 stage2=$5 out=$6 image
+  local edge=$1 rootfs=$2 key=$3 recovery=$4 stage2=$5 touchid=$6 out=$7 image file
   [[ -d $edge && -f $rootfs && -f $key && -f $recovery/omarchy-recovery-app.json \
-    && -d "$recovery/Omarchy Installer.app" && -f $stage2 ]] ||
-    fail "usage: $0 EDGE_OUT ROOTFS AURORA_KEY RECOVERY_DIR STAGE2 OUT"
+    && -d "$recovery/Omarchy Installer.app" && -f $stage2 && -d $touchid ]] ||
+    fail "usage: $0 EDGE_OUT ROOTFS AURORA_KEY RECOVERY_DIR STAGE2 TOUCHID_DIR OUT"
   [[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$STAGE2_SHA256" ]] || fail "$stage2 is not the pinned aura $STAGE2_COMMIT Stage 2"
+  for file in "${!TOUCHID_PINS[@]}"; do
+    [[ -f $touchid/$file && $(sha256sum "$touchid/$file" | cut -d' ' -f1) == "${TOUCHID_PINS[$file]}" ]] ||
+      fail "$touchid/$file is missing or not the pinned build (TOUCHID_PINS)"
+  done
   mkdir -p "$out"
   [[ -z $(ls -A "$out") ]] || fail "$out is not empty"
   image=omarchy-j616c-derive:$(sha256sum "$rootfs" | cut -c1-16)
@@ -114,6 +139,7 @@ host() {
     -v "$(cd "$(dirname "$key")" && pwd)/$(basename "$key"):/aurora.asc:ro" \
     -v "$(cd "$recovery" && pwd):/recovery:ro" -v "$(cd "$out" && pwd):/out" -v /work \
     -v "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2"):/stage2.bin:ro" \
+    -v "$(cd "$touchid" && pwd):/touchid:ro" \
     "$image" /bin/bash /tools/derive-j616c-image --in-container
 }
 
@@ -219,7 +245,7 @@ container() {
   in_chroot pacman-key --add /tmp/aurora.asc >>"$W/keyring.log" 2>&1
   in_chroot pacman-key --lsign-key "$AURORA_FPR" >>"$W/keyring.log" 2>&1
 
-  log "pacman.conf: [aurora] first, m1n1-aurora ignored"
+  log "pacman.conf: [aurora] first, m1n1-aurora and fprintd-aurora ignored"
   python3 - "$T/etc/pacman.conf" "$AURORA_SERVER" <<'PY'
 import re, sys
 path, server = sys.argv[1], sys.argv[2]
@@ -232,7 +258,10 @@ block = ("# Aurora Silicon's signed ALARM repository: the M4 Max (J616c) kernel,
 first = re.search(r"^\[(?!options\])[^\]]+\]", text, re.M)
 text = text[:first.start()] + block + text[first.start():]
 pin = ("# m1n1-aurora declares replaces=aura; on a J616c it would swap aura's\n"
-       "# T6041 Stage 2 for one that cannot boot it.\nIgnorePkg = m1n1-aurora\n")
+       "# T6041 Stage 2 for one that cannot boot it. fprintd-aurora declares\n"
+       "# replaces=fprintd and needs libfprint-aurora, which would push out the\n"
+       "# libfprint-git Touch ID uses here (OMS-28).\n"
+       "IgnorePkg = m1n1-aurora fprintd-aurora\n")
 text = re.sub(r"^\[options\]\n", "[options]\n" + pin, text, count=1, flags=re.M)
 open(path, "w").write(text)
 PY
@@ -294,9 +323,38 @@ PY
   in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
     fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
+  log "installing Touch ID's packages (OMS-28)"
+  local file pkg have
+  for pkg in "${!TOUCHID_ABOVE[@]}"; do
+    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    [[ $have == "${TOUCHID_ABOVE[$pkg]}" ]] ||
+      fail "[omarchy] offers $pkg ${have:-nothing}, not ${TOUCHID_ABOVE[$pkg]}: review it, then rebuild or drop TOUCHID_PINS"
+  done
+  mkdir -p "$T/tmp/touchid"
+  for file in "${!TOUCHID_PINS[@]}"; do
+    [[ $(sha256sum "/touchid/$file" | cut -d' ' -f1) == "${TOUCHID_PINS[$file]}" ]] || fail "/touchid/$file is not the pinned build"
+    cp "/touchid/$file" "$T/tmp/touchid/"
+  done
+  in_chroot sh -c 'pacman -U --noconfirm /tmp/touchid/*.pkg.tar.zst' >>"$W/pacman.log" 2>&1 ||
+    fail "could not install Touch ID's packages (pacman.log)"
+  rm -rf "$T/tmp/touchid"
+  # Omarchy's fingerprint setup installs libfprint-git, fprintd and usbutils
+  # when one is missing, which could put the repo's v4-only libfprint-git back.
+  in_chroot pacman -S --needed --noconfirm fprintd usbutils >>"$W/pacman.log" 2>&1 ||
+    fail "could not install fprintd (pacman.log)"
+  [[ $(in_chroot pacman -Q omarchy-mac libfprint-git | tr '\n' ' ') == "omarchy-mac 0.2.3-2.1 libfprint-git 1:1.94.100.r10.g6f9479c-6 " ]] ||
+    fail "Touch ID's packages are installed as '$(in_chroot pacman -Q omarchy-mac libfprint-git | tr '\n' ' ')'"
+  grep -q 'apple,j616c' "$T/usr/lib/omarchy-mac/touchid-eligibility" ||
+    fail "the installed omarchy-mac doesn't admit the J616c's Touch ID"
+  grep -q 'xart_guard=1' "$T/usr/lib/omarchy-mac/touchid-enable" ||
+    fail "the installed omarchy-mac doesn't turn the J616c's xART guard on"
+  [[ ! -e $T/etc/omarchy-mac/touchid-on && ! -e $T/etc/modprobe.d/omarchy-mac-touchid.conf ]] ||
+    fail "the image has Touch ID agreed on; only the owner may"
+
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" omarchy-mac libfprint-git fprintd |
+    tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
   # And what got installed is exactly what was pinned.
@@ -344,7 +402,8 @@ PY
       fail "$dir overrides Aurora's Stage 2 pacman hook"
   done
   ignored=$(in_chroot pacman-conf IgnorePkg | sort -u | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
-  [[ $ignored == "m1n1-aurora " ]] || fail "pacman's IgnorePkg is not exactly m1n1-aurora: ${ignored:-(none)}"
+  [[ $ignored == "fprintd-aurora m1n1-aurora " ]] ||
+    fail "pacman's IgnorePkg is not exactly m1n1-aurora and fprintd-aurora: ${ignored:-(none)}"
   groups=$(in_chroot pacman-conf IgnoreGroup | tr '\n' ' ') || fail "pacman-conf could not read IgnoreGroup"
   [[ -z $groups ]] || fail "pacman ignores package groups: $groups"
   # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
