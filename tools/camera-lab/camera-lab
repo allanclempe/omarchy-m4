@@ -1378,7 +1378,7 @@ cl_check() {
     miss aurora-camera-denoise "Aurora's package"
   systemctl --user is-active --quiet "$CL_SERVICE" 2>/dev/null && ok "$CL_SERVICE.service" active ||
     miss "$CL_SERVICE.service" "systemctl --user start $CL_SERVICE"
-  [[ -e $CL_DEV ]] && ok "$CL_DEV" "$(v4l2-ctl -d "$CL_DEV" --info 2>/dev/null | sed -n 's/^\s*Driver name\s*: //p')" || miss "$CL_DEV"
+  [[ -e $CL_DEV ]] && ok "$CL_DEV" "$(v4l2-ctl -d "$CL_DEV" --info 2>/dev/null | sed -n 's/^\s*Driver name\s*: //p' | head -n 1)" || miss "$CL_DEV"
   cl_iio_dir >/dev/null && ok "light sensor" "$(cl_iio_dir)" || note "light sensor" "not found: no lux in notes"
   if cl_discover 2>/dev/null; then
     ok "raw node" "${CL_RAW_NAME:-not found} (id ${CL_RAW_ID:--})"
