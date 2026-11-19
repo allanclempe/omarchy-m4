@@ -125,6 +125,9 @@ chmod 555 "$work/conf"
 rc=0; cl_conf_restore 2>/dev/null || rc=$?
 same "restore blocked: rc" "$rc" 2
 cl_has_backup || fail "restore blocked: lost the backup"
+# The `restore` command reports that failure in its exit code.
+rc=0; cl_restore_cmd >/dev/null 2>&1 || rc=$?
+same "restore cmd blocked: rc" "$rc" 2
 chmod 755 "$work/conf"
 cl_conf_restore || fail "restore after unblocking: failed"
 cmp -s "$work/readonly.conf" "$CAMERA_LAB_DENOISE_CONF" || fail "restore after unblocking: not byte-identical"

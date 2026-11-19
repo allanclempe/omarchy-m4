@@ -229,6 +229,9 @@ cl_conf_parse() {
     [[ -z $line || $line == \#* || $line == \;* ]] && continue
     if [[ $line =~ ^\[(.*)\]$ ]]; then
       section=${BASH_REMATCH[1]}
+      # The package's format has the one section; another one's keys would
+      # be left out of the lab's file until the original is restored.
+      [[ $section == denoise ]] || cl_say "camera-lab: $file has a [$section] section the lab doesn't know; its keys are left out while the lab runs"
       continue
     fi
     [[ $section == denoise ]] || continue
@@ -678,19 +681,24 @@ cl_effects_off() {
 
 # --- Restore ------------------------------------------------------------------
 
-# cl_restore_all: everything the lab changed, back. Safe to run twice.
+# cl_restore_all: everything the lab changed, back. Safe to run twice. Returns
+# 2 when something couldn't be put back (its backup is kept), else 0.
 cl_restore_all() {
-  local did=0 rc
+  local did=0 rc worst=0
   cl_preview_stop
   rc=0; cl_conf_restore || rc=$?
   if ((rc == 0)); then
     did=1
     cl_say "camera-lab: restored $CL_CONF"
+  elif ((rc == 2)); then
+    worst=2
   fi
   rc=0; cl_v4l2_restore || rc=$?
   if ((rc == 0)); then
     did=1
     cl_say "camera-lab: restored the camera's V4L2 controls"
+  elif ((rc == 2)); then
+    worst=2
   fi
   if ((CL_EFFECTS_TOUCHED)); then
     cl_effects_off
@@ -700,7 +708,7 @@ cl_restore_all() {
     cl_service_reload || true
   fi
   CL_TOUCHED=0
-  return 0
+  return "$worst"
 }
 
 cl_cleanup() {
@@ -723,7 +731,7 @@ cl_start_session() {
   cl_conf_keep_edits
   if cl_has_backup || [[ -e $CL_STATE/v4l2.orig ]]; then
     cl_say "camera-lab: an earlier run left its backup; restoring it first"
-    cl_restore_all
+    cl_restore_all || true
   fi
   cl_arm_trap
   cl_conf_original
@@ -1032,8 +1040,11 @@ cl_live() {
       gum confirm "The preview window closed. Open it again?" && cl_preview_start || break
     fi
   done
-  cl_restore_all
-  cl_say "camera-lab: settings restored; $CL_CONF is as before the lab"
+  if cl_restore_all; then
+    cl_say "camera-lab: settings restored; $CL_CONF is as before the lab"
+  else
+    cl_say "camera-lab: not everything could be put back; run camera-lab restore once that is fixed"
+  fi
 }
 
 # --- clip ---------------------------------------------------------------------
@@ -1240,8 +1251,7 @@ cl_clip() {
     readings=$(cl_readings)
     wait "$pid" || cl_say "camera-lab: the capture ended with an error"
     journal=$(cl_journal_lines "$since" 1)
-    cl_restore_all
-    cl_say "camera-lab: denoise.conf restored"
+    cl_restore_all || true
     local bytes got
     bytes=$(stat -c %s -- "$raw")
     ((bytes % fs == 0)) ||
