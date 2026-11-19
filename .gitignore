@@ -5,9 +5,8 @@ __pycache__/
 docs/questions-for-the-team.md
 
 # After-reinstall setup scripts carry credentials; they live on dev-machine-01 outside git (OMS-39).
-mac-setup.sh
+mac-setup*
 make-mac-setup
-mac-setup.body
 brave-sync-code
 .env
 .envrc
