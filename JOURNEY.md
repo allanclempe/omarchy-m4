@@ -931,3 +931,13 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - Allan booted the Mac into macOS (26.7.3) after the Linux enrolment (9.41), two restarts and a boot from power-off (9.42, 9.46), and tried Touch ID there. **It works.** Linux's keybag creation, enrolment and matches, all under xART guard 1 with no refusal, left macOS's own Touch ID intact.
 - `fdesetup status`: **FileVault is On.** So the guard mattered: with FileVault on, a wrong write to the shared xART store can stop macOS from starting (9.38).
 - That closes the last open check on OMS-2's Touch ID trial. Still open on OMS-2: the test report, which picks Touch ID up at its next run.
+
+### 9.50 Touch ID's packages built natively, every test run, and re-pinned (OMS-28, 2026-11-20)
+- With the Mac in macOS, `tools/build-touchid-packages` ran natively in the Lima VM `omarchy-builder` (aarch64) from branch head `548f58a`, under `caffeinate`. The output is in `build/oms28/touchid-pkgs` on the Mac, next to the other build outputs. That answers where the pinned files live; nothing is published.
+- **Natively, every `check()` ran and passed.** `BUILDINFO` says "each package's check(), natively".
+  - libfprint-git: the Aurora interface test, then meson's tests, 132 ok and 0 failed. These are the umockdev device tests qemu couldn't run (9.47).
+  - omarchy-mac: its whole suite, 117 ok and 0 failed, including `setup-test.sh`, which stops on dev-machine-01.
+- **The new pins** replace 9.47's emulated builds, with the same inputs (omarchy-pkgs `2f4d1968`, omarchy-mac-pkgs `ea0097a` plus the patch `11d68ed8…`):
+  - `omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst`, sha256 `65e5717edeaa64859f3eb562182d76e463b7ea6a85f63c5f749a94894264e76c`;
+  - `libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst`, sha256 `4a78586a805987cd0e78d5be15a05240915f02a9e33d986863c0db4d5ac70aff`.
+- Next: the derivation in the VM with these, on the inputs of the OMS-24 acceptance image (9.34).

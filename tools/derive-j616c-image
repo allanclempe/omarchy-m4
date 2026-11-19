@@ -99,13 +99,14 @@ declare -A AURORA_PINS=(
   [speakersafetyd-aurora-profiles]=1-2
   [alsa-utils-aurora]=1.2.16-1
 )
-# Touch ID (OMS-28): the packages tools/build-touchid-packages made, by sha256, and
+# Touch ID (OMS-28): the packages tools/build-touchid-packages made natively in the
+# Lima VM (kept on the Mac in build/oms28/touchid-pkgs), by sha256, and
 # the [omarchy] builds they sit above. The build stops when [omarchy] offers
 # anything newer, so a new omarchy-mac or libfprint-git is reviewed first: it
 # may carry #140 and #160 and v5 itself, and the pins can go.
 declare -A TOUCHID_PINS=(
-  [omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst]=e5cc85eb2975e40078dce8bf9dc7ecc253a2ca8d0a8304d567611efab807c1fb
-  [libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst]=856fab055b76bc8858be27453d30a3d70b2ea51d1f6ddb94cd8df2feebc62daa
+  [omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst]=65e5717edeaa64859f3eb562182d76e463b7ea6a85f63c5f749a94894264e76c
+  [libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst]=4a78586a805987cd0e78d5be15a05240915f02a9e33d986863c0db4d5ac70aff
 )
 declare -A TOUCHID_ABOVE=(
   [omarchy-mac]=0.2.3-2
