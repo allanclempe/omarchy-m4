@@ -9,3 +9,5 @@ mac-setup.sh
 make-mac-setup
 mac-setup.body
 brave-sync-code
+.env
+.envrc
