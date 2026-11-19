@@ -763,24 +763,22 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   ```
   Expected: a `PropertiesChanged` line with `'finger-present': <true>` when the finger lands, then `VerifyStatus ('verify-match', true)` and a `'finger-present': <false>` line within the same millisecond, in either order. The gap from `<true>` to the verdict is the enclave's match time; the gap from `<false>` to the verdict is what the pulse misses, near zero when the guidance held through the match. While the Mac is locked, `pgrep -af 'gdbus monitor'` over SSH should list exactly one `gdbus monitor --system --dest net.reactivated.Fprint`.
 - **Measured** (Allan, 2026-11-20 08:49 at the Mac's seat, unlocked, `fprintd-verify` on the enrolled right index finger): `finger-needed: true` at the verify start (08:48:59.095), then at 08:49:00.606 one change carrying both `'finger-needed': <false>, 'finger-present': <true>` as the finger landed, then `VerifyStatus ('verify-match', true)` and `'finger-present': <false>` both at 08:49:01.446. So the enclave's match takes **840 ms** on this Mac, the pause Allan feels, and the driver holds the finger reported until the verdict: the pulse covers all of it. The bundled line is the shape the parser sees on Touch ID; it is now a case in the test. Next: steps 2 and 3 of the trial above.
-- **The trial**, which writes to `~/.local/share/omarchy` (the user's own copy of Omarchy, which `omarchy update` overwrites; no disk, ESP or boot policy), so with Allan's approval. The read-only check first: the installed lock plugin must be upstream `b20d787`'s, whose hashes these are (the copies installed here are byte-identical to that commit's):
-  ```
-  cd ~/.local/share/omarchy/shell/plugins/lock && sha256sum FingerprintModel.js LockView.qml Service.qml
-  ```
-  Expected:
+- **Where Omarchy is on the Mac.** Not `~/.local/share/omarchy` as on dev-machine-01 (a `omarchy dev link` checkout): the image installs the `omarchy-dev` package, `4.0.0.r8083.gb20d787-1` on the Mac, at `/usr/share/omarchy` (`OMARCHY_PATH` in the user manager's environment), root-owned. That package is built from omacom/omarchy `b20d787`, the patch's own base, and the three lock plugin files there hash as that commit's (read over SSH, 2026-11-20; the Mac is `dev-machine-mac-2` now):
   ```
   6684762de3e3b88445a165344a9093e8faedb0647137199f16ffd1861db6f87c  FingerprintModel.js
   e5ec598e4dfafc0c6acb3ab8de1c3be810437ae943f6888fdcf1f92a6400876a  LockView.qml
   cf9da581ab749194d44d5f7f73dc028704373f59dd6b131a90b9c07419fed7c9  Service.qml
   ```
-  Then the backup, the patch's `shell/plugins/lock` part applied over the installed copy (`git apply` works outside a repository; rehearsed here on a copy of the installed files), and the shell restarted, from an unlocked session; `git apply` prints nothing when it applies:
+  The next `omarchy-dev` upgrade puts the package's files back.
+- **The trial** writes three package-owned files under `/usr/share/omarchy` (no disk, ESP or boot policy), so with Allan's approval: the backup, the patch's `shell/plugins/lock` part applied over the installed copy (`git apply` works outside a repository; rehearsed here on a copy of the installed files), and the shell restarted, from an unlocked session at the Mac's seat. Both `git apply` calls print nothing when it applies; `omarchy-restart-shell` prints nothing and the bar goes and comes back:
   ```
-  mkdir -p ~/oms36-lock-backup && cp -a ~/.local/share/omarchy/shell/plugins/lock/{FingerprintModel.js,LockView.qml,Service.qml} ~/oms36-lock-backup/
+  mkdir -p ~/oms36-lock-backup && sudo cp -a /usr/share/omarchy/shell/plugins/lock/{FingerprintModel.js,LockView.qml,Service.qml} ~/oms36-lock-backup/
   curl -fsSLo /tmp/oms36.patch https://raw.githubusercontent.com/allanclempe/omarchy-m4/main/patches/omarchy-lock-fingerprint-scanning.patch
-  cd ~/.local/share/omarchy && git apply --check --include='shell/plugins/lock/*' /tmp/oms36.patch && git apply --include='shell/plugins/lock/*' /tmp/oms36.patch && omarchy-restart-shell
+  cd /usr/share/omarchy && sudo git apply --check --include='shell/plugins/lock/*' /tmp/oms36.patch && sudo git apply --include='shell/plugins/lock/*' /tmp/oms36.patch && omarchy-restart-shell
   ```
-  (Before the pull request merges, the branch's copy is at `.../omarchy-m4/oms-36-lock-fingerprint-scanning/patches/...`.) `omarchy-restart-shell` prints nothing; the bar goes and comes back. Then lock (Super + Ctrl + L) and touch the sensor: the field should say "Checking…" and the icon breathe until the unlock. The way back, from an unlocked session:
+  (Before the pull request merges, the branch's copy is at `.../omarchy-m4/oms-36-lock-fingerprint-scanning/patches/...`.) Then lock (Super + Ctrl + L) and touch the sensor: the field should say "Checking…" and the icon breathe until the unlock. The way back, from an unlocked session, either the backup or the package:
   ```
-  cp -a ~/oms36-lock-backup/* ~/.local/share/omarchy/shell/plugins/lock/ && omarchy-restart-shell
+  sudo cp -a ~/oms36-lock-backup/* /usr/share/omarchy/shell/plugins/lock/ && omarchy-restart-shell
+  sudo pacman -S omarchy-dev && omarchy-restart-shell
   ```
 - **Upstream.** This isn't a J616c build change: the shell comes from Omarchy, and the pulse serves every reader whose libfprint driver reports finger status. It goes to omacom/omarchy as a pull request with Allan's go-ahead, after the Mac trial.

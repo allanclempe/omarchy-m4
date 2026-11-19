@@ -49,6 +49,6 @@ bash test/shell.d/lock-fingerprint-indicator-test.sh
 bash test/shell.d/lock-fingerprint-retry-test.sh
 ```
 
-To try it on an installed Omarchy without rebuilding, apply the patch's `shell/plugins/lock` part over `~/.local/share/omarchy` (`git apply` works outside a repository) and run `omarchy-restart-shell` from an unlocked session; JOURNEY 9.48 has the block for the Mac, with the check that the installed files are upstream's, the backup and the way back. `omarchy update` puts upstream's files back.
+To try it on an installed Omarchy without rebuilding, apply the patch's `shell/plugins/lock` part over the installed tree, `$OMARCHY_PATH` (`/usr/share/omarchy` from the `omarchy-dev` package, as on the Mac; `~/.local/share/omarchy` for a `omarchy dev link` checkout; `git apply` works outside a repository), and run `omarchy-restart-shell` from an unlocked session; JOURNEY 9.48 has the block for the Mac, with the check that the installed files are upstream's, the backup and the way back. The next package upgrade or `omarchy update` puts upstream's files back.
 
 To change it, apply it to a branch at the base commit, commit there, and regenerate it with `git diff b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab HEAD > patches/omarchy-lock-fingerprint-scanning.patch`.
