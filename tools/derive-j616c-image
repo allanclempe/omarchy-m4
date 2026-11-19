@@ -273,7 +273,7 @@ PY
   # Before installing anything else: the repo must still offer exactly the pinned builds.
   local pkg have moved=()
   for pkg in "${!AURORA_PINS[@]}"; do
-    have=$(in_chroot pacman -Si "aurora/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    have=$(in_chroot pacman -Si "aurora/$pkg" 2>/dev/null | sed -n 's/^Version *: //p') || true
     [[ $have == "${AURORA_PINS[$pkg]}" ]] || moved+=("$pkg: pinned ${AURORA_PINS[$pkg]}, [aurora] has ${have:-nothing}")
   done
   ((${#moved[@]} == 0)) ||
@@ -281,7 +281,7 @@ PY
   # And [omarchy] must still offer the builds the Touch ID packages sit above:
   # a newer one may carry #140, #160 or v5 itself, and is reviewed first.
   for pkg in "${!TOUCHID_ABOVE[@]}"; do
-    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p') || true
     [[ $have == "${TOUCHID_ABOVE[$pkg]}" ]] || moved+=("$pkg: expected ${TOUCHID_ABOVE[$pkg]}, [omarchy] has ${have:-nothing}")
   done
   ((${#moved[@]} == 0)) ||

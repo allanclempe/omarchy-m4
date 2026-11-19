@@ -36,7 +36,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
 | `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | derivation: omarchy-mac `0.2.3-2.1`, built with omacom/omarchy-mac-pkgs#160, writes `xart_guard=1` on a J616c with the owner's agreement (JOURNEY 9.45, 9.47); upstream when #160 merges | OMS-27, OMS-28 |
-| omarchy-mac's Touch ID scripts patched by hand (the five #160 changes), and `libfprint-git -6` (SEP interface v5) from omacom/omarchy-pkgs#2737's CI artifact | derivation: pinned omarchy-mac `0.2.3-2.1` and `libfprint-git -6`, built by `tools/build-touchid-packages`, plus `fprintd`; `IgnorePkg` gains `fprintd-aurora` (JOURNEY 9.47). Not yet proven by a fresh install | OMS-28 |
+| omarchy-mac's four Touch ID scripts patched by hand, and `libfprint-git -6` (SEP interface v5) from omacom/omarchy-pkgs#2737's CI artifact | derivation: pinned omarchy-mac `0.2.3-2.1` and `libfprint-git -6`, built by `tools/build-touchid-packages`, plus `fprintd`; `IgnorePkg` gains `fprintd-aurora` (JOURNEY 9.47). Not yet proven by a fresh install | OMS-28 |
 
 ## Where things are
 
