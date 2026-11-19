@@ -976,3 +976,15 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - then the first `omarchy update`, then the report.
 
   A fresh install gets a new volume group, so a new OS identity lane in the enclave. The old Linux enrolment is orphaned, and Touch ID is set up again.
+
+### 9.53 The acceptance install removed, for the Touch ID reinstall (OMS-28, 2026-11-20)
+- Read from macOS first: Omarchy's four partitions after macOS:
+  - `disk0s3`, the 6 GB stub container `disk3`;
+  - `disk0s4`, the ESP, PARTUUID `B2E659A5-FD54-454E-A7BF-75A3FA15D04A`;
+  - `disk0s5`, Boot, `9D4A6C2A-2925-4563-AD03-C63C37147581`;
+  - `disk0s6`, Root, 128.8 GB.
+
+  The ESP's and Boot's PARTUUIDs match AGENTS.md's known-good values.
+- Allan removed them with `diskutil` (OMS-23: the app still can't): `apfs deleteContainer disk3`, then `eraseVolume free none` on `disk0s4`–`s6`. Afterwards `disk0` holds the ISC container (`disk0s1`), macOS (`disk0s2`, 719.8 GB), 274.9 GB free, and macOS Recovery (`disk0s7`).
+- Gone with the root: the soak-test install's hand changes (9.41), and the read-only iBoot System Container image from 9.41. macOS's Touch ID was checked after the Linux enrolment (9.49), so it wasn't needed.
+- Next: install `build/oms28/Omarchy-J616c-Developer.pkg` (9.52).
