@@ -498,10 +498,10 @@ index 0000000..1336a3b
 +}
 diff --git a/test/shell.d/lock-fingerprint-scan-test.sh b/test/shell.d/lock-fingerprint-scan-test.sh
 new file mode 100755
-index 0000000..eec1e8a
+index 0000000..0524432
 --- /dev/null
 +++ b/test/shell.d/lock-fingerprint-scan-test.sh
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,48 @@
 +#!/bin/bash
 +
 +set -euo pipefail
@@ -513,6 +513,9 @@ index 0000000..eec1e8a
 +
 +// The lines gdbus monitor prints for fprintd's device, as the lock reads them.
 +const present = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <true>}, @as [])"
++// fprintd bundles both properties in one change when the finger it asked for
++// lands: this is the line a Mac's Touch ID produced.
++const landed = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-needed': <false>, 'finger-present': <true>}, @as [])"
 +const absent = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <false>}, @as [])"
 +const needed = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-needed': <true>}, @as [])"
 +const verdict = "/net/reactivated/Fprint/Device/0: net.reactivated.Fprint.Device.VerifyStatus ('verify-match', true)"
@@ -520,6 +523,7 @@ index 0000000..eec1e8a
 +const owner = 'The name net.reactivated.Fprint is owned by :1.42'
 +
 +assertEqual(model.parseFingerPresent(present), true, 'a finger landing on the reader reads as present')
++assertEqual(model.parseFingerPresent(landed), true, 'a finger landing bundled with the reader no longer asking reads as present')
 +assertEqual(model.parseFingerPresent(absent), false, 'a finger leaving the reader reads as absent')
 +assertEqual(model.parseFingerPresent(needed), null, "the reader asking for a finger is not a finger")
 +assertEqual(model.parseFingerPresent(verdict), null, 'the verdict signal carries no finger status')
