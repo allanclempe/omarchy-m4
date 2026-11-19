@@ -959,3 +959,20 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **Next:**
   - `mac-image-check`, the developer catalog, the app (version above the installed 2.3.18) and the package, as in 9.34;
   - then a fresh install, where Omarchy's fingerprint setup offers Touch ID and enrols with no hand step, followed by the first `omarchy update`.
+
+### 9.52 The installer with Touch ID (OMS-28, 2026-11-20)
+- **Built on the Mac** by `build/oms28/build-installer.sh` (log `build/oms28/build-installer.log`), from the `work/omi-oms24` checkout. Nothing has changed `patches/j616c-installer.patch` since OMS-24.
+  - **Payload check:** `mac-image-check payload edge` in the VM: "ok - the edge mac image payload meets the contract". As in 9.29, the checker refuses the `-j616c-dev` name, so it ran on a symlink under the standard edge name, with a copy of the metadata naming that file. The derivation's output is root-owned, and `protected_hardlinks` refuses a hard link to it.
+  - **Developer catalog:**
+    - OMS-24's inputs with evidence revision `j616c-dev.20261120` and `latest_version` 2.3.19;
+    - the same engine (`v0.9.2-omarchy.20261116.87a727c96a25`) and J616c metadata (`supported_fw` cut to 26.6.2, as the derivation's metadata hasn't changed since 9.34);
+    - the new payload.
+
+    `make-unsigned-catalog.py --developer`: 36 models, sequence 1795119450, sha256 `e28577df…07aa`. It was signed with the local key and verified against the trust root, with 4 offline artifacts.
+  - **App** 2.3.19 (build 2611192017), `OMARCHY_DEVELOPER_BUILD=1 OMARCHY_OFFLINE_BUILD=1`. Its embedded payload is `23e98f32…8e34`, the derivation's (9.51).
+  - **Package:** `build/oms28/Omarchy-J616c-Developer.pkg`, 4,050,089,112 bytes, sha256 `a2ab4389ce6768b2fbf386bd8891378a16204fc7183494505fe2e6334ce04112`.
+- **Next, Allan's:** remove the current install (OMS-23), install this package, then the Recovery step, first boot and owner setup. Then:
+  - `omarchy-setup-security-fingerprint` should offer Touch ID and enrol with no hand step;
+  - then the first `omarchy update`, then the report.
+
+  A fresh install gets a new volume group, so a new OS identity lane in the enclave. The old Linux enrolment is orphaned, and Touch ID is set up again.
