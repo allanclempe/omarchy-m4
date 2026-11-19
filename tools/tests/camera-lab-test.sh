@@ -332,11 +332,12 @@ EOF
   mkdir -p "$work/stubs" "$work/from"
   cat >"$work/stubs/aurora-camera-denoise-bench" <<'EOF'
 #!/bin/bash
-# Stand-in: copies the input to -o; the Neural Engine can't run here.
-while getopts b:t:s:l:o:r: o; do case $o in b) b=$OPTARG ;; o) out=$OPTARG ;; *) ;; esac; done
+# Stand-in: copies the input to -o. The Neural Engine stage "runs" at every
+# strength, or refuses the size when STUB_ANE_FAIL is set.
+while getopts b:t:s:l:o:r: o; do case $o in b) b=$OPTARG ;; s) s=$OPTARG ;; o) out=$OPTARG ;; *) ;; esac; done
 shift $((OPTIND - 1))
-[[ $b == ane ]] && { echo "backend ane cannot run $1x$2" >&2; exit 1; }
-cp "$3" "$out"; echo "cpu_ms_per_frame=1.00 wall_ms_per_frame=2.00 cpu_pct_at_30fps=3.0"
+[[ $b == ane && -n ${STUB_ANE_FAIL:-} ]] && { echo "backend ane cannot run $1x$2" >&2; exit 1; }
+cp "$3" "$out"; echo "backend=${b:-cpu} strength=${s:-} cpu_ms_per_frame=1.00 wall_ms_per_frame=2.00 cpu_pct_at_30fps=3.0"
 EOF
   cat >"$work/stubs/aurora-camera-denoise-metrics" <<'EOF'
 #!/bin/bash
@@ -362,21 +363,33 @@ EOF
     grep -q '^| Filter: CPU temporal (the default) |.*| 500 |$' "$report" || fail "clip: no filter row at 500 fps"
     grep -q '^| Post on CPU temporal: despeckle + cas |' "$report" || fail "clip: no stacked post row"
     grep -q '^| Post on CPU temporal: scale-720p |' "$report" || fail "clip: no scale row"
-    grep -q "Neural Engine stage didn't run: backend ane cannot run 160x90" "$report" || fail "clip: didn't note the Neural Engine"
+    # Every strength gives a row; the label at 1.0 names mode = on. (The row
+    # at 0.25 once ended the run through errexit, on the J616c.)
+    grep -q '^| Filter: + low-light stage at 0.25 |' "$report" || fail "clip: no low-light row at 0.25"
+    grep -q '^| Filter: + low-light stage at 1.0 (mode = on) |' "$report" || fail "clip: no low-light row at 1.0"
     grep -q '84.0 lux' "$report" || fail "clip: lost the readings"
-    same "clip rows" "$(grep -c '^| [A-Z]' "$report")" 6 # the header and 5 variants
+    same "clip rows" "$(grep -c '^| [A-Z]' "$report")" 10 # the header and 9 variants
     # The median removes specks the raw frames have.
     raw_dark=$(awk -F'\t' '$1 ~ /^Raw/ { print $8 }' "$work/clip/metrics.tsv")
     med_dark=$(awk -F'\t' '$1 ~ /median$/ { print $8 }' "$work/clip/metrics.tsv")
     ((raw_dark > 0 && med_dark < raw_dark)) || fail "clip: specks raw $raw_dark, median $med_dark"
     edge=$(awk -F'\t' '$1 ~ /median$/ { print $7 }' "$work/clip/metrics.tsv")
     awk -v e="$edge" 'BEGIN { exit !(e > 0.5 && e < 1.2) }' || fail "clip: median edge contrast $edge"
-    same "clip frames" "$(ls "$work/clip/frames" | wc -l)" 5
+    same "clip frames" "$(ls "$work/clip/frames" | wc -l)" 9
     if command -v montage >/dev/null; then [[ -s $work/clip/sheet.png ]] || fail "clip: no contact sheet"; fi
     [[ -z $(ls "$work/clip/work"/*.nv12 2>/dev/null) ]] || fail "clip: left the variant files"
     [[ -e $work/from/raw.nv12 ]] || fail "clip: removed the --from clip"
   else
     fail "clip --from failed: $(tail -n 3 "$work/clip.err")"
+  fi
+  # A Neural Engine stage that refuses the size is noted, and the run goes on.
+  if STUB_ANE_FAIL=1 PATH=$work/stubs:$PATH bash "$lab/camera-lab" clip --from "$work/from" --last 8 --presets none \
+    --out "$work/clip-noane" >/dev/null 2>"$work/clip-noane.err"; then
+    grep -q "Neural Engine stage didn't run: backend ane cannot run 160x90" "$work/clip-noane/report.md" ||
+      fail "clip: didn't note the Neural Engine refusing the size"
+    same "clip rows without the Neural Engine" "$(grep -c '^| [A-Z]' "$work/clip-noane/report.md")" 3
+  else
+    fail "clip --from without the Neural Engine failed: $(tail -n 3 "$work/clip-noane.err")"
   fi
 else
   echo "SKIP the FFmpeg checks: ffmpeg isn't installed" >&2

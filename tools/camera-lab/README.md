@@ -94,9 +94,9 @@ lux and the colour temperature, and the layer 2 stack.
   on, and the research's dim-light levels. *Resolution* switches between 1920x1080 and 1280x720
   and restarts the preview; at 720p the filter has no Neural Engine stage.
 - **Post filters (layer 2).** The presets from `presets.conf`. Pick one to add it to the end of the
-  stack, again to take it out; the number is its place. Presets marked slow (`nlmeans`, `fftdnoiz`)
-  aren't expected to hold 30 fps at 1080p (not yet measured on the J616c: clip mode reports each
-  preset's render fps) and are offered at 720p only; try them at full size in clip mode. Before
+  stack, again to take it out; the number is its place. Presets marked slow (`nlmeans` at 5 fps and
+  `vaguedenoiser` at 32 fps offline at 1080p on the J616c, 2026-11-20) can't hold 30 fps live at
+  1080p and are offered at 720p only; try them at full size in clip mode. Before
   a stack reaches the preview, FFmpeg runs it over three test frames, so a preset that doesn't parse
   is refused with FFmpeg's error instead of silently showing an unfiltered picture.
 - **Effects.** Background blur or replacement and face framing, set on the filter's node with

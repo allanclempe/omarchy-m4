@@ -1283,7 +1283,11 @@ cl_clip() {
         for s in 0.25 0.5 0.75 1.0; do
           cl_say "camera-lab: + the Neural Engine low-light stage at strength $s"
           if bout=$(aurora-camera-denoise-bench -b ane -s "$s" -o "$work/ane-$s.nv12" "$w" "$h" "$cpu" 2>&1); then
-            vname+=("Filter: + low-light stage at $s$([[ $s == 1.0 ]] && echo ' (mode = on)')")
+            # Not a `$([[ … ]] && …)` in the assignment: under errexit a
+            # failing test inside it ends the run (it did, on the J616c).
+            local label="Filter: + low-light stage at $s"
+            [[ $s == 1.0 ]] && label+=" (mode = on)"
+            vname+=("$label")
             vfile+=("$work/ane-$s.nv12")
             vspeed+=("$(awk -v m="$(cl_parse_bench wall_ms_per_frame <<<"$bout")" 'BEGIN { printf "%.0f", 1000 / m }')")
           else
@@ -1346,7 +1350,13 @@ cl_clip() {
   done
   local sheet=''
   if command -v montage >/dev/null; then
-    montage -background '#1e1e1e' -fill '#e0e0e0' -pointsize 18 "${montage_args[@]}" \
+    # ImageMagick on the J616c draws no label text without an explicit font
+    # (it reserves the space and leaves it blank), so name fontconfig's sans.
+    local -a font=()
+    local fontfile=''
+    command -v fc-match >/dev/null && fontfile=$(fc-match -f '%{file}' sans 2>/dev/null) || true
+    [[ -r $fontfile ]] && font=(-font "$fontfile")
+    montage -background '#1e1e1e' -fill '#e0e0e0' -pointsize 18 "${font[@]}" "${montage_args[@]}" \
       -tile 4x -geometry +6+6 "$out/sheet.png" 2>"$work/montage.log" && sheet=sheet.png ||
       notes+="- The contact sheet failed: $(head -n 1 "$work/montage.log")"$'\n'
   else
