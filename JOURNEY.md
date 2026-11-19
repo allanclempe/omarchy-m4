@@ -1004,3 +1004,17 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **Read over Tailscale SSH (`dev-machine-mac-2`, the fresh install):** pacman's log shows both attempts stopping at "starting full system upgrade", before any transaction. Nothing was installed or removed, and no hook ran. `asahi-scripts 20261023-9` (Aurora's) and `asahi-fwextract 0.9.2-1` are still installed. Kernel, aura, omarchy-mac `0.2.3-2.1` and libfprint-git `-6` are as installed, with no pacman lock left behind. `IgnorePkg = m1n1-aurora fprintd-aurora`, as the image sets it.
 - **What pulls `aurora-scripts` in:** `[omarchy]`'s `omarchy-mac-boot 20261104-2`. Its only dependency change from the installed `-1` is `asahi-scripts` → `aurora-scripts>=20260127.1`. Aurora's `asahi-scripts` provides only `aurora-stage2-ctxr-slot` and `aurora-stage2-trial`, so it can't satisfy that. `[omarchy]`'s own `aura` and `m1n1-aurora` builds need it too, but the image ignores or outranks them. Only `omarchy-aurora-firmware` depends on `omarchy-mac-boot`, and on any version.
 - **So holding the boot scripts means holding `omarchy-mac-boot` at `20261104-1` as well:** `IgnorePkg` gains `aurora-scripts aurora-fwextract omarchy-mac-boot`. The rest of the pending update (60 packages) goes through. Proposed as a hand fix on the Mac, with a backup of `/etc/pacman.conf` and its undo. The image's version of the fix is OMS-37.
+
+### 9.56 The update with the holds: past the boot scripts, stopped by PipeWire (OMS-37, OMS-38, 2026-11-20)
+- With `IgnorePkg = m1n1-aurora fprintd-aurora aurora-scripts aurora-fwextract omarchy-mac-boot` (9.55), `omarchy update` passed the boot scripts with no prompt:
+  - "ignoring package replacement (asahi-fwextract => aurora-fwextract)";
+  - "ignoring package replacement (fprintd => fprintd-aurora)";
+  - "omarchy-mac-boot: ignoring package upgrade (20261104-1 => 20261104-2)";
+  - omarchy-mac `0.2.3-2.1` and libfprint-git `-6` kept as newer than `[omarchy]`'s.
+- **Then it failed on dependencies:** "installing spandsp (3.1.1-1) breaks dependency 'libspandsp.so=2-64' required by pipewire-audio".
+  - Arch's `[extra]` moved `spandsp` to 3.1.1 (`libspandsp.so=4`) and rebuilt PipeWire as `1:1.6.11-2`.
+  - The installed PipeWire set is `[extra]`'s `1:1.6.11-1`, which needs `libspandsp.so=2`.
+  - `[aurora]`, first in pacman.conf, carries `pipewire-audio 1:1.6.10-1.6`, so pacman never offers `[extra]`'s rebuild, but takes `spandsp` from `[extra]`.
+
+  This is the collision the package audit predicted (OMS-18). It's unrelated to Touch ID or the boot scripts. OMS-38 tracks it.
+- **Proposed hand fix for the soak-test Mac:** hold `spandsp` at 0.0.6 too. It leaves the working audio stack exactly as installed, and nothing in the pending update needs `spandsp` 3. The alternative, pulling `[extra]`'s PipeWire `1.6.11-2` explicitly, changes the audio packages, so it waits for OMS-38's decision.
