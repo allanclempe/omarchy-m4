@@ -941,3 +941,21 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - `omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst`, sha256 `65e5717edeaa64859f3eb562182d76e463b7ea6a85f63c5f749a94894264e76c`;
   - `libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst`, sha256 `4a78586a805987cd0e78d5be15a05240915f02a9e33d986863c0db4d5ac70aff`.
 - Next: the derivation in the VM with these, on the inputs of the OMS-24 acceptance image (9.34).
+
+### 9.51 The derivation with Touch ID (OMS-28, 2026-11-20)
+- **Run:** `tools/derive-j616c-image` at `b08a735`, in the Lima VM under `caffeinate`, on the OMS-24 acceptance image's inputs:
+  - the 2026-11-13 edge payload (`~/work/out`) and its rootfs (`alarm-rootfs-42a4eeaa…`);
+  - Aurora's key from `build/alarm-pkgs/aurora-alarm.asc`;
+  - the Recovery app with `raw-ctxr` from `build/oms24/recovery`;
+  - Stage 2 from `build/aura-stage2-94d8e6e/build/aura.bin`;
+  - plus `build/oms28/touchid-pkgs` (9.50).
+
+  The script and log are in `build/oms28/` on the Mac.
+- **Passed in 236 s.** `[aurora]` still offers exactly `AURORA_PINS`, and `[omarchy]` still offers omarchy-mac `0.2.3-2` and libfprint-git `-5`, so neither repo has moved since 9.34.
+  - Installed: `omarchy-mac 0.2.3-2.1`, `libfprint-git 1:1.94.100.r10.g6f9479c-6`, `fprintd 1.94.5-2`, with every boot-chain, Mesa, audio and firmware pin as before.
+  - No `.pacnew`, and no replacement prompt in pacman's log. The only warnings are mkinitcpio's usual "possibly missing firmware" ones.
+  - The J616c, guard and no-agreement checks passed, and `IgnorePkg` is `m1n1-aurora fprintd-aurora`.
+- **Payload:** `omarchy-2026.11.13-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`, 4,023,953,102 bytes, sha256 `23e98f324bec620acbf6aede39c2dd90102df9993a30dffb6f5ca2ba89fe8e34`, in the VM's `~/work/j616c-out-oms28`.
+- **Next:**
+  - `mac-image-check`, the developer catalog, the app (version above the installed 2.3.18) and the package, as in 9.34;
+  - then a fresh install, where Omarchy's fingerprint setup offers Touch ID and enrols with no hand step, followed by the first `omarchy update`.
