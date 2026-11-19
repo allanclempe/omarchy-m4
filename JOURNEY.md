@@ -926,3 +926,8 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   ```
   The first line should print `IgnorePkg = m1n1-aurora`, and the last should list both names. The undo is the same `sed` with the two patterns swapped.
 - `docs/aurora-package-audit.md`'s Touch ID row now says what the image has. The README lists `tools/build-touchid-packages` and says the derivation needs the pinned packages.
+
+### 9.49 macOS's Touch ID after Linux's enrolment (OMS-2, OMS-28, 2026-11-20)
+- Allan booted the Mac into macOS (26.7.3) after the Linux enrolment (9.41), two restarts and a boot from power-off (9.42, 9.46), and tried Touch ID there. **It works.** Linux's keybag creation, enrolment and matches, all under xART guard 1 with no refusal, left macOS's own Touch ID intact.
+- `fdesetup status`: **FileVault is On.** So the guard mattered: with FileVault on, a wrong write to the shared xART store can stop macOS from starting (9.38).
+- That closes the last open check on OMS-2's Touch ID trial. Still open on OMS-2: the test report, which picks Touch ID up at its next run.
