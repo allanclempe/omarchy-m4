@@ -988,3 +988,13 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - Allan removed them with `diskutil` (OMS-23: the app still can't): `apfs deleteContainer disk3`, then `eraseVolume free none` on `disk0s4`–`s6`. Afterwards `disk0` holds the ISC container (`disk0s1`), macOS (`disk0s2`, 719.8 GB), 274.9 GB free, and macOS Recovery (`disk0s7`).
 - Gone with the root: the soak-test install's hand changes (9.41), and the read-only iBoot System Container image from 9.41. macOS's Touch ID was checked after the Linux enrolment (9.49), so it wasn't needed.
 - Next: install `build/oms28/Omarchy-J616c-Developer.pkg` (9.52).
+
+### 9.54 The fresh install offers Touch ID; the first update asks to replace the boot scripts (OMS-28, OMS-37, 2026-11-20)
+- Allan installed `build/oms28/Omarchy-J616c-Developer.pkg` (9.52) into the freed space, then went through the Recovery step, first boot and owner setup.
+- **Touch ID was offered on the first boot, and enrolled and matched.** No package was installed and no file edited by hand: OMS-28's goal. The image's omarchy-mac `0.2.3-2.1`, libfprint-git `-6` and fprintd carried it.
+- **The first `omarchy update` stopped at a prompt:** replace `asahi-fwextract` with `[omarchy]`'s `aurora-fwextract`? That breaks zero hand steps, and accepting it would have been unsafe:
+  - `aurora-fwextract 0.9.2-1` (omacom-packaged, built 2026-11-17, after 9.33's first update) replaces, conflicts with and provides `asahi-fwextract`, and depends on `aurora-scripts` and `lzfse`.
+  - `aurora-scripts 20261023-1`, also new in `[omarchy]` on 2026-11-17, replaces and conflicts with `asahi-scripts`. The image pins Aurora's `asahi-scripts 20261023-9`.
+  - Compared file by file, omacom's `aurora-scripts` lacks `bootchain.py`, `bootchain_arch.py`, `aurora-stage2-commit`, the Stage 2 trial units and their preset, and `stage2-sign-hook`, and has a different `update-m1n1` and `95-m1n1-install.hook`. Taking it would replace the Stage 2 builder and trial the update policy relies on (OMS-13, OMS-17), and its hook could rebuild `m1n1/boot-ctxr.bin` at once.
+- Allan answered no. The derivation's pin checks didn't catch it: they watch `[aurora]`'s pinned builds and `[omarchy]`'s omarchy-mac and libfprint-git, not a new `[omarchy]` package that replaces a pinned `[aurora]` one.
+- OMS-37 tracks it: `IgnorePkg` for `aurora-scripts` and `aurora-fwextract` (the `m1n1-aurora` precedent), a derivation check for any repo package that replaces or conflicts with a pinned one, and a question to the M team.
