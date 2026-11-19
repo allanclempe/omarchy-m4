@@ -36,7 +36,7 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)       # PipeWire and the user services
 export WAYLAND_DISPLAY=wayland-1                 # live only: ls $XDG_RUNTIME_DIR/wayland-*
 ```
 
-Everything it needs is already on the acceptance install: GStreamer's `pipewiresrc`, `mpv`,
+Everything it needs was on the Mac on 2026-11-20 (`camera-lab check` tells you): GStreamer's `pipewiresrc`, `mpv`,
 `ffmpeg`, `gum`, `v4l2-ctl`, ImageMagick, Python 3 (standard library only) and Aurora's
 `aurora-camera-denoise` with its `-bench` and `-metrics` tools. No sudo, nothing in `/etc`.
 
@@ -50,7 +50,11 @@ Everything it needs is already on the acceptance install: GStreamer's `pipewires
   aurora-camera-denoise`).
 - If the lab was killed before it could (a closed terminal, a crash), the backup stays.
   `camera-lab restore` puts it back; `live` and `clip` also restore a leftover backup before they
-  start. `camera-lab status` shows whether one is there.
+  start. `camera-lab status` shows whether one is there. If you edited `denoise.conf` by hand after
+  such a run, your edit stays: the lab moves the old backup aside
+  (`denoise.conf.orig.kept-<time>`) and says so.
+- A restore that can't write (a full disk, a directory made read-only) keeps the backup and says
+  so; it never deletes the only copy of your file.
 - It never opens `/dev/video0` for frames. It streams from the filter's PipeWire node
   (`aurora_camera_denoise.v4l2_input.platform-580000000.isp`) and changes the filter's `mode`
   instead, because only one client can drive the ISP. The stream carries on through a filter
@@ -91,7 +95,8 @@ lux and the colour temperature, and the layer 2 stack.
   and restarts the preview; at 720p the filter has no Neural Engine stage.
 - **Post filters (layer 2).** The presets from `presets.conf`. Pick one to add it to the end of the
   stack, again to take it out; the number is its place. Presets marked slow (`nlmeans`, `fftdnoiz`)
-  can't hold 30 fps at 1080p and are offered at 720p only; try them at full size in clip mode. Before
+  aren't expected to hold 30 fps at 1080p (not yet measured on the J616c: clip mode reports each
+  preset's render fps) and are offered at 720p only; try them at full size in clip mode. Before
   a stack reaches the preview, FFmpeg runs it over three test frames, so a preset that doesn't parse
   is refused with FFmpeg's error instead of silently showing an unfiltered picture.
 - **Effects.** Background blur or replacement and face framing, set on the filter's node with

@@ -24,6 +24,9 @@ CL_CONF=${CAMERA_LAB_DENOISE_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/aurora-came
 CL_STATE=${CAMERA_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/camera-lab}
 CL_OUT=${CAMERA_LAB_OUT:-$HOME/camera-lab}
 CL_DEV=${CAMERA_LAB_DEVICE:-/dev/video0}
+# The preview's pid lives in the runtime dir, which a boot clears, so a pid
+# left by a crash can't name a process started since.
+CL_PIDFILE=${CAMERA_LAB_PIDFILE:-${XDG_RUNTIME_DIR:-/tmp}/camera-lab.preview.pid}
 CL_SERVICE=aurora-camera-denoise
 CL_EFFECTS_LIB=${CAMERA_LAB_EFFECTS_LIB:-/usr/lib/aurora-camera-denoise/libaurora-camera-effects.so}
 CL_FPS=30
@@ -263,7 +266,40 @@ cl_conf_summary() {
 
 cl_backup_file() { printf '%s/denoise.conf.orig' "$CL_STATE"; }
 cl_absent_file() { printf '%s/denoise.conf.absent' "$CL_STATE"; }
+cl_written_file() { printf '%s/denoise.conf.written' "$CL_STATE"; }
 cl_has_backup() { [[ -e $(cl_backup_file) || -e $(cl_absent_file) ]]; }
+
+# cl_conf_target: the file itself when denoise.conf is a symlink, so the lab
+# writes and restores the target and the link stays.
+cl_conf_target() { readlink -f -- "$CL_CONF" 2>/dev/null || printf '%s' "$CL_CONF"; }
+
+cl_conf_sha() { sha256sum -- "$1" | cut -d' ' -f1; }
+
+# cl_conf_edited_since: true when denoise.conf is no longer what the lab last
+# wrote (edited, or removed, by hand after an interrupted run).
+cl_conf_edited_since() {
+  local want have
+  [[ -r $(cl_written_file) ]] || return 1
+  want=$(<"$(cl_written_file)")
+  if [[ -e $CL_CONF ]]; then have=$(cl_conf_sha "$CL_CONF"); else have=missing; fi
+  [[ $have != "$want" ]]
+}
+
+# cl_conf_keep_edits: an interrupted run's backup is kept aside, not restored,
+# when the user has changed denoise.conf since. Says where the original went.
+cl_conf_keep_edits() {
+  local kept
+  cl_has_backup && cl_conf_edited_since || return 0
+  if [[ -e $(cl_backup_file) ]]; then
+    kept=$(cl_backup_file).kept-$(date +%Y%m%d-%H%M%S)
+    mv -f -- "$(cl_backup_file)" "$kept"
+    cl_say "camera-lab: $CL_CONF was changed after an interrupted run, so it stays as it is;" \
+      "  the original from before that run is kept at $kept"
+  else
+    cl_say "camera-lab: $CL_CONF was written after an interrupted run, so it stays as it is"
+  fi
+  rm -f -- "$(cl_absent_file)" "$(cl_written_file)"
+}
 
 # cl_conf_backup: keep the user's denoise.conf (or that there was none) once;
 # a backup left by an earlier run is kept, as it holds the original.
@@ -279,28 +315,46 @@ cl_conf_backup() {
 
 # cl_conf_write: back up the original once, then write CL_SET atomically.
 cl_conf_write() {
-  local tmp
+  local tmp target
   cl_conf_backup
-  mkdir -p -- "$(dirname -- "$CL_CONF")"
-  tmp=$(mktemp "$CL_CONF.camera-lab.XXXXXX")
+  target=$(cl_conf_target)
+  mkdir -p -- "$(dirname -- "$target")"
+  tmp=$(mktemp "$target.camera-lab.XXXXXX")
   cl_conf_render >"$tmp"
   if [[ -e $(cl_backup_file) ]]; then
     chmod --reference="$(cl_backup_file)" -- "$tmp"
   else
     chmod 644 -- "$tmp"
   fi
-  mv -f -- "$tmp" "$CL_CONF"
+  mv -f -- "$tmp" "$target"
+  cl_conf_sha "$target" >"$(cl_written_file)"
 }
 
 # cl_conf_restore: put the original back byte for byte (or remove the lab's
-# file if there was none). Returns 1 if there was nothing to restore.
+# file if there was none). Returns 1 if there was nothing to restore, 2 if
+# the restore failed: the backup is then kept, never deleted.
 cl_conf_restore() {
+  local tmp target
   if [[ -e $(cl_backup_file) ]]; then
-    mkdir -p -- "$(dirname -- "$CL_CONF")"
-    cp -p -- "$(cl_backup_file)" "$CL_CONF"
-    rm -f -- "$(cl_backup_file)"
+    target=$(cl_conf_target)
+    mkdir -p -- "$(dirname -- "$target")"
+    # Through a temporary file and a rename: a copy straight onto a read-only
+    # file (or a full disk) fails half way, and the original must survive that.
+    if tmp=$(mktemp "$target.camera-lab.XXXXXX") &&
+      cp -p -- "$(cl_backup_file)" "$tmp" && mv -f -- "$tmp" "$target"; then
+      rm -f -- "$(cl_backup_file)" "$(cl_written_file)"
+    else
+      [[ -n ${tmp:-} ]] && rm -f -- "$tmp"
+      cl_say "camera-lab: couldn't put $CL_CONF back; the original is kept at $(cl_backup_file)"
+      return 2
+    fi
   elif [[ -e $(cl_absent_file) ]]; then
-    rm -f -- "$CL_CONF" "$(cl_absent_file)"
+    rm -f -- "$CL_CONF"
+    if [[ -e $CL_CONF ]]; then
+      cl_say "camera-lab: couldn't remove the lab's $CL_CONF (there was none before the lab)"
+      return 2
+    fi
+    rm -f -- "$(cl_absent_file)" "$(cl_written_file)"
   else
     return 1
   fi
@@ -320,7 +374,9 @@ cl_conf_original() {
 
 cl_service_reload() {
   if systemctl --user is-active --quiet "$CL_SERVICE"; then
-    systemctl --user reload "$CL_SERVICE"
+    # A failed reload is reported, not fatal: the menu must survive it.
+    systemctl --user reload "$CL_SERVICE" ||
+      cl_say "camera-lab: the reload failed; see systemctl --user status $CL_SERVICE"
   else
     cl_say "camera-lab: $CL_SERVICE isn't running, so the change waits for its next start"
   fi
@@ -361,13 +417,21 @@ cl_v4l2_set() {
   v4l2-ctl -d "$CL_DEV" -c "$1=$2"
 }
 
+# cl_v4l2_restore: the controls back as they were. Returns 1 with nothing to
+# restore, 2 when a control couldn't be set: the backup is then kept.
 cl_v4l2_restore() {
-  local file=$CL_STATE/v4l2.orig key val
+  local file=$CL_STATE/v4l2.orig key val ok=1
   [[ -e $file ]] || return 1
   while IFS='=' read -r key val; do
-    [[ -n $key && -n $val ]] && v4l2-ctl -d "$CL_DEV" -c "$key=$val"
+    [[ -n $key && -n $val ]] || continue
+    v4l2-ctl -d "$CL_DEV" -c "$key=$val" || ok=0
   done <"$file"
-  rm -f -- "$file"
+  if ((ok)); then
+    rm -f -- "$file"
+  else
+    cl_say "camera-lab: couldn't put every V4L2 control back; the values are kept at $file"
+    return 2
+  fi
 }
 
 # --- Readings -----------------------------------------------------------------
@@ -476,8 +540,7 @@ EOF
   cmd=$(cl_preview_cmd "$CL_W" "$CL_H" "$CL_FILTER_NAME" "$CL_RUN/mpv.sock" "$CL_RUN/input.conf")
   setsid bash -c "$cmd" </dev/null >"$CL_RUN/preview.log" 2>&1 &
   CL_PREVIEW_PID=$!
-  mkdir -p -- "$CL_STATE"
-  printf '%s\n' "$CL_PREVIEW_PID" >"$CL_STATE/preview.pid"
+  printf '%s\n' "$CL_PREVIEW_PID" >"$CL_PIDFILE"
   for ((i = 0; i < 150; i++)); do
     [[ -S $CL_RUN/mpv.sock ]] && break
     cl_preview_alive || break
@@ -491,11 +554,19 @@ EOF
   cl_apply_view
 }
 
+# cl_preview_is PID: PID is a preview of ours (its command line names the
+# capture), not another process that got the number after a crash.
+cl_preview_is() {
+  [[ -n $1 ]] && kill -0 "$1" 2>/dev/null &&
+    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'pipewiresrc'
+}
+
 cl_preview_stop() {
   local i pid=$CL_PREVIEW_PID
-  [[ -z $pid && -r $CL_STATE/preview.pid ]] && pid=$(<"$CL_STATE/preview.pid")
-  if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
-    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  [[ -z $pid && -r $CL_PIDFILE ]] && pid=$(<"$CL_PIDFILE")
+  if cl_preview_is "$pid"; then
+    # The preview is its own session (setsid): signal the whole group.
+    kill -TERM -- "-$pid" 2>/dev/null || true
     for ((i = 0; i < 50; i++)); do
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.1
@@ -503,7 +574,7 @@ cl_preview_stop() {
     kill -KILL -- "-$pid" 2>/dev/null || true
   fi
   CL_PREVIEW_PID=''
-  rm -f -- "$CL_STATE/preview.pid"
+  rm -f -- "$CL_PIDFILE"
 }
 
 # cl_json_str STRING: STRING as a JSON string.
@@ -529,6 +600,22 @@ cl_vf_json() {
 }
 
 cl_mpv() { python3 "$CL_HELPER" ipc "$CL_RUN/mpv.sock" "$@"; }
+
+# cl_stack_save: the post stack, one name a line, for `virtual` and `status`;
+# an empty stack is an empty file (printf with no names would write one blank
+# line, which `virtual` read as a preset called "").
+cl_stack_save() {
+  mkdir -p -- "$CL_STATE"
+  if ((${#CL_STACK[@]})); then printf '%s\n' "${CL_STACK[@]}"; else :; fi >"$CL_STATE/stack"
+}
+
+# cl_stack_load: the saved stack into the array named by $1, blank lines out.
+cl_stack_load() {
+  local -n _out=$1
+  _out=()
+  [[ -s $CL_STATE/stack ]] || return 0
+  mapfile -t _out < <(grep -v '^[[:space:]]*$' "$CL_STATE/stack" || true)
+}
 
 # cl_graph_check GRAPH W H: run GRAPH over three W x H frames in FFmpeg, print
 # its error. mpv takes any graph over IPC and only logs a failure, passing the
@@ -569,8 +656,7 @@ cl_apply_view() {
     return 1
   fi
   cl_mpv "{\"command\":[\"set_property\",\"osd-msg1\",$(cl_json_str "$msg")]}" >/dev/null 2>&1 || true
-  mkdir -p -- "$CL_STATE"
-  printf '%s\n' "${CL_STACK[@]}" >"$CL_STATE/stack"
+  cl_stack_save
 }
 
 # --- Effects ------------------------------------------------------------------
@@ -579,7 +665,8 @@ cl_effects_installed() { [[ -e $CL_EFFECTS_LIB ]]; }
 
 # cl_effects_set PARAMS: e.g. '"camera.background" "blur"'
 cl_effects_set() {
-  pw-cli set-param "$CL_FILTER_ID" Props "{ params = [ $1 ] }" >/dev/null
+  pw-cli set-param "$CL_FILTER_ID" Props "{ params = [ $1 ] }" >/dev/null ||
+    cl_say "camera-lab: the filter refused the effect ($1)"
   CL_EFFECTS_TOUCHED=1
 }
 
@@ -593,13 +680,15 @@ cl_effects_off() {
 
 # cl_restore_all: everything the lab changed, back. Safe to run twice.
 cl_restore_all() {
-  local did=0
+  local did=0 rc
   cl_preview_stop
-  if cl_conf_restore; then
+  rc=0; cl_conf_restore || rc=$?
+  if ((rc == 0)); then
     did=1
     cl_say "camera-lab: restored $CL_CONF"
   fi
-  if cl_v4l2_restore 2>/dev/null; then
+  rc=0; cl_v4l2_restore || rc=$?
+  if ((rc == 0)); then
     did=1
     cl_say "camera-lab: restored the camera's V4L2 controls"
   fi
@@ -631,6 +720,7 @@ cl_arm_trap() {
 # cl_start_session: put back what an interrupted run left, then note the
 # user's own settings.
 cl_start_session() {
+  cl_conf_keep_edits
   if cl_has_backup || [[ -e $CL_STATE/v4l2.orig ]]; then
     cl_say "camera-lab: an earlier run left its backup; restoring it first"
     cl_restore_all
@@ -758,7 +848,7 @@ cl_menu_camera() {
       v4l2:*)
         key=${map[$pick]#v4l2:}
         val=$(cl_choose --header "$key  (${CL_V4L2_HELP[$key]})" ${CL_V4L2_CHOICES[$key]}) || continue
-        cl_v4l2_set "$key" "$val" >/dev/null
+        cl_v4l2_set "$key" "$val" >/dev/null || { cl_say "camera-lab: v4l2-ctl refused $key=$val"; sleep 2; }
         ;;
       "Set: your own"*) cl_conf_original; cl_conf_apply ;;
       "Set: package defaults"*) CL_SET=(); CL_SET_EXTRA=(); cl_conf_apply ;;
@@ -999,7 +1089,11 @@ cl_measure() {
       -f rawvideo -pix_fmt gray16le - | tail -c "$((w * h * 2))" >"$work/test.grad"
   [[ -s $work/raw.grad ]] || cp -- "$work/test.grad" "$work/raw.grad"
   ed=$(python3 "$CL_HELPER" edge "$w" "$h" "$work/raw.grad" "$work/test.grad" | cl_parse_kv edge)
-  printf '%s %s %s %s\n' "$m" "$ed" "$(cl_parse_kv dark <<<"$sp")" "$(cl_parse_kv bright <<<"$sp")"
+  local dark bright
+  dark=$(cl_parse_kv dark <<<"$sp")
+  bright=$(cl_parse_kv bright <<<"$sp")
+  # Every field is filled, so an empty one can't shift the columns after it.
+  printf '%s %s %s %s\n' "$m" "${ed:-n/a}" "${dark:-n/a}" "${bright:-n/a}"
 }
 
 # cl_png FILE W H FRAME OUT [CROP]: one frame as PNG; CROP is WxH+X+Y, shown
@@ -1057,10 +1151,11 @@ EOF
 
 cl_clip() {
   local frames=160 size=1920x1080 last=60 presets=all base=cpu ane=1 crop='' from='' out='' keep=0 force=0
+  local size_given=0
   while (($#)); do
     case $1 in
       --frames) frames=$2; shift 2 ;;
-      --size) size=$2; shift 2 ;;
+      --size) size=$2 size_given=1; shift 2 ;;
       --last) last=$2; shift 2 ;;
       --presets) presets=$2; shift 2 ;;
       --base) base=$2; shift 2 ;;
@@ -1074,6 +1169,12 @@ cl_clip() {
       *) cl_clip_usage >&2; cl_die "clip: unknown option $1" ;;
     esac
   done
+  # A reused clip was recorded at the size its notes say, not the default.
+  if [[ -n $from ]] && ((!size_given)) && [[ -r $from/notes.txt ]]; then
+    local noted
+    noted=$(sed -n 's/^Clip: \([0-9][0-9]*x[0-9][0-9]*\) .*/\1/p' "$from/notes.txt")
+    [[ -n $noted ]] && size=$noted
+  fi
   [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || cl_die "--size takes WxH"
   local w=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
   [[ $frames =~ ^[0-9]+$ && $last =~ ^[0-9]+$ ]] && ((last >= 2 && frames >= last)) ||
@@ -1107,7 +1208,11 @@ cl_clip() {
     readings=$(sed -n 's/^Readings during the capture: //p' "$from/notes.txt" 2>/dev/null || true)
     journal=$(sed -n 's/^Filter log: //p' "$from/notes.txt" 2>/dev/null || true)
     conf_before=$(sed -n 's/^denoise.conf before: //p' "$from/notes.txt" 2>/dev/null || true)
-    frames=$(($(stat -L -c %s -- "$raw") / fs))
+    local bytes
+    bytes=$(stat -L -c %s -- "$raw")
+    ((bytes % fs == 0)) ||
+      cl_die "--from: $raw isn't whole ${w}x$h NV12 frames ($bytes bytes); recorded at another size? see $from/notes.txt, or pass --size"
+    frames=$((bytes / fs))
     ((frames >= last)) || cl_die "--from: $raw holds $frames frames of ${w}x$h, fewer than --last"
   else
     for dep in gst-launch-1.0 pw-dump v4l2-ctl systemctl; do
@@ -1137,7 +1242,11 @@ cl_clip() {
     journal=$(cl_journal_lines "$since" 1)
     cl_restore_all
     cl_say "camera-lab: denoise.conf restored"
-    local got=$(($(stat -c %s -- "$raw") / fs))
+    local bytes got
+    bytes=$(stat -c %s -- "$raw")
+    ((bytes % fs == 0)) ||
+      cl_die "the capture isn't whole ${w}x$h NV12 frames ($bytes bytes): padded rows or planes? (kept at $raw)"
+    got=$((bytes / fs))
     ((got >= last)) || cl_die "recorded $got frames, fewer than --last $last"
     frames=$got
   fi
@@ -1301,8 +1410,8 @@ cl_virtual() {
   local -a stack=()
   if [[ -n $presets ]]; then
     IFS=, read -r -a stack <<<"$presets"
-  elif [[ -s $CL_STATE/stack ]]; then
-    mapfile -t stack <"$CL_STATE/stack"
+  else
+    cl_stack_load stack
   fi
   local graph
   graph=$(cl_render_graph "$w" "$h" "${stack[@]}") || cl_die "virtual: unknown preset"
@@ -1340,14 +1449,17 @@ cl_status() {
   printf '%s\n' "$([[ -e $CL_STATE/v4l2.orig ]] && echo ' (lab backup present)')"
   printf 'Readings: %s\n' "$(cl_readings)"
   printf 'Effects: %s\n' "$(cl_effects_installed && echo installed || echo "not installed ($CL_EFFECTS_LIB)")"
-  printf 'Saved post stack (for virtual): %s\n' "$( [[ -s $CL_STATE/stack ]] && paste -sd' ' "$CL_STATE/stack" || echo none)"
-  if [[ -r $CL_STATE/preview.pid ]] && kill -0 "$(<"$CL_STATE/preview.pid")" 2>/dev/null; then
-    printf 'Preview: running (pid %s)\n' "$(<"$CL_STATE/preview.pid")"
+  local -a saved=()
+  cl_stack_load saved
+  printf 'Saved post stack (for virtual): %s\n' "${saved[*]:-none}"
+  if [[ -r $CL_PIDFILE ]] && cl_preview_is "$(<"$CL_PIDFILE")"; then
+    printf 'Preview: running (pid %s)\n' "$(<"$CL_PIDFILE")"
   fi
 }
 
 cl_restore_cmd() {
   CL_TOUCHED=0
+  cl_conf_keep_edits
   if ! cl_has_backup && [[ ! -e $CL_STATE/v4l2.orig ]]; then
     cl_preview_stop
     cl_say "camera-lab: nothing to restore: $CL_CONF is the user's own"

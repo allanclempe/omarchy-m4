@@ -18,6 +18,7 @@ same() { [[ $2 == "$3" ]] || fail "$1: got [$2], want [$3]"; }
 
 export CAMERA_LAB_STATE=$work/state CAMERA_LAB_DENOISE_CONF=$work/conf/denoise.conf
 export CAMERA_LAB_OUT=$work/out CAMERA_LAB_PRESETS=$lab/presets.conf
+export CAMERA_LAB_PIDFILE=$work/preview.pid
 # shellcheck source=../camera-lab/camera-lab
 source "$lab/camera-lab"
 
@@ -103,6 +104,108 @@ cl_conf_write
 [[ -e $CAMERA_LAB_DENOISE_CONF ]] || fail "write without a conf: wrote nothing"
 cl_conf_restore || fail "restore without a conf: nothing to restore"
 [[ ! -e $CAMERA_LAB_DENOISE_CONF ]] || fail "restore without a conf: left the lab's file"
+# A read-only conf (dotfile tooling) gets the lab's mode bits, and still comes
+# back: the restore renames a copy over it instead of writing into it.
+printf '[denoise]\nmode = auto\n' >"$CAMERA_LAB_DENOISE_CONF"
+chmod 444 "$CAMERA_LAB_DENOISE_CONF"
+cp -p "$CAMERA_LAB_DENOISE_CONF" "$work/readonly.conf"
+cl_conf_original
+CL_SET[mode]=off
+cl_conf_write
+same "write read-only: mode bits" "$(stat -c %a "$CAMERA_LAB_DENOISE_CONF")" 444
+cl_conf_restore || fail "restore read-only: failed"
+cmp -s "$work/readonly.conf" "$CAMERA_LAB_DENOISE_CONF" || fail "restore read-only: not byte-identical"
+if cl_has_backup; then fail "restore read-only: left the backup"; fi
+# A restore that can't write (the directory is read-only) keeps the backup and
+# says so, instead of deleting the only copy of the original.
+cl_conf_original
+CL_SET[mode]=on
+cl_conf_write
+chmod 555 "$work/conf"
+rc=0; cl_conf_restore 2>/dev/null || rc=$?
+same "restore blocked: rc" "$rc" 2
+cl_has_backup || fail "restore blocked: lost the backup"
+chmod 755 "$work/conf"
+cl_conf_restore || fail "restore after unblocking: failed"
+cmp -s "$work/readonly.conf" "$CAMERA_LAB_DENOISE_CONF" || fail "restore after unblocking: not byte-identical"
+chmod 644 "$CAMERA_LAB_DENOISE_CONF"
+# A conf edited by hand after an interrupted run stays; the stale backup is
+# kept aside, not restored over it.
+cl_conf_original
+CL_SET[mode]=off
+cl_conf_write
+cl_conf_keep_edits 2>/dev/null
+cl_has_backup || fail "keep edits: dropped the backup though nothing was edited"
+printf '[denoise]\nmode = auto\nenter-gain = 2304\n' >"$CAMERA_LAB_DENOISE_CONF"
+cl_conf_keep_edits 2>/dev/null
+same "keep edits: the edit stays" "$(cat "$CAMERA_LAB_DENOISE_CONF")" $'[denoise]\nmode = auto\nenter-gain = 2304'
+if cl_has_backup; then fail "keep edits: still has a backup to restore"; fi
+ls "$CAMERA_LAB_STATE" | grep -q '^denoise.conf.orig.kept-' || fail "keep edits: the original wasn't kept aside"
+if cl_conf_restore; then fail "keep edits: restore still found something"; fi
+rm -f "$CAMERA_LAB_STATE"/denoise.conf.orig.kept-* "$CAMERA_LAB_DENOISE_CONF"
+# A symlinked conf: the lab writes and restores the target, and the link stays.
+printf '[denoise]\nmode = on\n' >"$work/real.conf"
+cp -p "$work/real.conf" "$work/real.orig"
+ln -s "$work/real.conf" "$CAMERA_LAB_DENOISE_CONF"
+cl_conf_original
+CL_SET[mode]=off
+cl_conf_write
+[[ -L $CAMERA_LAB_DENOISE_CONF ]] || fail "write symlink: replaced the link"
+same "write symlink: target" "$(cat "$work/real.conf")" $'[denoise]\nmode = off'
+cl_conf_restore || fail "restore symlink: failed"
+[[ -L $CAMERA_LAB_DENOISE_CONF ]] || fail "restore symlink: replaced the link"
+cmp -s "$work/real.orig" "$work/real.conf" || fail "restore symlink: target not byte-identical"
+rm -f "$CAMERA_LAB_DENOISE_CONF" "$work/real.conf"
+
+# --- A session: the EXIT trap restores after SIGTERM, with stubbed services ----
+mkdir -p "$work/stubs"
+printf '#!/bin/bash\nexit 0\n' >"$work/stubs/systemctl"
+printf '#!/bin/bash\nexit 0\n' >"$work/stubs/v4l2-ctl"
+chmod +x "$work/stubs"/*
+printf '[denoise]\nmode = on\n' >"$CAMERA_LAB_DENOISE_CONF"
+cp -p "$CAMERA_LAB_DENOISE_CONF" "$work/session.orig"
+PATH=$work/stubs:$PATH bash -c 'source "$1"; cl_start_session; CL_SET[mode]=off; cl_conf_apply; sleep 10 & wait $!' \
+  _ "$lab/camera-lab" >/dev/null 2>&1 &
+spid=$!
+for ((i = 0; i < 50; i++)); do
+  grep -qs 'mode = off' "$CAMERA_LAB_DENOISE_CONF" && break
+  sleep 0.1
+done
+grep -qs 'mode = off' "$CAMERA_LAB_DENOISE_CONF" || fail "session: the lab never wrote its conf"
+kill -TERM "$spid"
+wait "$spid" 2>/dev/null || true
+cmp -s "$work/session.orig" "$CAMERA_LAB_DENOISE_CONF" || fail "session TERM: conf not byte-identical"
+if cl_has_backup; then fail "session TERM: left the backup"; fi
+pkill -P "$spid" sleep 2>/dev/null || true
+# A pid file left by a crash names a process that isn't a preview: leave it be.
+sleep 10 &
+stale=$!
+printf '%s\n' "$stale" >"$CAMERA_LAB_PIDFILE"
+CL_PREVIEW_PID=''
+cl_preview_stop
+kill -0 "$stale" 2>/dev/null || fail "preview stop: killed an unrelated process with the stale pid"
+kill "$stale" 2>/dev/null || true
+[[ ! -e $CAMERA_LAB_PIDFILE ]] || fail "preview stop: left the stale pid file"
+
+# --- The preview's commands, as the Mac runs them ------------------------------------
+same "capture cmd" "$(cl_capture_cmd 1280 720 aurora_camera_denoise.v4l2_input.platform-580000000.isp 30)" \
+  'gst-launch-1.0 -q pipewiresrc target-object=aurora_camera_denoise.v4l2_input.platform-580000000.isp num-buffers=30 \! video/x-raw\,format=NV12\,width=1280\,height=720\,framerate=30/1 \! fdsink fd=1 '
+preview=$(cl_preview_cmd 1920 1080 node.name /run/s.sock /run/in.conf)
+[[ $preview == "$(cl_capture_cmd 1920 1080 node.name)| mpv --no-config --input-conf=/run/in.conf --demuxer=rawvideo --demuxer-rawvideo-mp-format=nv12 --demuxer-rawvideo-w=1920 --demuxer-rawvideo-h=1080 --demuxer-rawvideo-fps=30 "* ]] ||
+  fail "preview cmd: $preview"
+[[ $preview == *"--input-ipc-server=/run/s.sock "*" - " ]] || fail "preview cmd: no IPC socket or stdin: $preview"
+
+# --- The saved post stack: empty is empty, not one blank name --------------------------
+declare -a got=()
+CL_STACK=()
+cl_stack_save
+same "empty stack file" "$(wc -c <"$CAMERA_LAB_STATE/stack")" 0
+cl_stack_load got
+same "empty stack load" "${#got[@]}" 0
+CL_STACK=(despeckle cas)
+cl_stack_save
+cl_stack_load got
+same "stack load" "${got[*]}" "despeckle cas"
 
 # --- Presets file --------------------------------------------------------------
 cat >"$work/p1.conf" <<'EOF'
@@ -204,6 +307,17 @@ if command -v ffmpeg >/dev/null; then
       same "ffmpeg view $view [$stack]" "$size" $((320 * 180))
     done
   done
+  # The speck graph tells dark from bright: one pixel 80 below a flat 100
+  # field and one 100 above it, in a 16x16 NV12 frame.
+  python3 - "$work" <<'EOF'
+import sys
+y = bytearray([100] * 256)
+y[5 * 16 + 5] = 20
+y[10 * 16 + 10] = 200
+open(sys.argv[1] + "/speck.nv12", "wb").write(bytes(y) + bytes([128] * 128))
+EOF
+  same "specks dark and bright" "$(ffmpeg -v error -nostdin -f rawvideo -pix_fmt nv12 -s 16x16 -i "$work/speck.nv12" \
+    -vf "$CL_SPECK_GRAPH" -f rawvideo -pix_fmt gray - | python3 "$CL_HELPER" specks 16 16)" "frames=1 dark=1 bright=1"
   cl_graph_check "$(cl_view_graph split 320 180 despeckle cas)" 320 180 >/dev/null || fail "graph check: refused a good graph"
   if cl_graph_check "eq=gamma=abc" 320 180 >/dev/null; then fail "graph check: passed a bad graph"; fi
   for name in "${CL_PNAMES[@]}"; do
@@ -228,8 +342,16 @@ EOF
   chmod +x "$work/stubs"/*
   ffmpeg -v error -nostdin -f lavfi -i "color=c=0x606060:s=160x90:r=30,drawbox=x=80:y=0:w=80:h=90:color=0xc0c0c0:t=fill,noise=alls=30:allf=t" \
     -frames:v 12 -pix_fmt nv12 -f rawvideo "$work/from/raw.nv12"
-  printf 'Readings during the capture: gain 1.44x (368), exposure 40.0 ms, 84.0 lux, 4958 K\n' >"$work/from/notes.txt"
-  if PATH=$work/stubs:$PATH bash "$lab/camera-lab" clip --from "$work/from" --size 160x90 --last 8 \
+  # The clip's size comes from its notes, so no --size is passed here.
+  printf 'Clip: 160x90 NV12, 12 frames, the last 8 measured\nReadings during the capture: gain 1.44x (368), exposure 40.0 ms, 84.0 lux, 4958 K\n' >"$work/from/notes.txt"
+  # A wrong size is refused, not measured as sheared frames.
+  if PATH=$work/stubs:$PATH bash "$lab/camera-lab" clip --from "$work/from" --size 100x100 --last 2 --presets none --no-ane \
+    --out "$work/clip-wrong" >/dev/null 2>"$work/clip-wrong.err"; then
+    fail "clip --from: accepted a size the clip isn't whole frames of"
+  else
+    grep -q "isn't whole 100x100" "$work/clip-wrong.err" || fail "clip --from wrong size: $(tail -n 1 "$work/clip-wrong.err")"
+  fi
+  if PATH=$work/stubs:$PATH bash "$lab/camera-lab" clip --from "$work/from" --last 8 \
     --presets "median,despeckle+cas,scale-720p" --out "$work/clip" >"$work/clip.out" 2>"$work/clip.err"; then
     report=$work/clip/report.md
     grep -q '^| Raw camera (mode = off) | 5.50 | 0.77 / 0.99 | 30.3 | 0.900 | 100.0% |' "$report" ||
