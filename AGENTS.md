@@ -146,3 +146,32 @@ https://omarchy-m-testing.org/reports/KkjcZekcyQ9BDAs9oYr7HoTn (omarchy-m-test 0
 Log each soak-test observation in `JOURNEY.md` with date, what Allan was doing, and the evidence
 (`journalctl`, `dmesg`, a re-run of the relevant `omarchy-m-test` check). Anything to fix becomes
 an `OMS` task.
+
+### Running `omarchy-m-test`
+
+The test tool comes from maralcbr/omarchy-m-testing; a fresh install doesn't have it. Allan
+installs it at the Mac, as his user (not root). The installer fetches the latest tagged release,
+checks its ssh-ed25519 signature against the key pinned in the installer, and installs under
+`~/.local/share/omarchy-m-test`, linked from `~/.local/bin`. Running it again upgrades.
+
+```
+curl -fsSL https://omarchy-m-testing.org/install | bash
+omarchy-m-test --dry-run                        # a full run that writes the report but never uploads
+omarchy-m-test --skip network,power,sleep       # the run without the disruptive sections
+```
+
+- Run it at the Mac's own seat in the Hyprland session: the video, display, camera and other
+  human checks need the desktop and are skipped over SSH. `--unattended` runs only the automatic
+  checks, for a run over SSH.
+- What a run changes: it may install temporary test packages with sudo (removed at the end;
+  never kernel, firmware or boot packages), reloads `brcmfmac` in the network section, sets and
+  restores the battery charge limit in the power section, and asks for a lid-close sleep test.
+  Skip `network`, `power` and `sleep` unless those are what's being tested. Sections: boot,
+  hardware, graphics, video, display, audio, network, sleep, input, touch-id, camera, ports,
+  power, cpu, thermal, sensors, storage, benchmarks.
+- It asks before uploading. An uploaded report is public on omarchy-m-testing.org; the tool
+  scrubs addresses, network names, serials and hostnames first. Upload only a run Allan wants
+  public, and record the report's URL in `JOURNEY.md`. For a check of one section, use
+  `--dry-run` and quote the result from the local report.
+- The tool expects the asahi GPU driver, so `gpu.driver` and `gpu.vulkan` report a gap on this
+  Mac whatever happens (OMS-8).
