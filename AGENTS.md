@@ -34,6 +34,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | An earlier install removed by hand with `diskutil` before reinstalling (the app refuses M4 installs) | no: the app's removal check must learn aura's boot object | OMS-23 |
 | Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c; the installer enrolled it on the acceptance install (JOURNEY 9.35) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
+| Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
 
 ## Where things are
@@ -145,3 +146,32 @@ https://omarchy-m-testing.org/reports/KkjcZekcyQ9BDAs9oYr7HoTn (omarchy-m-test 0
 Log each soak-test observation in `JOURNEY.md` with date, what Allan was doing, and the evidence
 (`journalctl`, `dmesg`, a re-run of the relevant `omarchy-m-test` check). Anything to fix becomes
 an `OMS` task.
+
+### Running `omarchy-m-test`
+
+The test tool comes from maralcbr/omarchy-m-testing; a fresh install doesn't have it. Allan
+installs it at the Mac, as his user (not root). The installer fetches the latest tagged release,
+checks its ssh-ed25519 signature against the key pinned in the installer, and installs under
+`~/.local/share/omarchy-m-test`, linked from `~/.local/bin`. Running it again upgrades.
+
+```
+curl -fsSL https://omarchy-m-testing.org/install | bash
+omarchy-m-test --dry-run                        # a full run that writes the report but never uploads
+omarchy-m-test --skip network,power,sleep       # the run without the disruptive sections
+```
+
+- Run it at the Mac's own seat in the Hyprland session: the video, display, camera and other
+  human checks need the desktop and are skipped over SSH. `--unattended` runs only the automatic
+  checks, for a run over SSH.
+- What a run changes: it may install temporary test packages with sudo (removed at the end;
+  never kernel, firmware or boot packages), reloads `brcmfmac` in the network section, sets and
+  restores the battery charge limit in the power section, and asks for a lid-close sleep test.
+  Skip `network`, `power` and `sleep` unless those are what's being tested. Sections: boot,
+  hardware, graphics, video, display, audio, network, sleep, input, touch-id, camera, ports,
+  power, cpu, thermal, sensors, storage, benchmarks.
+- It asks before uploading. An uploaded report is public on omarchy-m-testing.org; the tool
+  scrubs addresses, network names, serials and hostnames first. Upload only a run Allan wants
+  public, and record the report's URL in `JOURNEY.md`. For a check of one section, use
+  `--dry-run` and quote the result from the local report.
+- The tool expects the asahi GPU driver, so `gpu.driver` and `gpu.vulkan` report a gap on this
+  Mac whatever happens (OMS-8).

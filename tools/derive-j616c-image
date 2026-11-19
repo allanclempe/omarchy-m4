@@ -18,8 +18,12 @@
 #     the amps stay locked and there is no speaker sink (OMS-1). Also Aurora's
 #     aurora-audio: the edge image's build (4.1.aurora3-3) has no J616 speaker or
 #     mic graph, Aurora's (4.1.aurora2-16) does, though its pkgrel sorts lower;
+#   - swaps Omarchy's libva-v4l2_request-avd for Aurora's libva-v4l2-request-avd:
+#     the same AVD VA-API bridge, but aliased as aurora_drv_video.so, the name
+#     libva looks for under Aurora's kernel; without it VA-API found no driver and
+#     video decoded in software (OMS-4);
 #   - pins the exact [aurora] builds it was tested with (AURORA_PINS: kernel,
-#     aura, U-Boot, asahi-scripts, Mesa, audio) and stops if the repo has moved on;
+#     aura, U-Boot, asahi-scripts, Mesa, audio, VA-API) and stops if the repo has moved on;
 #   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
 #     split, so USB-C Ethernet dongles on RTL8153B (and Realtek USB Wi-Fi and
 #     Bluetooth) ran without their firmware (OMS-7);
@@ -74,6 +78,12 @@ AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles aurora/aurora-audio)
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
 DONGLE_FIRMWARE=(core/linux-firmware-realtek)
+# libva loads <DRM driver name>_drv_video.so, and Aurora's kernel names the GPU's
+# driver "aurora". Omarchy's libva-v4l2_request-avd aliases the AVD bridge only as
+# asahi_drv_video.so, so VA-API found no driver and mpv decoded in software (OMS-4).
+# Aurora's build is the same omacom/libva-v4l2_request driver with the aurora alias.
+VAAPI_OMARCHY=libva-v4l2_request-avd
+VAAPI_AURORA=libva-v4l2-request-avd
 # The exact [aurora] builds this image is made and tested with. Aurora's repo keeps
 # only its latest build, so a pin can't fetch an older one: it stops the build when
 # the repo has moved on, so a new kernel, Stage 1 or Mesa never ships untested.
@@ -89,6 +99,7 @@ declare -A AURORA_PINS=(
   [aurora-audio]=4.1.aurora2-16
   [speakersafetyd-aurora-profiles]=1-2
   [alsa-utils-aurora]=1.2.16-1
+  [libva-v4l2-request-avd]=1.3.r11-1
 )
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
@@ -287,6 +298,20 @@ PY
   grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
 
+  log "installing Aurora's VA-API bridge for the video decoder"
+  # Both packages ship v4l2_request_drv_video.so and declare no conflict, so pacman
+  # would stop on the shared files: remove Omarchy's first (OMS-4).
+  if in_chroot pacman -Qq | grep -qx "$VAAPI_OMARCHY"; then
+    in_chroot pacman -Rdd --noconfirm "$VAAPI_OMARCHY" >>"$W/pacman.log" 2>&1 ||
+      fail "could not remove Omarchy's $VAAPI_OMARCHY"
+  fi
+  in_chroot pacman -S --noconfirm "aurora/$VAAPI_AURORA" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install Aurora's $VAAPI_AURORA (pacman.log)"
+  # libva must find the bridge under the name Aurora's kernel gives the GPU driver.
+  [[ $(readlink "$T/usr/lib/dri/aurora_drv_video.so") == v4l2_request_drv_video.so &&
+     -f $T/usr/lib/dri/v4l2_request_drv_video.so ]] ||
+    fail "$VAAPI_AURORA does not install aurora_drv_video.so -> v4l2_request_drv_video.so"
+
   log "installing Realtek firmware for USB dongles"
   in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Realtek dongle firmware (pacman.log)"
@@ -296,7 +321,7 @@ PY
 
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "$VAAPI_AURORA" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
   # And what got installed is exactly what was pinned.
