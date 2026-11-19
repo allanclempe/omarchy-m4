@@ -1,0 +1,4 @@
+backend=cpu 1280x720 frames=80 threads=0 strength=1.00
+latency_ms p50=1.41 p95=1.66 max=1.70
+cpu_ms_per_frame=1.53 wall_ms_per_frame=1.67 cpu_pct_at_30fps=4.6 sigma=3.17
+measured_cpu_pct=91.4 paced_fps=0.00
