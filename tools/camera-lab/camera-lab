@@ -1,0 +1,1569 @@
+#!/bin/bash
+# camera-lab: toggle the J616c camera's filters, effects and settings and see
+# the difference live. Runs on the Mac, in the logged-in user's session.
+#
+#   camera-lab live [--size WxH]       preview window + menu (the main mode)
+#   camera-lab clip [options]          record one clip, render every variant
+#                                      on the same frames, measure, compare
+#   camera-lab virtual [options]       the post-filter stack to a v4l2loopback
+#                                      camera (for Meet); untested
+#   camera-lab status                  what the camera and the lab are set to
+#   camera-lab restore                 put back the denoise.conf and V4L2
+#                                      values from before the lab, reload
+#   camera-lab check                   test every dependency and the nodes
+#
+# Layer 1 is what every app sees: aurora-camera-denoise's denoise.conf and the
+# camera's V4L2 controls. Layer 2 is the lab's own FFmpeg filters, applied in
+# the preview only. See README.md.
+set -euo pipefail
+
+CL_HERE=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+CL_HELPER=${CAMERA_LAB_HELPER:-$CL_HERE/camera-lab-helper.py}
+CL_PRESET_FILES=${CAMERA_LAB_PRESETS:-$CL_HERE/presets.conf:${XDG_CONFIG_HOME:-$HOME/.config}/camera-lab/presets.conf}
+CL_CONF=${CAMERA_LAB_DENOISE_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/aurora-camera-denoise/denoise.conf}
+CL_STATE=${CAMERA_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/camera-lab}
+CL_OUT=${CAMERA_LAB_OUT:-$HOME/camera-lab}
+CL_DEV=${CAMERA_LAB_DEVICE:-/dev/video0}
+# The preview's pid lives in the runtime dir, which a boot clears, so a pid
+# left by a crash can't name a process started since.
+CL_PIDFILE=${CAMERA_LAB_PIDFILE:-${XDG_RUNTIME_DIR:-/tmp}/camera-lab.preview.pid}
+CL_SERVICE=aurora-camera-denoise
+CL_EFFECTS_LIB=${CAMERA_LAB_EFFECTS_LIB:-/usr/lib/aurora-camera-denoise/libaurora-camera-effects.so}
+CL_FPS=30
+
+# denoise.conf keys, in the order the lab writes them, and the values offered.
+CL_CONF_KEYS=(mode temporal temporal-backend backend low-light-frame-rate threads
+  enter-gain exit-gain enter-noise exit-noise)
+declare -A CL_CONF_CHOICES=(
+  [mode]="auto on off"
+  [temporal]="on off"
+  [temporal-backend]="auto cpu ave gpu"
+  [backend]="auto cpu"
+  [low-light-frame-rate]="on off"
+  [threads]="0 1 2 4"
+  [enter-gain]="1536 2304 3584"
+  [exit-gain]="1280 1792 2816"
+  [enter-noise]="0 7"
+  [exit-noise]="0 5"
+)
+declare -A CL_CONF_HELP=(
+  [mode]="auto: low-light stage by gain/noise; on: always; off: frames untouched (raw)"
+  [temporal]="the CPU temporal filter on every frame"
+  [temporal-backend]="ave has no device and gpu isn't built on this Mac: both fall back to cpu"
+  [backend]="low-light stage: auto = Neural Engine (1920x1080 only); cpu"
+  [low-light-frame-rate]="on: the camera may drop to 25 or 15 fps for longer exposures"
+  [threads]="CPU worker threads (0 = one); no effect on the picture"
+  [enter-gain]="low-light stage on at this gain (256 = 1x); research: 2304 for dim light"
+  [exit-gain]="low-light stage off below this gain; research: 1792"
+  [enter-noise]="noise trigger; 0 disables it (research: 0 on this sensor)"
+  [exit-noise]="noise trigger's exit level"
+)
+CL_V4L2_KEYS=(power_line_frequency exposure_dynamic_framerate)
+declare -A CL_V4L2_CHOICES=([power_line_frequency]="0 1 2" [exposure_dynamic_framerate]="0 1")
+declare -A CL_V4L2_HELP=(
+  [power_line_frequency]="anti-flicker: 0 off, 1 = 50 Hz, 2 = 60 Hz; match the mains"
+  [exposure_dynamic_framerate]="frame rate may drop for exposure; the filter sets it from low-light-frame-rate on each stream start"
+)
+
+# The speck graph: 255 where luma is more than 24 below its 3x3 median, 128
+# more than 24 above (the research's section 7).
+CL_SPECK_GRAPH="extractplanes=y,split[a][b];[b]median=radius=1[m];[a][m]lut2=c0='if(gt(y-x,24),255,if(gt(x-y,24),128,0))'"
+
+cl_say() { printf '%s\n' "$*" >&2; }
+cl_die() { printf 'camera-lab: %s\n' "$*" >&2; exit 1; }
+
+# --- Presets (layer 2) -------------------------------------------------------
+
+declare -a CL_PNAMES=()
+declare -A CL_PCHAIN=() CL_PNOTE=() CL_PFLAGS=()
+
+# cl_load_presets FILE...: read `name|chain|note|flags` lines; later files
+# override earlier names. Bad lines are reported and skipped.
+cl_load_presets() {
+  local file line name chain note flags rest n
+  for file; do
+    [[ -r $file ]] || continue
+    n=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      n=$((n + 1))
+      line=${line%$'\r'}
+      [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+      IFS='|' read -r name chain note flags rest <<<"$line"
+      name=${name#"${name%%[![:space:]]*}"}
+      name=${name%"${name##*[![:space:]]}"}
+      if [[ -n ${rest:-} ]]; then
+        cl_say "camera-lab: $file:$n: more than 4 fields (a chain can't contain |); skipped"
+        continue
+      fi
+      if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || -z ${chain//[[:space:]]/} ]]; then
+        cl_say "camera-lab: $file:$n: needs name|chain[|note[|flags]]; skipped"
+        continue
+      fi
+      [[ -n ${CL_PCHAIN[$name]+x} ]] || CL_PNAMES+=("$name")
+      CL_PCHAIN[$name]=$chain
+      CL_PNOTE[$name]=${note:-}
+      CL_PFLAGS[$name]=${flags//[[:space:]]/}
+    done <"$file"
+  done
+}
+
+cl_load_default_presets() {
+  local -a files
+  IFS=: read -r -a files <<<"$CL_PRESET_FILES"
+  cl_load_presets "${files[@]}"
+}
+
+# cl_has_flag NAME FLAG
+cl_has_flag() { [[ ,${CL_PFLAGS[$1]:-}, == *",$2,"* ]]; }
+
+# cl_namespace_chain PREFIX CHAIN: rename the chain's [labels] to
+# [PREFIX_label] so two stages never share a label.
+cl_namespace_chain() {
+  local prefix=$1 chain=$2 out='' re='^([^[]*)\[([A-Za-z0-9_]+)\](.*)$'
+  while [[ $chain =~ $re ]]; do
+    out+="${BASH_REMATCH[1]}[${prefix}_${BASH_REMATCH[2]}]"
+    chain=${BASH_REMATCH[3]}
+  done
+  printf '%s' "$out$chain"
+}
+
+# cl_stack IN OUT CHAIN...: one graph that runs the chains in order, from link
+# label IN to OUT (either empty for the graph's open input or output).
+cl_stack() {
+  local in=$1 out=$2 i=0 n graph='' link next chain
+  shift 2
+  n=$#
+  ((n)) || set -- null
+  n=$#
+  link=$in
+  for chain; do
+    i=$((i + 1))
+    if ((i == n)); then next=$out; else next=cl$i; fi
+    [[ -z $graph ]] || graph+=';'
+    [[ -z $link ]] || graph+="[$link]"
+    graph+=$(cl_namespace_chain "p$i" "$chain")
+    [[ -z $next ]] || graph+="[$next]"
+    link=$next
+  done
+  printf '%s' "$graph"
+}
+
+# cl_chains NAME...: the chains of the named presets, one per line, or fail
+# naming the unknown one.
+cl_chains() {
+  local name
+  for name; do
+    [[ -n ${CL_PCHAIN[$name]+x} ]] || { cl_say "camera-lab: no preset named $name"; return 1; }
+    printf '%s\n' "${CL_PCHAIN[$name]}"
+  done
+}
+
+# cl_view_graph VIEW W H [NAME...]: the preview's lavfi graph.
+#   split: left half as the camera gives it, right half through the stack,
+#          from the same frame, with a thin divider
+#   b:     the whole frame through the stack
+#   a:     no graph (prints nothing)
+# Every stack ends scaled back to W x H, so a size-changing preset shows at
+# the same size as the camera's frame.
+cl_view_graph() {
+  local view=$1 w=$2 h=$3 chains
+  shift 3
+  local -a stack=()
+  chains=$(cl_chains "$@") || return 1
+  [[ -z $chains ]] || mapfile -t stack <<<"$chains"
+  case $view in
+    a) ;;
+    b) cl_stack '' '' "${stack[@]}" "scale=$w:$h" ;;
+    split)
+      printf 'split[A][B];[A]crop=iw/2:ih:0:0[L];'
+      cl_stack B R "${stack[@]}" \
+        "scale=$w:$h,crop=iw/2:ih:iw/2:0,drawbox=x=0:y=0:w=2:h=ih:color=white@0.6:t=fill"
+      printf ';[L][R]hstack'
+      ;;
+    *) cl_say "camera-lab: unknown view $view"; return 1 ;;
+  esac
+}
+
+# cl_render_graph W H NAME...: the clip mode's graph: the stack, back to W x H
+# and NV12.
+cl_render_graph() {
+  local w=$1 h=$2 chains
+  shift 2
+  local -a stack=()
+  chains=$(cl_chains "$@") || return 1
+  [[ -z $chains ]] || mapfile -t stack <<<"$chains"
+  cl_stack '' '' "${stack[@]}" "scale=$w:$h,format=nv12"
+}
+
+# cl_filters_in CHAIN: the FFmpeg filter names a chain uses, one per line.
+cl_filters_in() {
+  local chain=$1 seg
+  local -
+  set -f
+  chain=$(sed -E "s/'[^']*'//g; s/\[[A-Za-z0-9_]+\]/,/g" <<<"$chain")
+  local IFS=',;'
+  for seg in $chain; do
+    seg=${seg#"${seg%%[![:space:]]*}"}
+    seg=${seg%%=*}
+    [[ -n $seg ]] && printf '%s\n' "$seg"
+  done
+  return 0
+}
+
+# --- denoise.conf (layer 1) ---------------------------------------------------
+
+declare -A CL_SET=()
+declare -a CL_SET_EXTRA=()
+
+# cl_conf_parse FILE: the [denoise] keys of FILE into CL_SET. Keys the lab
+# doesn't know are kept, in order, in CL_SET_EXTRA.
+cl_conf_parse() {
+  local file=$1 line section='' key val known
+  CL_SET=()
+  CL_SET_EXTRA=()
+  [[ -r $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    [[ -z $line || $line == \#* || $line == \;* ]] && continue
+    if [[ $line =~ ^\[(.*)\]$ ]]; then
+      section=${BASH_REMATCH[1]}
+      # The package's format has the one section; another one's keys would
+      # be left out of the lab's file until the original is restored.
+      [[ $section == denoise ]] || cl_say "camera-lab: $file has a [$section] section the lab doesn't know; its keys are left out while the lab runs"
+      continue
+    fi
+    [[ $section == denoise ]] || continue
+    [[ $line =~ ^([A-Za-z0-9_-]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    key=${BASH_REMATCH[1]}
+    val=${BASH_REMATCH[2]}
+    if [[ -z ${CL_SET[$key]+x} ]]; then
+      known=0
+      [[ " ${CL_CONF_KEYS[*]} " == *" $key "* ]] && known=1
+      ((known)) || CL_SET_EXTRA+=("$key")
+    fi
+    CL_SET[$key]=$val
+  done <"$file"
+}
+
+# cl_conf_render: CL_SET as a denoise.conf, known keys in CL_CONF_KEYS order,
+# then the others. An empty value means the key is left out (its default).
+cl_conf_render() {
+  local key
+  printf '[denoise]\n'
+  for key in "${CL_CONF_KEYS[@]}" "${CL_SET_EXTRA[@]}"; do
+    [[ -n ${CL_SET[$key]:-} ]] && printf '%s = %s\n' "$key" "${CL_SET[$key]}"
+  done
+  return 0
+}
+
+# cl_conf_summary: CL_SET on one line.
+cl_conf_summary() {
+  local key out=''
+  for key in "${CL_CONF_KEYS[@]}" "${CL_SET_EXTRA[@]}"; do
+    [[ -n ${CL_SET[$key]:-} ]] && out+="${out:+, }$key = ${CL_SET[$key]}"
+  done
+  printf '%s' "${out:-(all defaults)}"
+}
+
+cl_backup_file() { printf '%s/denoise.conf.orig' "$CL_STATE"; }
+cl_absent_file() { printf '%s/denoise.conf.absent' "$CL_STATE"; }
+cl_written_file() { printf '%s/denoise.conf.written' "$CL_STATE"; }
+cl_has_backup() { [[ -e $(cl_backup_file) || -e $(cl_absent_file) ]]; }
+
+# cl_conf_target: the file itself when denoise.conf is a symlink, so the lab
+# writes and restores the target and the link stays.
+cl_conf_target() { readlink -f -- "$CL_CONF" 2>/dev/null || printf '%s' "$CL_CONF"; }
+
+cl_conf_sha() { sha256sum -- "$1" | cut -d' ' -f1; }
+
+# cl_conf_edited_since: true when denoise.conf is no longer what the lab last
+# wrote (edited, or removed, by hand after an interrupted run).
+cl_conf_edited_since() {
+  local want have
+  [[ -r $(cl_written_file) ]] || return 1
+  want=$(<"$(cl_written_file)")
+  if [[ -e $CL_CONF ]]; then have=$(cl_conf_sha "$CL_CONF"); else have=missing; fi
+  [[ $have != "$want" ]]
+}
+
+# cl_conf_keep_edits: an interrupted run's backup is kept aside, not restored,
+# when the user has changed denoise.conf since. Says where the original went.
+cl_conf_keep_edits() {
+  local kept
+  cl_has_backup && cl_conf_edited_since || return 0
+  if [[ -e $(cl_backup_file) ]]; then
+    kept=$(cl_backup_file).kept-$(date +%Y%m%d-%H%M%S)
+    mv -f -- "$(cl_backup_file)" "$kept"
+    cl_say "camera-lab: $CL_CONF was changed after an interrupted run, so it stays as it is;" \
+      "  the original from before that run is kept at $kept"
+  else
+    cl_say "camera-lab: $CL_CONF was written after an interrupted run, so it stays as it is"
+  fi
+  rm -f -- "$(cl_absent_file)" "$(cl_written_file)"
+}
+
+# cl_conf_backup: keep the user's denoise.conf (or that there was none) once;
+# a backup left by an earlier run is kept, as it holds the original.
+cl_conf_backup() {
+  mkdir -p -- "$CL_STATE"
+  cl_has_backup && return 0
+  if [[ -e $CL_CONF ]]; then
+    cp -p -- "$CL_CONF" "$(cl_backup_file)"
+  else
+    : >"$(cl_absent_file)"
+  fi
+}
+
+# cl_conf_write: back up the original once, then write CL_SET atomically.
+cl_conf_write() {
+  local tmp target
+  cl_conf_backup
+  target=$(cl_conf_target)
+  mkdir -p -- "$(dirname -- "$target")"
+  tmp=$(mktemp "$target.camera-lab.XXXXXX")
+  cl_conf_render >"$tmp"
+  if [[ -e $(cl_backup_file) ]]; then
+    chmod --reference="$(cl_backup_file)" -- "$tmp"
+  else
+    chmod 644 -- "$tmp"
+  fi
+  mv -f -- "$tmp" "$target"
+  cl_conf_sha "$target" >"$(cl_written_file)"
+}
+
+# cl_conf_restore: put the original back byte for byte (or remove the lab's
+# file if there was none). Returns 1 if there was nothing to restore, 2 if
+# the restore failed: the backup is then kept, never deleted.
+cl_conf_restore() {
+  local tmp target
+  if [[ -e $(cl_backup_file) ]]; then
+    target=$(cl_conf_target)
+    mkdir -p -- "$(dirname -- "$target")"
+    # Through a temporary file and a rename: a copy straight onto a read-only
+    # file (or a full disk) fails half way, and the original must survive that.
+    if tmp=$(mktemp "$target.camera-lab.XXXXXX") &&
+      cp -p -- "$(cl_backup_file)" "$tmp" && mv -f -- "$tmp" "$target"; then
+      rm -f -- "$(cl_backup_file)" "$(cl_written_file)"
+    else
+      [[ -n ${tmp:-} ]] && rm -f -- "$tmp"
+      cl_say "camera-lab: couldn't put $CL_CONF back; the original is kept at $(cl_backup_file)"
+      return 2
+    fi
+  elif [[ -e $(cl_absent_file) ]]; then
+    rm -f -- "$CL_CONF"
+    if [[ -e $CL_CONF ]]; then
+      cl_say "camera-lab: couldn't remove the lab's $CL_CONF (there was none before the lab)"
+      return 2
+    fi
+    rm -f -- "$(cl_absent_file)" "$(cl_written_file)"
+  else
+    return 1
+  fi
+}
+
+# cl_conf_original: parse the user's own conf (the backup if the lab has
+# written over it) into CL_SET.
+cl_conf_original() {
+  if [[ -e $(cl_backup_file) ]]; then
+    cl_conf_parse "$(cl_backup_file)"
+  elif [[ -e $(cl_absent_file) ]]; then
+    cl_conf_parse /dev/null
+  else
+    cl_conf_parse "$CL_CONF"
+  fi
+}
+
+cl_service_reload() {
+  if systemctl --user is-active --quiet "$CL_SERVICE"; then
+    # A failed reload is reported, not fatal: the menu must survive it.
+    systemctl --user reload "$CL_SERVICE" ||
+      cl_say "camera-lab: the reload failed; see systemctl --user status $CL_SERVICE"
+  else
+    cl_say "camera-lab: $CL_SERVICE isn't running, so the change waits for its next start"
+  fi
+}
+
+cl_effective_config() {
+  command -v aurora-camera-denoise >/dev/null || { echo "(aurora-camera-denoise not installed)"; return 0; }
+  aurora-camera-denoise --print-config 2>&1 | tail -n 1 | sed 's/^camera-denoise: //'
+}
+
+# cl_journal_lines [SINCE]: the filter's last stream lines this boot.
+cl_journal_lines() {
+  local -a since=(-b)
+  [[ -n ${1:-} ]] && since=(--since "$1")
+  journalctl --user -u "$CL_SERVICE" "${since[@]}" -o cat --no-pager 2>/dev/null |
+    grep -E ': [0-9]+x[0-9]+@[0-9/]+, |backend [a-z]+ unavailable|: (board|mode) ' |
+    sed 's/^camera-denoise: //' | tail -n "${2:-2}" || true
+}
+
+# --- V4L2 controls ------------------------------------------------------------
+
+cl_v4l2_get() {
+  v4l2-ctl -d "$CL_DEV" -C "$1" 2>/dev/null | sed -n "s/^$1: *//p"
+}
+
+cl_v4l2_backup() {
+  local key file=$CL_STATE/v4l2.orig
+  mkdir -p -- "$CL_STATE"
+  [[ -e $file ]] && return 0
+  for key in "${CL_V4L2_KEYS[@]}"; do
+    printf '%s=%s\n' "$key" "$(cl_v4l2_get "$key")"
+  done >"$file.tmp"
+  mv -f -- "$file.tmp" "$file"
+}
+
+cl_v4l2_set() {
+  cl_v4l2_backup
+  v4l2-ctl -d "$CL_DEV" -c "$1=$2"
+}
+
+# cl_v4l2_restore: the controls back as they were. Returns 1 with nothing to
+# restore, 2 when a control couldn't be set: the backup is then kept.
+cl_v4l2_restore() {
+  local file=$CL_STATE/v4l2.orig key val ok=1
+  [[ -e $file ]] || return 1
+  while IFS='=' read -r key val; do
+    [[ -n $key && -n $val ]] || continue
+    v4l2-ctl -d "$CL_DEV" -c "$key=$val" || ok=0
+  done <"$file"
+  if ((ok)); then
+    rm -f -- "$file"
+  else
+    cl_say "camera-lab: couldn't put every V4L2 control back; the values are kept at $file"
+    return 2
+  fi
+}
+
+# --- Readings -----------------------------------------------------------------
+
+cl_iio_dir() {
+  local d
+  for d in "${CAMERA_LAB_IIO:-}" /sys/bus/iio/devices/iio:device*; do
+    [[ -n $d && -r $d/in_illuminance_input ]] && { printf '%s' "$d"; return 0; }
+  done
+  return 1
+}
+
+# cl_readings: gain, exposure, light level and colour temperature, one line.
+# Gain and exposure are only live while something streams.
+cl_readings() {
+  local gain exp lux='' ct='' iio out
+  gain=$(cl_v4l2_get gain)
+  exp=$(cl_v4l2_get exposure_time_absolute)
+  if iio=$(cl_iio_dir); then
+    lux=$(cat "$iio/in_illuminance_input" 2>/dev/null || true)
+    ct=$(cat "$iio/in_colortemp_input" 2>/dev/null || true)
+  fi
+  out=''
+  [[ -n $gain ]] && out+=$(awk -v g="$gain" 'BEGIN { printf "gain %.2fx (%d)", g / 256, g }')
+  [[ -n $exp ]] && out+=$(awk -v e="$exp" 'BEGIN { printf ", exposure %.1f ms", e / 10 }')
+  [[ -n $lux ]] && out+=$(awk -v l="$lux" 'BEGIN { printf ", %.1f lux", l }')
+  [[ -n $ct ]] && out+=$(awk -v c="$ct" 'BEGIN { printf ", %.0f K", c }')
+  printf '%s' "${out#, }"
+}
+
+# --- PipeWire nodes -----------------------------------------------------------
+
+CL_RAW_ID='' CL_RAW_NAME='' CL_FILTER_ID='' CL_FILTER_NAME='' CL_FILTER_STATE='' CL_FRAMING=false
+
+# cl_discover [PW_DUMP_FILE]: find the ISP's node and the filter's default
+# output. Returns 1 if the filter's node isn't there.
+cl_discover() {
+  local role id serial state name desc framing lines
+  CL_RAW_ID='' CL_RAW_NAME='' CL_FILTER_ID='' CL_FILTER_NAME='' CL_FILTER_STATE='' CL_FRAMING=false
+  if [[ -n ${1:-} ]]; then
+    lines=$(python3 "$CL_HELPER" nodes "$1") || return 1
+  else
+    lines=$(pw-dump 2>/dev/null | python3 "$CL_HELPER" nodes) || return 1
+  fi
+  while IFS=$'\t' read -r role id serial state name desc framing; do
+    case $role in
+      raw) [[ -z $CL_RAW_ID ]] && CL_RAW_ID=$id CL_RAW_NAME=$name ;;
+      filter)
+        if [[ -z $CL_FILTER_ID ]]; then
+          CL_FILTER_ID=$id CL_FILTER_NAME=$name CL_FILTER_STATE=$state
+          [[ $framing == framing=true ]] && CL_FRAMING=true
+        fi
+        ;;
+    esac
+  done <<<"$lines"
+  : "$serial" "$desc"
+  [[ -n $CL_FILTER_NAME ]]
+}
+
+cl_require_nodes() {
+  cl_discover || cl_die "no aurora-camera-denoise output in PipeWire: is $CL_SERVICE running? (camera-lab check)"
+}
+
+# --- Preview (live) -----------------------------------------------------------
+
+CL_RUN='' CL_PREVIEW_PID='' CL_W=1920 CL_H=1080 CL_VIEW=split
+declare -a CL_STACK=()
+CL_TOUCHED=0 CL_EFFECTS_TOUCHED=0
+
+cl_run_dir() {
+  [[ -n $CL_RUN ]] && return 0
+  CL_RUN=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/camera-lab.XXXXXX")
+}
+
+# cl_capture_cmd W H NODE [FRAMES]: the GStreamer pipeline that writes the
+# node's NV12 frames to stdout.
+cl_capture_cmd() {
+  local w=$1 h=$2 node=$3 frames=${4:-}
+  local -a cmd=(gst-launch-1.0 -q pipewiresrc "target-object=$node")
+  [[ -n $frames ]] && cmd+=("num-buffers=$frames")
+  cmd+=('!' "video/x-raw,format=NV12,width=$w,height=$h,framerate=$CL_FPS/1" '!' fdsink fd=1)
+  printf '%q ' "${cmd[@]}"
+}
+
+# cl_preview_cmd W H NODE SOCKET INPUT_CONF: capture piped into mpv.
+cl_preview_cmd() {
+  local w=$1 h=$2 node=$3 sock=$4 input=$5
+  local -a mpv=(mpv --no-config "--input-conf=$input" --demuxer=rawvideo
+    --demuxer-rawvideo-mp-format=nv12 "--demuxer-rawvideo-w=$w" "--demuxer-rawvideo-h=$h"
+    "--demuxer-rawvideo-fps=$CL_FPS" --profile=low-latency --untimed --no-cache --no-audio
+    "--input-ipc-server=$sock" '--title=Camera lab' --force-window=immediate --keep-open=no
+    --osd-level=1 --autofit-larger=70%x70% -)
+  printf '%s| ' "$(cl_capture_cmd "$w" "$h" "$node")"
+  printf '%q ' "${mpv[@]}"
+}
+
+cl_preview_alive() { [[ -n $CL_PREVIEW_PID ]] && kill -0 "$CL_PREVIEW_PID" 2>/dev/null; }
+
+cl_preview_start() {
+  local cmd i
+  cl_run_dir
+  cat >"$CL_RUN/input.conf" <<'EOF'
+t vf toggle @cl ; show-text "camera lab: post filters toggled (t)"
+EOF
+  rm -f -- "$CL_RUN/mpv.sock"
+  cmd=$(cl_preview_cmd "$CL_W" "$CL_H" "$CL_FILTER_NAME" "$CL_RUN/mpv.sock" "$CL_RUN/input.conf")
+  setsid bash -c "$cmd" </dev/null >"$CL_RUN/preview.log" 2>&1 &
+  CL_PREVIEW_PID=$!
+  printf '%s\n' "$CL_PREVIEW_PID" >"$CL_PIDFILE"
+  for ((i = 0; i < 150; i++)); do
+    [[ -S $CL_RUN/mpv.sock ]] && break
+    cl_preview_alive || break
+    sleep 0.1
+  done
+  if [[ ! -S $CL_RUN/mpv.sock ]]; then
+    cl_say "camera-lab: the preview didn't start; its log:"
+    tail -n 20 -- "$CL_RUN/preview.log" >&2 || true
+    return 1
+  fi
+  cl_apply_view
+}
+
+# cl_preview_is PID: PID is a preview of ours (its command line names the
+# capture), not another process that got the number after a crash.
+cl_preview_is() {
+  [[ -n $1 ]] && kill -0 "$1" 2>/dev/null &&
+    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'pipewiresrc'
+}
+
+cl_preview_stop() {
+  local i pid=$CL_PREVIEW_PID
+  [[ -z $pid && -r $CL_PIDFILE ]] && pid=$(<"$CL_PIDFILE")
+  if cl_preview_is "$pid"; then
+    # The preview is its own session (setsid): signal the whole group.
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    for ((i = 0; i < 50; i++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  CL_PREVIEW_PID=''
+  rm -f -- "$CL_PIDFILE"
+}
+
+# cl_json_str STRING: STRING as a JSON string.
+cl_json_str() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  printf '"%s"' "$s"
+}
+
+# cl_vf_json GRAPH: the mpv command that sets the preview's filter to GRAPH
+# (labelled @cl), or clears it when GRAPH is empty.
+cl_vf_json() {
+  if [[ -z $1 ]]; then
+    printf '{"command":["set_property","vf",[]]}'
+  else
+    printf '{"command":["set_property","vf",[{"name":"lavfi","label":"cl","enabled":true,"params":{"graph":%s}}]]}' \
+      "$(cl_json_str "$1")"
+  fi
+}
+
+cl_mpv() { python3 "$CL_HELPER" ipc "$CL_RUN/mpv.sock" "$@"; }
+
+# cl_stack_save: the post stack, one name a line, for `virtual` and `status`;
+# an empty stack is an empty file (printf with no names would write one blank
+# line, which `virtual` read as a preset called "").
+cl_stack_save() {
+  mkdir -p -- "$CL_STATE"
+  if ((${#CL_STACK[@]})); then printf '%s\n' "${CL_STACK[@]}"; else :; fi >"$CL_STATE/stack"
+}
+
+# cl_stack_load: the saved stack into the array named by $1, blank lines out.
+cl_stack_load() {
+  local -n _out=$1
+  _out=()
+  [[ -s $CL_STATE/stack ]] || return 0
+  mapfile -t _out < <(grep -v '^[[:space:]]*$' "$CL_STATE/stack" || true)
+}
+
+# cl_graph_check GRAPH W H: run GRAPH over three W x H frames in FFmpeg, print
+# its error. mpv takes any graph over IPC and only logs a failure, passing the
+# frames through unfiltered, so the lab checks first.
+cl_graph_check() {
+  ffmpeg -v error -nostdin -f lavfi -i "color=gray:s=$2x$3:r=30:d=0.1" -vf "$1" -f null - 2>&1 >/dev/null | head -n 3
+  return "${PIPESTATUS[0]}"
+}
+
+cl_stack_label() {
+  local IFS='>'
+  if ((${#CL_STACK[@]})); then printf '%s' "${CL_STACK[*]}" | sed 's/>/ > /g'; else printf 'none'; fi
+}
+
+cl_view_label() {
+  case $1 in
+    split) printf 'split: left as apps see it, right + post filters' ;;
+    a) printf 'full A: as apps see it' ;;
+    b) printf 'full B: + post filters' ;;
+  esac
+}
+
+# cl_apply_view [VIEW]: set the preview's graph for VIEW (default CL_VIEW).
+cl_apply_view() {
+  local view=${1:-$CL_VIEW} graph msg err
+  cl_preview_alive || return 0
+  graph=$(cl_view_graph "$view" "$CL_W" "$CL_H" "${CL_STACK[@]}") || return 1
+  msg="$(cl_view_label "$view") | post: $(cl_stack_label) | t toggles"
+  if [[ -n $graph ]] && ! err=$(cl_graph_check "$graph" "$CL_W" "$CL_H"); then
+    cl_say "camera-lab: FFmpeg can't run this graph, so the preview keeps the last one:"
+    cl_say "  $graph" "  $err"
+    return 1
+  fi
+  if ! cl_mpv "$(cl_vf_json "$graph")" >"$CL_RUN/ipc.log" 2>&1; then
+    cl_say "camera-lab: mpv refused the filter graph:"
+    cl_say "  $graph"
+    cat -- "$CL_RUN/ipc.log" >&2
+    return 1
+  fi
+  cl_mpv "{\"command\":[\"set_property\",\"osd-msg1\",$(cl_json_str "$msg")]}" >/dev/null 2>&1 || true
+  cl_stack_save
+}
+
+# --- Effects ------------------------------------------------------------------
+
+cl_effects_installed() { [[ -e $CL_EFFECTS_LIB ]]; }
+
+# cl_effects_set PARAMS: e.g. '"camera.background" "blur"'
+cl_effects_set() {
+  pw-cli set-param "$CL_FILTER_ID" Props "{ params = [ $1 ] }" >/dev/null ||
+    cl_say "camera-lab: the filter refused the effect ($1)"
+  CL_EFFECTS_TOUCHED=1
+}
+
+cl_effects_off() {
+  [[ -n $CL_FILTER_ID ]] || cl_discover || return 0
+  pw-cli set-param "$CL_FILTER_ID" Props \
+    '{ params = [ "camera.background" "off" "camera.framing" false ] }' >/dev/null 2>&1 || true
+}
+
+# --- Restore ------------------------------------------------------------------
+
+# cl_restore_all: everything the lab changed, back. Safe to run twice. Returns
+# 2 when something couldn't be put back (its backup is kept), else 0.
+cl_restore_all() {
+  local did=0 rc worst=0
+  cl_preview_stop
+  rc=0; cl_conf_restore || rc=$?
+  if ((rc == 0)); then
+    did=1
+    cl_say "camera-lab: restored $CL_CONF"
+  elif ((rc == 2)); then
+    worst=2
+  fi
+  rc=0; cl_v4l2_restore || rc=$?
+  if ((rc == 0)); then
+    did=1
+    cl_say "camera-lab: restored the camera's V4L2 controls"
+  elif ((rc == 2)); then
+    worst=2
+  fi
+  if ((CL_EFFECTS_TOUCHED)); then
+    cl_effects_off
+    CL_EFFECTS_TOUCHED=0
+  fi
+  if ((did || CL_TOUCHED)); then
+    cl_service_reload || true
+  fi
+  CL_TOUCHED=0
+  return "$worst"
+}
+
+cl_cleanup() {
+  local rc=$?
+  trap - EXIT INT TERM HUP
+  cl_restore_all || true
+  [[ -n $CL_RUN ]] && rm -rf -- "$CL_RUN"
+  exit "$rc"
+}
+
+cl_arm_trap() {
+  trap cl_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+}
+
+# cl_start_session: put back what an interrupted run left, then note the
+# user's own settings.
+cl_start_session() {
+  cl_conf_keep_edits
+  if cl_has_backup || [[ -e $CL_STATE/v4l2.orig ]]; then
+    cl_say "camera-lab: an earlier run left its backup; restoring it first"
+    cl_restore_all || true
+  fi
+  cl_arm_trap
+  cl_conf_original
+}
+
+# cl_conf_apply: write CL_SET and reload the filter.
+cl_conf_apply() {
+  cl_conf_write
+  CL_TOUCHED=1
+  cl_service_reload
+}
+
+# --- Snapshot -----------------------------------------------------------------
+
+# cl_notes: every setting and reading, for notes.txt.
+cl_notes() {
+  local key
+  printf 'camera-lab notes, %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+  printf 'Size: %sx%s NV12 from %s\n' "$CL_W" "$CL_H" "${CL_FILTER_NAME:-?}"
+  printf 'Readings: %s\n\n' "$(cl_readings)"
+  printf 'Layer 1, denoise.conf as written:\n'
+  cl_conf_render | sed 's/^/  /'
+  printf 'Effective (--print-config): %s\n' "$(cl_effective_config)"
+  printf 'Filter log, last stream:\n'
+  cl_journal_lines '' 3 | sed 's/^/  /'
+  printf 'V4L2:'
+  for key in "${CL_V4L2_KEYS[@]}"; do printf ' %s=%s' "$key" "$(cl_v4l2_get "$key")"; done
+  printf '\n\nLayer 2 (post filters, in order): %s\n' "$(cl_stack_label)"
+  for key in "${CL_STACK[@]}"; do printf '  %s: %s\n' "$key" "${CL_PCHAIN[$key]}"; done
+  printf 'Effects: %s\n' "$(cl_effects_installed && echo "library installed" || echo "not installed")"
+  printf '\nGraphs:\n  split: %s\n  B: %s\n' \
+    "$(cl_view_graph split "$CL_W" "$CL_H" "${CL_STACK[@]}")" \
+    "$(cl_view_graph b "$CL_W" "$CL_H" "${CL_STACK[@]}")"
+}
+
+cl_snapshot() {
+  local dir
+  dir=$CL_OUT/$(date +%Y%m%d-%H%M%S)
+  mkdir -p -- "$dir"
+  cl_notes >"$dir/notes.txt"
+  if cl_preview_alive; then
+    # split shows A and B of one frame; A and B are then taken a moment apart,
+    # B after a second so temporal filters have settled.
+    local view pause
+    for view in split a b; do
+      pause=0.5
+      [[ $view == b ]] && pause=1.2
+      { cl_apply_view "$view" && sleep "$pause" &&
+        cl_mpv "{\"command\":[\"screenshot-to-file\",$(cl_json_str "$dir/${view^^}.png"),\"video\"]}" >/dev/null; } ||
+        cl_say "camera-lab: no $view screenshot"
+    done
+    mv -f -- "$dir/SPLIT.png" "$dir/split.png" 2>/dev/null || true
+    cl_apply_view || true
+  else
+    cl_say "camera-lab: no preview running; wrote the notes only"
+  fi
+  printf '%s' "$dir"
+}
+
+# --- live: the menu -----------------------------------------------------------
+
+cl_choose() { gum choose --height=20 "$@"; }
+
+cl_status_block() {
+  local journal
+  journal=$(cl_journal_lines '' 2 | sed 's/^/  /')
+  printf 'Camera lab   %sx%s   %s   preview: %s\n' "$CL_W" "$CL_H" "$(cl_view_label "$CL_VIEW")" \
+    "$(cl_preview_alive && echo running || echo stopped)"
+  printf 'Layer 1 (all apps): %s\n' "$(cl_conf_summary)"
+  printf '  V4L2: power_line_frequency=%s exposure_dynamic_framerate=%s\n' \
+    "$(cl_v4l2_get power_line_frequency)" "$(cl_v4l2_get exposure_dynamic_framerate)"
+  printf '  effective: %s\n' "$(cl_effective_config)"
+  printf 'Filter log:\n%s\n' "${journal:-  (no stream yet this boot)}"
+  printf 'Now: %s\n' "$(cl_readings)"
+  printf 'Layer 2 (preview only): %s\n' "$(cl_stack_label)"
+}
+
+cl_menu_value() { # KEY CHOICES HELP CURRENT
+  local key=$1 choices=$2 help=$3 cur=$4 pick
+  local -a opts=("(default: leave the key out)") more=()
+  read -r -a more <<<"$choices"
+  opts+=("${more[@]}" "other value...")
+  pick=$(cl_choose --header "$key = ${cur:-default}   ($help)" "${opts[@]}") || return 1
+  case $pick in
+    "(default"*) printf '' ;;
+    "other value...") gum input --header "$key =" --value "$cur" || return 1 ;;
+    *) printf '%s' "$pick" ;;
+  esac
+}
+
+cl_menu_camera() {
+  local pick key val label
+  while true; do
+    local -A map=()
+    local -a items=()
+    for key in "${CL_CONF_KEYS[@]}"; do
+      label=$(printf '%-22s %-8s %s' "$key" "${CL_SET[$key]:-default}" "${CL_CONF_HELP[$key]}")
+      items+=("$label"); map[$label]=conf:$key
+    done
+    for key in "${CL_V4L2_KEYS[@]}"; do
+      label=$(printf '%-22s %-8s %s' "$key" "$(cl_v4l2_get "$key")" "${CL_V4L2_HELP[$key]}")
+      items+=("$label"); map[$label]=v4l2:$key
+    done
+    for label in "Set: your own settings (as before the lab)" "Set: package defaults (empty [denoise])" \
+      "Set: raw camera (mode = off)" "Set: low-light stage always (mode = on)" \
+      "Set: research dim-light levels (enter-gain 2304, exit-gain 1792, enter-noise 0)" \
+      "Resolution: $( ((CL_W == 1920)) && echo "switch to 1280x720 (no Neural Engine stage)" || echo "switch to 1920x1080")" \
+      "Back"; do
+      items+=("$label"); map[$label]=$label
+    done
+    clear
+    cl_status_block
+    pick=$(cl_choose --header "Camera (layer 1): what every app sees. Changes reload the filter." "${items[@]}") || return 0
+    case ${map[$pick]:-Back} in
+      Back) return 0 ;;
+      conf:*)
+        key=${map[$pick]#conf:}
+        val=$(cl_menu_value "$key" "${CL_CONF_CHOICES[$key]}" "${CL_CONF_HELP[$key]}" "${CL_SET[$key]:-}") || continue
+        if [[ -z $val ]]; then unset "CL_SET[$key]"; else CL_SET[$key]=$val; fi
+        cl_conf_apply
+        ;;
+      v4l2:*)
+        key=${map[$pick]#v4l2:}
+        val=$(cl_choose --header "$key  (${CL_V4L2_HELP[$key]})" ${CL_V4L2_CHOICES[$key]}) || continue
+        cl_v4l2_set "$key" "$val" >/dev/null || { cl_say "camera-lab: v4l2-ctl refused $key=$val"; sleep 2; }
+        ;;
+      "Set: your own"*) cl_conf_original; cl_conf_apply ;;
+      "Set: package defaults"*) CL_SET=(); CL_SET_EXTRA=(); cl_conf_apply ;;
+      "Set: raw camera"*) CL_SET[mode]=off; cl_conf_apply ;;
+      "Set: low-light stage always"*) CL_SET[mode]=on; cl_conf_apply ;;
+      "Set: research dim-light"*)
+        CL_SET[mode]=auto CL_SET[enter-gain]=2304 CL_SET[exit-gain]=1792 CL_SET[enter-noise]=0
+        cl_conf_apply
+        ;;
+      Resolution:*)
+        if ((CL_W == 1920)); then CL_W=1280 CL_H=720; else CL_W=1920 CL_H=1080; fi
+        cl_drop_slow_presets
+        cl_preview_stop
+        cl_preview_start || true
+        ;;
+    esac
+    sleep 0.5
+    # The stream survives a reload (checked on the J616c); restart it if not.
+    if ! cl_preview_alive; then
+      cl_say "camera-lab: the preview stopped; restarting it"
+      cl_preview_start || true
+    fi
+  done
+}
+
+# A slow preset can't keep 30 fps at 1920x1080: drop it from the live stack.
+cl_drop_slow_presets() {
+  local name
+  local -a keep=()
+  ((CL_W > 1280)) || return 0
+  for name in "${CL_STACK[@]}"; do
+    if cl_has_flag "$name" slow; then
+      cl_say "camera-lab: $name is too slow at ${CL_W}x$CL_H; removed from the stack"
+    else
+      keep+=("$name")
+    fi
+  done
+  CL_STACK=("${keep[@]}")
+}
+
+cl_stack_has() { local n; for n in "${CL_STACK[@]}"; do [[ $n == "$1" ]] && return 0; done; return 1; }
+
+cl_stack_toggle() {
+  local name=$1 n
+  local -a keep=()
+  if cl_stack_has "$name"; then
+    for n in "${CL_STACK[@]}"; do [[ $n == "$name" ]] || keep+=("$n"); done
+    CL_STACK=("${keep[@]}")
+  else
+    CL_STACK+=("$name")
+  fi
+}
+
+cl_menu_post() {
+  local pick name label pos i toggled
+  while true; do
+    toggled=''
+    local -A map=()
+    local -a items=()
+    for name in "${CL_PNAMES[@]}"; do
+      pos=' '
+      for i in "${!CL_STACK[@]}"; do [[ ${CL_STACK[$i]} == "$name" ]] && pos=$((i + 1)); done
+      label=$(printf '[%s] %-16s %s' "$pos" "$name" "${CL_PNOTE[$name]}")
+      if cl_has_flag "$name" slow && ((CL_W > 1280)); then label+="  (slow: 1280x720 or clip only)"; fi
+      items+=("$label"); map[$label]=$name
+    done
+    items+=("Move a filter earlier" "Clear the stack" "Back")
+    clear
+    cl_status_block
+    pick=$(cl_choose --header "Post filters (layer 2, preview only): pick to add at the end or remove. [n] = position" "${items[@]}") || return 0
+    case $pick in
+      Back) return 0 ;;
+      "Clear the stack") CL_STACK=() ;;
+      "Move a filter earlier")
+        ((${#CL_STACK[@]} > 1)) || continue
+        name=$(cl_choose --header "Move which one earlier?" "${CL_STACK[@]:1}") || continue
+        for i in "${!CL_STACK[@]}"; do
+          if [[ ${CL_STACK[$i]} == "$name" ]] && ((i > 0)); then
+            CL_STACK[i]=${CL_STACK[i - 1]}
+            CL_STACK[i - 1]=$name
+            break
+          fi
+        done
+        ;;
+      *)
+        name=${map[$pick]}
+        if cl_has_flag "$name" slow && ((CL_W > 1280)) && ! cl_stack_has "$name"; then
+          gum style --foreground 214 "$name is too slow for 30 fps at ${CL_W}x$CL_H: switch to 1280x720 (Camera menu) or try it in clip mode."
+          sleep 2
+          continue
+        fi
+        cl_stack_toggle "$name"
+        toggled=$name
+        ;;
+    esac
+    if ! cl_apply_view && [[ -n $toggled ]]; then
+      cl_stack_toggle "$toggled"
+      cl_apply_view || true
+      sleep 3
+    fi
+  done
+}
+
+cl_menu_effects() {
+  local pick path
+  if ! cl_effects_installed; then
+    gum style --border rounded --padding "0 1" \
+      "Effects aren't installed: background blur and replace, and face framing, need" \
+      "$CL_EFFECTS_LIB" \
+      "from Aurora's omarchy-ane companion (examples/camera-effects). Nothing to toggle." \
+      "Face framing is also off on this board: camera.framing.supported is $CL_FRAMING."
+    gum input --placeholder "Enter to go back" >/dev/null || true
+    return 0
+  fi
+  pick=$(cl_choose --header "Effects on the filter's output (all apps on this camera see them)" \
+    "background off" "background blur" "background replace (pick an image)" \
+    "framing on (auto zoom)" "framing off" "Back") || return 0
+  case $pick in
+    "background off") cl_effects_set '"camera.background" "off"' ;;
+    "background blur") cl_effects_set '"camera.background" "blur"' ;;
+    "background replace"*)
+      path=$(gum file "$HOME") || return 0
+      cl_effects_set "\"camera.background.path\" $(cl_json_str "$path") \"camera.background\" \"replace\""
+      ;;
+    "framing on"*) cl_effects_set '"camera.framing" true "camera.zoom" 0.0' ;;
+    "framing off") cl_effects_set '"camera.framing" false' ;;
+  esac
+}
+
+cl_live() {
+  local pick dir
+  while (($#)); do
+    case $1 in
+      --size) [[ ${2:-} =~ ^(1920x1080|1280x720)$ ]] || cl_die "--size takes 1920x1080 or 1280x720"
+        CL_W=${2%x*} CL_H=${2#*x}; shift 2 ;;
+      *) cl_die "live: unknown option $1" ;;
+    esac
+  done
+  for dep in gum mpv gst-launch-1.0 python3 pw-dump v4l2-ctl; do
+    command -v "$dep" >/dev/null || cl_die "$dep is missing (camera-lab check)"
+  done
+  [[ -n ${XDG_RUNTIME_DIR:-} ]] || cl_die "XDG_RUNTIME_DIR isn't set (over SSH: export XDG_RUNTIME_DIR=/run/user/\$(id -u))"
+  [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]] || cl_die "no display: run it in the desktop session, or set WAYLAND_DISPLAY"
+  cl_load_default_presets
+  cl_require_nodes
+  if [[ $CL_FILTER_STATE == running ]]; then
+    gum confirm "Another app is using the camera now. The lab's camera changes reach it too. Go on?" || exit 0
+  fi
+  cl_start_session
+  cl_run_dir
+  cl_preview_start || cl_die "the preview didn't start"
+  while true; do
+    clear
+    cl_status_block
+    pick=$(cl_choose --header "Camera lab: t in the preview window flips the post filters" \
+      "View: split (same frame, left as apps see it, right + post filters)" \
+      "View: full A (as apps see it)" \
+      "View: full B (+ post filters)" \
+      "Camera (layer 1: denoise.conf, V4L2, resolution)..." \
+      "Post filters (layer 2: FFmpeg, preview only)..." \
+      "Effects$(cl_effects_installed || echo ": not installed")..." \
+      "Snapshot (A, B, split and notes into $CL_OUT)" \
+      "Refresh" \
+      "Restore and quit") || pick="Restore and quit"
+    case $pick in
+      "View: split"*) CL_VIEW=split; cl_apply_view || true ;;
+      "View: full A"*) CL_VIEW=a; cl_apply_view || true ;;
+      "View: full B"*) CL_VIEW=b; cl_apply_view || true ;;
+      Camera*) cl_menu_camera ;;
+      Post*) cl_menu_post ;;
+      Effects*) cl_menu_effects ;;
+      Snapshot*)
+        dir=$(cl_snapshot)
+        gum style --foreground 76 "Saved to $dir"
+        sleep 1.5
+        ;;
+      Refresh) ;;
+      "Restore and quit") break ;;
+    esac
+    if ! cl_preview_alive; then
+      gum confirm "The preview window closed. Open it again?" && cl_preview_start || break
+    fi
+  done
+  if cl_restore_all; then
+    cl_say "camera-lab: settings restored; $CL_CONF is as before the lab"
+  else
+    cl_say "camera-lab: not everything could be put back; run camera-lab restore once that is fixed"
+  fi
+}
+
+# --- clip ---------------------------------------------------------------------
+
+# cl_parse_cdn_metrics: aurora-camera-denoise-metrics output on stdin to
+# `noise_y noise_u noise_v psnr_y ssim_y`, space separated.
+cl_parse_cdn_metrics() {
+  awk '
+    /^temporal_std/ { for (i = 2; i <= NF; i++) { split($i, kv, "="); t[kv[1]] = kv[2] } }
+    /^psnr_y=/ { for (i = 1; i <= NF; i++) { split($i, kv, "="); t[kv[1]] = kv[2] } }
+    END {
+      if (t["y"] == "") exit 1
+      printf "%s %s %s %s %s\n", t["y"], t["cb"], t["cr"], t["psnr_y"], t["ssim_y"]
+    }'
+}
+
+# cl_parse_bench FIELD: a key=value FIELD from aurora-camera-denoise-bench's
+# output on stdin.
+cl_parse_bench() {
+  tr ' ' '\n' | sed -n "s/^$1=//p" | head -n 1
+}
+
+# cl_parse_kv FIELD: the same for the helper's one-line outputs.
+cl_parse_kv() { cl_parse_bench "$1"; }
+
+# cl_frames FILE W H FIRST COUNT: COUNT NV12 frames of FILE from FIRST, to stdout.
+cl_frames() {
+  dd if="$1" bs="$(($2 * $3 * 3 / 2))" skip="$4" count="$5" status=none
+}
+
+cl_ffraw() { # W H: ffmpeg reading NV12 frames from stdin
+  printf '%s\n' ffmpeg -v error -nostdin -f rawvideo -pix_fmt nv12 -s "$1x$2" -framerate "$CL_FPS" -i -
+}
+
+# cl_measure W H RAW FILE FIRST COUNT WORK: the section 7 metrics of FILE's
+# frames [FIRST, FIRST+COUNT), as `noise_y noise_u noise_v psnr ssim edge dark
+# bright` (n/a where a tool is missing). WORK/raw.grad is the reference edges.
+cl_measure() {
+  local w=$1 h=$2 raw=$3 file=$4 first=$5 count=$6 work=$7 m='' sp ed
+  local -a ff
+  local -
+  set +o pipefail
+  mapfile -t ff < <(cl_ffraw "$w" "$h")
+  if command -v aurora-camera-denoise-metrics >/dev/null; then
+    m=$(aurora-camera-denoise-metrics "$w" "$h" "$raw" "$file" "$first" "$count" | cl_parse_cdn_metrics) || m=''
+  fi
+  [[ -n ${m:-} ]] || m='n/a n/a n/a n/a n/a'
+  sp=$(cl_frames "$file" "$w" "$h" "$first" "$count" |
+    "${ff[@]}" -vf "$CL_SPECK_GRAPH" -f rawvideo -pix_fmt gray - |
+    python3 "$CL_HELPER" specks "$w" "$h")
+  cl_frames "$file" "$w" "$h" "$first" "$count" |
+    "${ff[@]}" -vf "extractplanes=y,format=gray16le,tmix=frames=$count,sobel=scale=0.125" \
+      -f rawvideo -pix_fmt gray16le - | tail -c "$((w * h * 2))" >"$work/test.grad"
+  [[ -s $work/raw.grad ]] || cp -- "$work/test.grad" "$work/raw.grad"
+  ed=$(python3 "$CL_HELPER" edge "$w" "$h" "$work/raw.grad" "$work/test.grad" | cl_parse_kv edge)
+  local dark bright
+  dark=$(cl_parse_kv dark <<<"$sp")
+  bright=$(cl_parse_kv bright <<<"$sp")
+  # Every field is filled, so an empty one can't shift the columns after it.
+  printf '%s %s %s %s\n' "$m" "${ed:-n/a}" "${dark:-n/a}" "${bright:-n/a}"
+}
+
+# cl_png FILE W H FRAME OUT [CROP]: one frame as PNG; CROP is WxH+X+Y, shown
+# at 2x with square pixels.
+cl_png() {
+  local file=$1 w=$2 h=$3 frame=$4 out=$5 crop=${6:-} vf
+  local -a ff
+  local -
+  set +o pipefail
+  mapfile -t ff < <(cl_ffraw "$w" "$h")
+  vf="scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24"
+  if [[ $crop =~ ^([0-9]+)x([0-9]+)\+([0-9]+)\+([0-9]+)$ ]]; then
+    vf="crop=${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}:${BASH_REMATCH[4]},scale=w=iw*2:h=ih*2:flags=neighbor:in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24"
+  fi
+  cl_frames "$file" "$w" "$h" "$frame" 1 | "${ff[@]}" -vf "$vf" -frames:v 1 -y "$out"
+}
+
+# cl_fmt_row NAME NOISE_Y U V PSNR SSIM EDGE DARK BRIGHT FPS: one Markdown row.
+cl_fmt_row() {
+  awk -v n="$1" -v y="$2" -v u="$3" -v v="$4" -v p="$5" -v s="$6" -v e="$7" -v d="$8" -v b="$9" -v f="${10}" '
+    function num(x, fmt) { return (x ~ /^-?[0-9.]+$/) ? sprintf(fmt, x) : "n/a" }
+    function thou(x,   s, r) {
+      if (x !~ /^[0-9]+$/) return "n/a"
+      s = x ""; r = ""
+      while (length(s) > 3) { r = "," substr(s, length(s) - 2) r; s = substr(s, 1, length(s) - 3) }
+      return s r
+    }
+    BEGIN {
+      printf "| %s | %s | %s / %s | %s | %s | %s | %s | %s | %s |\n", n, num(y, "%.2f"),
+        num(u, "%.2f"), num(v, "%.2f"), num(p, "%.1f"), num(s, "%.3f"),
+        (e ~ /^[0-9.]+$/) ? sprintf("%.1f%%", e * 100) : "n/a", thou(d), thou(b), f
+    }'
+}
+
+cl_clip_usage() {
+  cat <<'EOF'
+camera-lab clip [options]: record one clip with the filter off, then render
+every variant on the same frames and compare them (report.md, sheet.png).
+
+  --frames N        frames to record (160)
+  --size WxH        1920x1080 (default) or 1280x720
+  --last N          frames measured, at the end of the clip (60)
+  --presets LIST    post presets to render, comma separated; a+b stacks them
+                    in one variant; `all` (default) or `none`
+  --base cpu|raw    what the post presets run on: the filter's CPU temporal
+                    output, as in live (cpu, default) or the raw frames
+  --no-ane          skip the Neural Engine stage
+  --crop WxH+X+Y    contact sheet region (default: the centre quarter)
+  --from DIR        reuse DIR/raw.nv12 from an earlier run: no camera
+  --out DIR         run directory (default ~/camera-lab/clip-<time>)
+  --keep            keep every variant's NV12 file (big)
+  --force           record even if another app is using the camera
+EOF
+}
+
+cl_clip() {
+  local frames=160 size=1920x1080 last=60 presets=all base=cpu ane=1 crop='' from='' out='' keep=0 force=0
+  local size_given=0
+  while (($#)); do
+    case $1 in
+      --frames) frames=$2; shift 2 ;;
+      --size) size=$2 size_given=1; shift 2 ;;
+      --last) last=$2; shift 2 ;;
+      --presets) presets=$2; shift 2 ;;
+      --base) base=$2; shift 2 ;;
+      --no-ane) ane=0; shift ;;
+      --crop) crop=$2; shift 2 ;;
+      --from) from=$2; shift 2 ;;
+      --out) out=$2; shift 2 ;;
+      --keep) keep=1; shift ;;
+      --force) force=1; shift ;;
+      -h | --help) cl_clip_usage; return 0 ;;
+      *) cl_clip_usage >&2; cl_die "clip: unknown option $1" ;;
+    esac
+  done
+  # A reused clip was recorded at the size its notes say, not the default.
+  if [[ -n $from ]] && ((!size_given)) && [[ -r $from/notes.txt ]]; then
+    local noted
+    noted=$(sed -n 's/^Clip: \([0-9][0-9]*x[0-9][0-9]*\) .*/\1/p' "$from/notes.txt")
+    [[ -n $noted ]] && size=$noted
+  fi
+  [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || cl_die "--size takes WxH"
+  local w=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+  [[ $frames =~ ^[0-9]+$ && $last =~ ^[0-9]+$ ]] && ((last >= 2 && frames >= last)) ||
+    cl_die "--frames must be at least --last, and --last at least 2"
+  [[ $base == cpu || $base == raw ]] || cl_die "--base takes cpu or raw"
+  for dep in ffmpeg python3; do command -v "$dep" >/dev/null || cl_die "$dep is missing"; done
+  cl_load_default_presets
+
+  local -a items=()
+  case $presets in
+    all) items=("${CL_PNAMES[@]}") ;;
+    none) ;;
+    *) IFS=, read -r -a items <<<"$presets" ;;
+  esac
+  local item
+  for item in "${items[@]}"; do
+    local -a parts
+    IFS=+ read -r -a parts <<<"$item"
+    cl_chains "${parts[@]}" >/dev/null || cl_die "clip: unknown preset in $item"
+  done
+
+  out=${out:-$CL_OUT/clip-$(date +%Y%m%d-%H%M%S)}
+  mkdir -p -- "$out/frames" "$out/crops"
+  local work=$out/work
+  mkdir -p -- "$work"
+  local fs=$((w * h * 3 / 2)) raw=$out/raw.nv12 readings journal conf_before
+
+  if [[ -n $from ]]; then
+    [[ -r $from/raw.nv12 ]] || cl_die "--from: no $from/raw.nv12"
+    [[ $(readlink -f -- "$from/raw.nv12") == "$(readlink -f -- "$raw")" ]] || ln -sf -- "$(readlink -f -- "$from/raw.nv12")" "$raw"
+    readings=$(sed -n 's/^Readings during the capture: //p' "$from/notes.txt" 2>/dev/null || true)
+    journal=$(sed -n 's/^Filter log: //p' "$from/notes.txt" 2>/dev/null || true)
+    conf_before=$(sed -n 's/^denoise.conf before: //p' "$from/notes.txt" 2>/dev/null || true)
+    local bytes
+    bytes=$(stat -L -c %s -- "$raw")
+    ((bytes % fs == 0)) ||
+      cl_die "--from: $raw isn't whole ${w}x$h NV12 frames ($bytes bytes); recorded at another size? see $from/notes.txt, or pass --size"
+    frames=$((bytes / fs))
+    ((frames >= last)) || cl_die "--from: $raw holds $frames frames of ${w}x$h, fewer than --last"
+  else
+    for dep in gst-launch-1.0 pw-dump v4l2-ctl systemctl; do
+      command -v "$dep" >/dev/null || cl_die "$dep is missing (camera-lab check)"
+    done
+    cl_require_nodes
+    if [[ $CL_FILTER_STATE == running ]] && ((!force)); then
+      cl_die "another app is using the camera; close it or pass --force"
+    fi
+    cl_start_session
+    conf_before=$(cl_conf_summary)
+    local since pid i
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    CL_SET[mode]=off
+    cl_conf_apply
+    for ((i = 0; i < 30; i++)); do
+      cl_journal_lines "$since" 5 | grep -q 'mode off' && break
+      sleep 0.1
+    done
+    sleep 0.5
+    cl_say "camera-lab: recording $frames frames at ${w}x$h with mode = off"
+    bash -c "timeout $((frames / 10 + 20)) $(cl_capture_cmd "$w" "$h" "$CL_FILTER_NAME" "$frames")" >"$raw" &
+    pid=$!
+    sleep 2.5
+    readings=$(cl_readings)
+    wait "$pid" || cl_say "camera-lab: the capture ended with an error"
+    journal=$(cl_journal_lines "$since" 1)
+    cl_restore_all || true
+    local bytes got
+    bytes=$(stat -c %s -- "$raw")
+    ((bytes % fs == 0)) ||
+      cl_die "the capture isn't whole ${w}x$h NV12 frames ($bytes bytes): padded rows or planes? (kept at $raw)"
+    got=$((bytes / fs))
+    ((got >= last)) || cl_die "recorded $got frames, fewer than --last $last"
+    frames=$got
+  fi
+
+  {
+    printf 'Clip: %sx%s NV12, %s frames, the last %s measured\n' "$w" "$h" "$frames" "$last"
+    printf 'Recorded: %s\n' "$(date -r "$raw" '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null || date)"
+    printf 'Readings during the capture: %s\n' "${readings:-n/a}"
+    printf 'Filter log: %s\n' "${journal:-n/a}"
+    printf 'denoise.conf before: %s\n' "${conf_before:-n/a}"
+  } >"$out/notes.txt"
+
+  # Variants: name, file, render speed.
+  local -a vname=() vfile=() vspeed=()
+  vname+=("Raw camera (mode = off)"); vfile+=("$raw"); vspeed+=("-")
+  local cpu=$work/cpu.nv12 bout notes=''
+  if command -v aurora-camera-denoise-bench >/dev/null; then
+    cl_say "camera-lab: the filter's CPU temporal stage, offline"
+    if bout=$(aurora-camera-denoise-bench -b cpu -o "$cpu" "$w" "$h" "$raw" 2>&1); then
+      vname+=("Filter: CPU temporal (the default)"); vfile+=("$cpu")
+      vspeed+=("$(awk -v m="$(cl_parse_bench wall_ms_per_frame <<<"$bout")" 'BEGIN { printf "%.0f", 1000 / m }')")
+      if ((ane)); then
+        local s
+        for s in 0.25 0.5 0.75 1.0; do
+          cl_say "camera-lab: + the Neural Engine low-light stage at strength $s"
+          if bout=$(aurora-camera-denoise-bench -b ane -s "$s" -o "$work/ane-$s.nv12" "$w" "$h" "$cpu" 2>&1); then
+            vname+=("Filter: + low-light stage at $s$([[ $s == 1.0 ]] && echo ' (mode = on)')")
+            vfile+=("$work/ane-$s.nv12")
+            vspeed+=("$(awk -v m="$(cl_parse_bench wall_ms_per_frame <<<"$bout")" 'BEGIN { printf "%.0f", 1000 / m }')")
+          else
+            notes+="- The Neural Engine stage didn't run: $(tail -n 1 <<<"$bout")"$'\n'
+            break
+          fi
+        done
+      fi
+    else
+      notes+="- The filter's CPU stage didn't run: $(tail -n 1 <<<"$bout")"$'\n'
+    fi
+  else
+    notes+="- aurora-camera-denoise-bench isn't installed: no filter variants."$'\n'
+  fi
+  local post_base=$raw post_label=raw
+  if [[ $base == cpu && -s $cpu ]]; then post_base=$cpu post_label="CPU temporal"; fi
+  [[ $base == cpu && ! -s $cpu ]] && notes+="- Post presets ran on the raw frames: no CPU filter output."$'\n'
+
+  local -a ff
+  mapfile -t ff < <(cl_ffraw "$w" "$h")
+  local graph t0 t1 file safe
+  for item in "${items[@]}"; do
+    local -a parts
+    IFS=+ read -r -a parts <<<"$item"
+    graph=$(cl_render_graph "$w" "$h" "${parts[@]}")
+    safe=${item//[^A-Za-z0-9._+-]/_}
+    file=$work/post-$safe.nv12
+    cl_say "camera-lab: post $item"
+    t0=$(date +%s.%N)
+    if "${ff[@]}" -vf "$graph" -f rawvideo -pix_fmt nv12 -y "$file" <"$post_base" 2>"$work/post-$safe.log" &&
+      (($(stat -c %s -- "$file") == frames * fs)); then
+      t1=$(date +%s.%N)
+      vname+=("Post on $post_label: ${item//+/ + }"); vfile+=("$file")
+      vspeed+=("$(awk -v n="$frames" -v a="$t0" -v b="$t1" 'BEGIN { printf "%.0f", n / (b - a) }')")
+    else
+      notes+="- Post $item failed: $(head -n 1 "$work/post-$safe.log")"$'\n'
+    fi
+  done
+
+  # Measure, and a crop of the last frame per variant.
+  local first=$((frames - last)) k row cx cy cw ch
+  if [[ -z $crop ]]; then
+    cw=$((w / 4 / 2 * 2)) ch=$((h / 4 / 2 * 2)) cx=$(((w - cw) / 2)) cy=$(((h - ch) / 2))
+    crop=${cw}x$ch+$cx+$cy
+  fi
+  rm -f -- "$work/raw.grad"
+  printf 'variant\tnoise_y\tnoise_u\tnoise_v\tpsnr_raw_mean\tssim\tedge\tdark\tbright\trender_fps\n' >"$out/metrics.tsv"
+  local -a rows=() montage_args=()
+  for k in "${!vname[@]}"; do
+    cl_say "camera-lab: measuring ${vname[$k]}"
+    row=$(cl_measure "$w" "$h" "$raw" "${vfile[$k]}" "$first" "$last" "$work")
+    local -a m
+    read -r -a m <<<"$row"
+    printf '%s\t%s\t%s\n' "${vname[$k]}" "${row// /$'\t'}" "${vspeed[$k]}" >>"$out/metrics.tsv"
+    rows+=("$(cl_fmt_row "${vname[$k]}" "${m[@]}" "${vspeed[$k]}")")
+    printf -v safe '%02d' "$k"
+    cl_png "${vfile[$k]}" "$w" "$h" $((frames - 1)) "$out/frames/$safe.png"
+    cl_png "${vfile[$k]}" "$w" "$h" $((frames - 1)) "$out/crops/$safe.png" "$crop"
+    montage_args+=(-label "$safe ${vname[$k]}" "$out/crops/$safe.png")
+  done
+  local sheet=''
+  if command -v montage >/dev/null; then
+    montage -background '#1e1e1e' -fill '#e0e0e0' -pointsize 18 "${montage_args[@]}" \
+      -tile 4x -geometry +6+6 "$out/sheet.png" 2>"$work/montage.log" && sheet=sheet.png ||
+      notes+="- The contact sheet failed: $(head -n 1 "$work/montage.log")"$'\n'
+  else
+    notes+="- ImageMagick's montage isn't installed: no contact sheet."$'\n'
+  fi
+
+  {
+    printf '# Camera lab clip, %s\n\n' "$(date '+%Y-%m-%d %H:%M')"
+    sed 's/^/- /' "$out/notes.txt"
+    printf '%s\n\n' "- Contact sheet: ${sheet:-none}, crop $crop of the last frame at 2x; full frames in frames/."
+    printf '| Variant | Luma noise | Chroma U / V | PSNR vs raw mean | SSIM | Edge contrast | Dark specks | Bright | Render fps |\n'
+    printf '| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n'
+    printf '%s\n' "${rows[@]}"
+    printf '\nHow to read it (docs/camera-quality-research.md, section 7): luma noise is the\n'
+    printf 'per-pixel standard deviation over the measured frames, mean over the frame\n'
+    printf '(lower is cleaner; a static scene flatters temporal filters). Chroma is the same\n'
+    printf 'for U and V. PSNR and SSIM are against the mean of all raw frames. Edge contrast\n'
+    printf "is the mean Sobel gradient of the measured frames' average at the raw clip's\n"
+    printf 'strongest 0.3%% edges, as a share of the raw clip'"'"'s (lower is blurrier). Specks\n'
+    printf 'are pixels more than 24 below (dark) or above (bright) their 3x3 median, per\n'
+    printf 'frame. Render fps is offline, on all cores (the filter rows: its own timing);\n'
+    printf 'live needs 30. Size-changing presets are measured scaled back to the clip size.\n'
+    [[ -z $notes ]] || printf '\nNotes:\n\n%s' "$notes"
+  } >"$out/report.md"
+
+  if ((!keep)); then
+    rm -f -- "$work"/*.nv12 "$work"/*.grad
+  fi
+  cl_say "camera-lab: report in $out/report.md"
+  printf '%s\n' "$out"
+}
+
+# --- virtual ------------------------------------------------------------------
+
+# cl_loopback_dev: the first v4l2loopback device, if the module is loaded.
+cl_loopback_dev() {
+  local d
+  [[ -d ${CAMERA_LAB_SYS_MODULE:-/sys/module}/v4l2loopback ]] || return 1
+  for d in /sys/class/video4linux/video*; do
+    [[ $(readlink -f "$d/device/driver" 2>/dev/null) == */v4l2loopback ||
+      $(cat "$d/name" 2>/dev/null) == "Camera lab" ]] && { printf '/dev/%s' "${d##*/}"; return 0; }
+  done
+  return 1
+}
+
+cl_loopback_help() {
+  cat <<'EOF'
+No v4l2loopback device. To make one (needs sudo; Arch's extra repository):
+
+  sudo pacman -S v4l2loopback-dkms
+  sudo modprobe v4l2loopback exclusive_caps=1 card_label="Camera lab"
+
+Then run `camera-lab virtual` again and pick "Camera lab" in Meet. To remove
+it afterwards: sudo modprobe -r v4l2loopback
+EOF
+}
+
+cl_virtual() {
+  local size=1280x720 presets='' dev
+  while (($#)); do
+    case $1 in
+      --size) size=$2; shift 2 ;;
+      --presets) presets=$2; shift 2 ;;
+      *) cl_die "virtual: unknown option $1" ;;
+    esac
+  done
+  [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || cl_die "--size takes WxH"
+  local w=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+  dev=$(cl_loopback_dev) || { cl_loopback_help; return 3; }
+  cl_load_default_presets
+  local -a stack=()
+  if [[ -n $presets ]]; then
+    IFS=, read -r -a stack <<<"$presets"
+  else
+    cl_stack_load stack
+  fi
+  local graph
+  graph=$(cl_render_graph "$w" "$h" "${stack[@]}") || cl_die "virtual: unknown preset"
+  graph=${graph%,format=nv12},format=yuv420p
+  cl_require_nodes
+  cl_say "camera-lab: ${w}x$h from $CL_FILTER_NAME through [ ${stack[*]:-no post filters} ] to $dev; Ctrl-C stops"
+  local -a ff
+  mapfile -t ff < <(cl_ffraw "$w" "$h")
+  bash -c "$(cl_capture_cmd "$w" "$h" "$CL_FILTER_NAME")" |
+    "${ff[@]}" -vf "$graph" -f v4l2 -pix_fmt yuv420p "$dev"
+}
+
+# --- status, check ------------------------------------------------------------
+
+cl_status() {
+  local key
+  if cl_discover; then
+    printf 'Filter node: %s (id %s, %s)\n' "$CL_FILTER_NAME" "$CL_FILTER_ID" "$CL_FILTER_STATE"
+    printf 'Raw node:    %s (id %s)\n' "${CL_RAW_NAME:-not found}" "${CL_RAW_ID:--}"
+  else
+    printf 'Filter node: not found in PipeWire\n'
+  fi
+  printf 'denoise.conf: %s\n' "$CL_CONF"
+  if [[ -e $CL_CONF ]]; then sed 's/^/  /' "$CL_CONF"; else printf '  (none: package defaults)\n'; fi
+  if cl_has_backup; then
+    printf 'Lab backup present: run `camera-lab restore` to put the original back\n'
+  else
+    printf 'Lab backup: none (the conf is the user'"'"'s own)\n'
+  fi
+  printf 'Effective: %s\n' "$(cl_effective_config)"
+  printf 'Filter log:\n'
+  cl_journal_lines '' 3 | sed 's/^/  /'
+  printf 'V4L2:'
+  for key in "${CL_V4L2_KEYS[@]}"; do printf ' %s=%s' "$key" "$(cl_v4l2_get "$key")"; done
+  printf '%s\n' "$([[ -e $CL_STATE/v4l2.orig ]] && echo ' (lab backup present)')"
+  printf 'Readings: %s\n' "$(cl_readings)"
+  printf 'Effects: %s\n' "$(cl_effects_installed && echo installed || echo "not installed ($CL_EFFECTS_LIB)")"
+  local -a saved=()
+  cl_stack_load saved
+  printf 'Saved post stack (for virtual): %s\n' "${saved[*]:-none}"
+  if [[ -r $CL_PIDFILE ]] && cl_preview_is "$(<"$CL_PIDFILE")"; then
+    printf 'Preview: running (pid %s)\n' "$(<"$CL_PIDFILE")"
+  fi
+}
+
+cl_restore_cmd() {
+  CL_TOUCHED=0
+  cl_conf_keep_edits
+  if ! cl_has_backup && [[ ! -e $CL_STATE/v4l2.orig ]]; then
+    cl_preview_stop
+    cl_say "camera-lab: nothing to restore: $CL_CONF is the user's own"
+    return 0
+  fi
+  CL_EFFECTS_TOUCHED=$(cl_effects_installed && echo 1 || echo 0)
+  cl_restore_all
+}
+
+cl_check() {
+  local missing=0 dep el f name bad
+  ok() { printf '  ok       %-28s %s\n' "$1" "${2:-}"; }
+  miss() { printf '  MISSING  %-28s %s\n' "$1" "${2:-}"; missing=$((missing + 1)); }
+  note() { printf '  note     %-28s %s\n' "$1" "${2:-}"; }
+  printf 'Core\n'
+  ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))) && ok bash "$BASH_VERSION" || miss bash "4.3 or newer"
+  for dep in python3 pw-dump pw-cli systemctl journalctl v4l2-ctl gst-launch-1.0 ffmpeg; do
+    command -v "$dep" >/dev/null && ok "$dep" || miss "$dep"
+  done
+  if command -v gst-inspect-1.0 >/dev/null; then
+    for el in pipewiresrc fdsink; do
+      gst-inspect-1.0 "$el" >/dev/null 2>&1 && ok "gstreamer $el" || miss "gstreamer $el" "pipewire's GStreamer plugin / gstreamer core"
+    done
+  fi
+  [[ -n ${XDG_RUNTIME_DIR:-} ]] && ok XDG_RUNTIME_DIR "$XDG_RUNTIME_DIR" ||
+    miss XDG_RUNTIME_DIR "over SSH: export XDG_RUNTIME_DIR=/run/user/$(id -u)"
+  command -v aurora-camera-denoise >/dev/null && ok aurora-camera-denoise "$(pacman -Q aurora-camera-denoise 2>/dev/null | cut -d' ' -f2)" ||
+    miss aurora-camera-denoise "Aurora's package"
+  systemctl --user is-active --quiet "$CL_SERVICE" 2>/dev/null && ok "$CL_SERVICE.service" active ||
+    miss "$CL_SERVICE.service" "systemctl --user start $CL_SERVICE"
+  [[ -e $CL_DEV ]] && ok "$CL_DEV" "$(v4l2-ctl -d "$CL_DEV" --info 2>/dev/null | sed -n 's/^\s*Driver name\s*: //p' | head -n 1)" || miss "$CL_DEV"
+  cl_iio_dir >/dev/null && ok "light sensor" "$(cl_iio_dir)" || note "light sensor" "not found: no lux in notes"
+  if cl_discover 2>/dev/null; then
+    ok "raw node" "${CL_RAW_NAME:-not found} (id ${CL_RAW_ID:--})"
+    ok "filter node" "$CL_FILTER_NAME (id $CL_FILTER_ID, $CL_FILTER_STATE)"
+  else
+    miss "filter node" "no aurora_camera_denoise.* Video/Source in pw-dump"
+  fi
+  cl_has_backup && note "lab backup" "present: run camera-lab restore" || ok "lab backup" "none (the conf is the user's own)"
+  printf 'live\n'
+  for dep in mpv gum; do command -v "$dep" >/dev/null && ok "$dep" || miss "$dep"; done
+  [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]] && ok display "${WAYLAND_DISPLAY:-$DISPLAY}" ||
+    note display "none in this shell: live needs WAYLAND_DISPLAY (ls \$XDG_RUNTIME_DIR/wayland-*)"
+  command -v socat >/dev/null && ok socat "(not needed: the helper talks to mpv)" || note socat "not needed"
+  printf 'clip\n'
+  for dep in aurora-camera-denoise-bench aurora-camera-denoise-metrics montage; do
+    command -v "$dep" >/dev/null && ok "$dep" || miss "$dep"
+  done
+  printf 'effects and virtual\n'
+  cl_effects_installed && ok effects "$CL_EFFECTS_LIB" || note effects "not installed ($CL_EFFECTS_LIB)"
+  cl_loopback_dev >/dev/null && ok v4l2loopback "$(cl_loopback_dev)" || note v4l2loopback "not loaded: camera-lab virtual prints how"
+  printf 'Presets\n'
+  cl_load_default_presets
+  local filters=''
+  command -v ffmpeg >/dev/null && filters=$(ffmpeg -hide_banner -filters 2>/dev/null | awk 'NF >= 3 { print $2 }')
+  for name in "${CL_PNAMES[@]}"; do
+    bad=''
+    for f in $(cl_filters_in "${CL_PCHAIN[$name]}"); do
+      grep -qx -- "$f" <<<"$filters" || bad+=" $f"
+    done
+    if [[ -n $bad ]]; then
+      miss "preset $name" "FFmpeg lacks:$bad"
+    elif command -v ffmpeg >/dev/null && ! ffmpeg -v error -nostdin -f lavfi -i "color=gray:s=64x36:r=30:d=0.2" \
+      -vf "$(cl_render_graph 64 36 "$name")" -f null - 2>/dev/null; then
+      miss "preset $name" "doesn't run: ${CL_PCHAIN[$name]}"
+    else
+      ok "preset $name"
+    fi
+  done
+  if ((missing)); then
+    printf '%s missing\n' "$missing"
+    return 1
+  fi
+  printf 'All there.\n'
+}
+
+cl_usage() {
+  sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
+}
+
+cl_main() {
+  local cmd=${1:-help}
+  shift || true
+  case $cmd in
+    live) cl_live "$@" ;;
+    clip) cl_clip "$@" ;;
+    virtual) cl_virtual "$@" ;;
+    status) cl_status ;;
+    restore) cl_restore_cmd ;;
+    check) cl_check ;;
+    help | -h | --help) cl_usage ;;
+    *) cl_usage >&2; exit 2 ;;
+  esac
+}
+
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+cl_main "$@"

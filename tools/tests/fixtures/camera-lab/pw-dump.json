@@ -1,0 +1,314 @@
+[
+ {
+  "id": 66,
+  "type": "PipeWire:Interface:Device",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "platform:580000000.isp",
+    "api.v4l2.cap.card": "FaceTime HD Camera",
+    "api.v4l2.cap.driver": "apple-isp",
+    "api.v4l2.cap.version": "7.3.0",
+    "api.v4l2.path": "/dev/video0",
+    "device.api": "v4l2",
+    "device.description": "FaceTime HD Camera",
+    "device.name": "v4l2_device.platform-580000000.isp",
+    "media.class": "Video/Device",
+    "object.id": 66
+   }
+  }
+ },
+ {
+  "id": 48,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "props": {
+    "media.class": "Audio/Sink",
+    "node.name": "alsa_output.platform-sound.HiFi__Speaker__sink",
+    "node.description": "Speakers",
+    "object.id": 48
+   }
+  }
+ },
+ {
+  "id": 131,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "error": null,
+   "props": {
+    "api.v4l2.cap.bus_info": "platform:580000000.isp",
+    "api.v4l2.cap.card": "FaceTime HD Camera",
+    "api.v4l2.cap.driver": "apple-isp",
+    "api.v4l2.cap.version": "7.3.0",
+    "api.v4l2.path": "/dev/video0",
+    "device.api": "v4l2",
+    "device.id": 66,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "FaceTime HD Camera (V4L2)",
+    "node.name": "v4l2_input.platform-580000000.isp",
+    "node.nick": "FaceTime HD Camera",
+    "object.id": 131,
+    "object.path": "v4l2:/dev/video0",
+    "priority.session": 1000
+   },
+   "params": {
+    "PropInfo": [
+     {
+      "id": "gain",
+      "type": {
+       "default": 256,
+       "min": 0,
+       "max": 65535,
+       "step": 1
+      },
+      "description": "Gain"
+     },
+     {
+      "id": "id-01980918",
+      "type": 1,
+      "description": "Power Line Frequency",
+      "labels": [
+       1,
+       "50 Hz",
+       2,
+       "60 Hz"
+      ]
+     }
+    ],
+    "EnumFormat": [
+     {
+      "mediaType": "video",
+      "mediaSubtype": "raw",
+      "format": "NV12",
+      "size": {
+       "width": 1920,
+       "height": 1080
+      },
+      "colorRange": "16-235",
+      "colorMatrix": "bt709",
+      "transferFunction": "bt709",
+      "colorPrimaries": "bt709",
+      "framerate": {
+       "default": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt1": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt2": {
+        "num": 25,
+        "denom": 1
+       },
+       "alt3": {
+        "num": 24,
+        "denom": 1
+       },
+       "alt4": {
+        "num": 20,
+        "denom": 1
+       },
+       "alt5": {
+        "num": 15,
+        "denom": 1
+       }
+      }
+     },
+     {
+      "mediaType": "video",
+      "mediaSubtype": "raw",
+      "format": "NV12",
+      "size": {
+       "width": 1280,
+       "height": 720
+      },
+      "colorRange": "16-235",
+      "colorMatrix": "bt709",
+      "transferFunction": "bt709",
+      "colorPrimaries": "bt709",
+      "framerate": {
+       "default": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt1": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt2": {
+        "num": 25,
+        "denom": 1
+       },
+       "alt3": {
+        "num": 24,
+        "denom": 1
+       },
+       "alt4": {
+        "num": 20,
+        "denom": 1
+       },
+       "alt5": {
+        "num": 15,
+        "denom": 1
+       }
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 133,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "error": null,
+   "props": {
+    "aurora.camera-denoise": "output",
+    "camera.framing.supported": false,
+    "camera.zoom.default": 1.0,
+    "camera.zoom.max": 1.0,
+    "camera.zoom.min": 1.0,
+    "media.category": "Capture",
+    "media.class": "Video/Source",
+    "media.name": "camera-denoise",
+    "media.role": "Camera",
+    "node.description": "FaceTime HD Camera",
+    "node.name": "aurora_camera_denoise.v4l2_input.platform-580000000.isp",
+    "node.nick": "FaceTime HD Camera",
+    "object.id": 133,
+    "priority.session": 1010
+   },
+   "params": {
+    "EnumFormat": [
+     {
+      "mediaType": "video",
+      "mediaSubtype": "raw",
+      "format": "NV12",
+      "size": {
+       "width": 1920,
+       "height": 1080
+      },
+      "colorRange": "16-235",
+      "colorMatrix": "bt709",
+      "transferFunction": "bt709",
+      "colorPrimaries": "bt709",
+      "framerate": {
+       "default": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt1": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt2": {
+        "num": 25,
+        "denom": 1
+       },
+       "alt3": {
+        "num": 24,
+        "denom": 1
+       },
+       "alt4": {
+        "num": 20,
+        "denom": 1
+       },
+       "alt5": {
+        "num": 15,
+        "denom": 1
+       }
+      }
+     },
+     {
+      "mediaType": "video",
+      "mediaSubtype": "raw",
+      "format": "NV12",
+      "size": {
+       "width": 1280,
+       "height": 720
+      },
+      "colorRange": "16-235",
+      "colorMatrix": "bt709",
+      "transferFunction": "bt709",
+      "colorPrimaries": "bt709",
+      "framerate": {
+       "default": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt1": {
+        "num": 30,
+        "denom": 1
+       },
+       "alt2": {
+        "num": 25,
+        "denom": 1
+       },
+       "alt3": {
+        "num": 24,
+        "denom": 1
+       },
+       "alt4": {
+        "num": 20,
+        "denom": 1
+       },
+       "alt5": {
+        "num": 15,
+        "denom": 1
+       }
+      }
+     }
+    ],
+    "Props": [
+     {
+      "params": [
+       "camera.background",
+       "off",
+       "camera.framing",
+       false,
+       "camera.zoom",
+       0.0,
+       "camera.background.path",
+       ""
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 140,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "running",
+   "props": {
+    "aurora.camera-denoise": "output",
+    "camera.framing.supported": true,
+    "media.class": "Video/Source",
+    "node.description": "FaceTime HD Camera / work-call",
+    "node.name": "aurora_camera_denoise.work-call.v4l2_input.platform-580000000.isp",
+    "object.id": 140,
+    "priority.session": 0
+   }
+  }
+ },
+ {
+  "id": 150,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "idle",
+   "props": {
+    "api.v4l2.cap.driver": "uvcvideo",
+    "media.class": "Video/Source",
+    "node.description": "USB Webcam (V4L2)",
+    "node.name": "v4l2_input.platform-xhci-hcd.0-usb-0_1_1.0",
+    "object.id": 150
+   }
+  }
+ }
+]

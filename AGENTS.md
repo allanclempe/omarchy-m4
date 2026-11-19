@@ -70,6 +70,11 @@ row below. A task whose fix lives only on the Mac isn't done.
   (Aurora's 7.3 kernel, until omacom's 7.3 carries the J616c).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
+- `tools/camera-lab/` is a gum TUI run on the Mac (`camera-lab live`) that toggles the camera
+  filter's `denoise.conf`, V4L2 controls and FFmpeg post filters with a live split preview, and
+  `camera-lab clip` measures every variant on one clip with `docs/camera-quality-research.md`'s
+  metrics. It restores the user's `denoise.conf` byte for byte on exit; its README covers setup
+  over SSH, the toggles and the metrics. Tests: `tools/tests/camera-lab-test.sh`.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
   are rebuilt from the patch and the scripts above; JOURNEY section 8 records how.
 
