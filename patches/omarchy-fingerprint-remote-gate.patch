@@ -288,7 +288,7 @@ index cdb64b5d..f5ec9049 100755
  [[ $(grep -m1 '^sudo ' "$log") == 'sudo fprintd-delete alice' ]] || fail "fprintd deletes the prints first" "$(cat "$log")"
 diff --git a/test/shell.d/session-remote-test.sh b/test/shell.d/session-remote-test.sh
 new file mode 100644
-index 00000000..1cfc64e6
+index 00000000..873d4d97
 --- /dev/null
 +++ b/test/shell.d/session-remote-test.sh
 @@ -0,0 +1,81 @@
@@ -359,7 +359,7 @@ index 00000000..1cfc64e6
 +done
 +pass "a logind that does not answer leaves the session local"
 +
-+# This runs in sudo's and polkit's PAM stack, so a stalled logind must not
++# This runs in sudo's PAM stack, so a stalled logind must not
 +# hold up every sudo.
 +run_remote "$ssh_session" 'b true' >/dev/null
 +! grep -qv '^--timeout=2 ' "$busctl_log" || fail "logind gets a short timeout, not busctl's 25 s" "$(cat "$busctl_log")"
