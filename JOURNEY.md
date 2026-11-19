@@ -882,3 +882,27 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - at 22.0 s: "Touch ID: restored 1 enrolled identity/identities; enrolment survived reboot";
   - at 32.7 s and 39.3 s: two matches, each with the unlock policy satisfied (generations 2 and 3).
 - So the enrolment survives a boot from full power-off as well as a restart (9.42). Still open on OMS-2: macOS's own Touch ID and keychain, and the report.
+
+### 9.47 Touch ID goes into the image: pinned omarchy-mac and libfprint-git builds (OMS-28, 2026-11-19)
+- Done means a clean reinstall, and Touch ID on the soak-test Mac rests on hand changes (9.41). So the derivation now installs what those hand changes did, as packages pacman owns. Allan's decisions: build them ahead of the derivation and pin them by sha256, as Stage 2 is; give omarchy-mac a pkgrel just above the repo's.
+- **omarchy-mac is 0.2.3, not #160's tree.** #140 branched from omarchy-mac-pkgs `28abebe`, where omarchy-mac is 0.2.6; omacom's `[omarchy]` still ships 0.2.3 (`ea0097a`). Building #160's head would bring 0.2.4–0.2.6 to the J616c untried, and its recipe insists on the tree's own version. Instead, #140's and #160's script and test changes go onto `ea0097a` (`patches/omarchy-mac-0.2.3-touchid-j616c.patch`). It's what the soak-test Mac runs, plus #160's guard.
+  - The four scripts and the consent test applied with a three-way merge. The README change was left out, since it conflicts with 0.2.3 and isn't needed to run.
+  - On `ea0097a` with the patch, every omarchy-mac test file gives the same result as without it, except the consent test (6 ok to 8 ok). `setup-test.sh` stops on this Linux host either way.
+- **`tools/build-touchid-packages`** takes omacom/omarchy-pkgs at #2737's head `2f4d1968`, whose omarchy-mac recipe is master's 0.2.3-2 (`f9d0eda`). It adds the patch to omarchy-mac's recipe as pkgrel `2.1`, and runs omarchy-pkgs' own `bin/build --mirror edge --arch aarch64`, in omacom's builder image, as their CI builds a package.
+- **Building it here, on x86_64 under qemu-user, took two fixes.**
+  - This host's qemu binfmt had flags `PF`, without credentials, so `sudo` in the builder container failed ("effective uid is not 0"). With Allan's OK it was re-registered from `tonistiigi/binfmt:qemu-v9.2.2`, now `POCF`. Undo: `sudo systemctl restart systemd-binfmt`, or a reboot.
+  - Both packages' `check()` then failed for qemu's reasons. libfprint's umockdev tests couldn't read a pty's attributes, and a USB transfer timed out. omarchy-mac's lock test finds its waiting `flock` by command line, which qemu prefixes. So on a non-aarch64 host the script first runs omarchy-mac's Touch ID tests natively (8 ok), then replaces each recipe's `check()` with one that says it was skipped. libfprint's tests ran in omacom's native aarch64 CI at this commit. A native build runs every `check()` unchanged.
+- **The packages** (`BUILDINFO` records the inputs and how the tests ran):
+  - `omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst`, sha256 `e5cc85eb2975e40078dce8bf9dc7ecc253a2ca8d0a8304d567611efab807c1fb`. Its eligibility admits `apple,j616c`, both options writers add `xart_guard=1`, and the source revision is `ea0097a`.
+  - `libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst`, sha256 `856fab055b76bc8858be27453d30a3d70b2ea51d1f6ddb94cd8df2feebc62daa`. It has the same file list, metadata, and SEP and interface-version strings as #2737's CI build, which runs on the soak-test Mac.
+- **`tools/derive-j616c-image`** takes the package directory as a new sixth input and checks both packages against `TOUCHID_PINS`. It stops if `[omarchy]` offers anything other than omarchy-mac `0.2.3-2` and libfprint-git `-5`. Then it:
+  - installs both packages, then `fprintd` and `usbutils`, so Omarchy's fingerprint setup installs nothing (its `pacman -S` could put the v4-only `-5` back);
+  - checks that the installed omarchy-mac admits the J616c and writes the guard, and that no Touch ID agreement or options file is in the image;
+  - adds `fprintd-aurora` to `IgnorePkg`. It declares `replaces=fprintd`, and with `[aurora]` first, `-Syu` would otherwise swap it in, and its `libfprint-aurora` would push `libfprint-git` out. That's the same trap as `m1n1-aurora`. The soak-test Mac doesn't have this line yet, since only new images get it.
+
+  shellcheck reports nothing new in the derivation or the build script.
+- **Not yet:**
+  - a run of the derivation, which needs the Lima VM on the macOS side;
+  - a fresh install from that image, where Omarchy's setup offers Touch ID and enrols with no hand step;
+  - a first `omarchy update` after it;
+  - macOS's own Touch ID check (OMS-2) before installing.
