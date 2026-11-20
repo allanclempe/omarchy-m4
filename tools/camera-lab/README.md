@@ -103,6 +103,10 @@ lux and the colour temperature, and the layer 2 stack.
   `pw-cli set-param`. They need Aurora's `libaurora-camera-effects.so`, which isn't installed on the
   Mac, so the menu says so and offers nothing; framing is also off on this board
   (`camera.framing.supported` is false). This part is untested.
+- **Reference.** Shows a macOS still in its own window next to the preview, so the comparison is
+  on screen: the newest `png` or `jpg` in `~/camera-lab/reference/` (copy a Photo Booth shot or
+  `macos-capture`'s `last-frame.png` there), or the file `CAMERA_LAB_REFERENCE` names. It closes
+  with the lab. Keep such pictures out of the repo.
 - **Snapshot.** Saves into `~/camera-lab/<date-time>/`: `split.png` (A and B from the same frame),
   `A.png` and `B.png` (full frames, taken a moment apart, B after a second so temporal filters
   settle), and `notes.txt` with every layer 1 and 2 setting, the graphs, gain, exposure, lux,
@@ -170,6 +174,23 @@ what to run:
 sudo pacman -S v4l2loopback-dkms
 sudo modprobe v4l2loopback exclusive_caps=1 card_label="Camera lab"
 ```
+
+## `macos-capture` (a lossless reference from macOS, untested)
+
+Photo Booth saves JPEG stills and H.264 video, which remove noise by themselves, so they only
+compare tone and colour. `macos-capture.swift` takes the camera through AVFoundation at 1920x1080
+in '420v', the NV12 the Linux driver delivers, lets exposure settle, and writes `raw.nv12` plus
+`last-frame.png` and `notes.txt` in the clip layout `camera-lab clip --from` reads. On the Mac in
+macOS (Xcode's Swift):
+
+```
+swiftc -O -o macos-capture macos-capture.swift -framework AVFoundation -framework CoreImage -framework AppKit
+./macos-capture ~/Pictures/omarchy-cam-macos 100 60     # OUT_DIR FRAMES SKIP
+```
+
+Run it in Terminal on the Mac the first time, so macOS can ask for camera access; over SSH the
+prompt may not appear. It has not run yet: the first compile failed on a session preset that
+doesn't exist on macOS (fixed) and the Mac was rebooted before the second try.
 
 ## `camera-lab status`, `restore`, `check`
 

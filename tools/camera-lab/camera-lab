@@ -662,6 +662,47 @@ cl_apply_view() {
   cl_stack_save
 }
 
+# --- Reference picture ---------------------------------------------------------
+
+# A still from macOS (Photo Booth, or macos-capture's PNG) shown in its own
+# window beside the preview. CAMERA_LAB_REFERENCE names it; else the newest
+# picture in $CL_OUT/reference/. Pictures of people stay out of the repo.
+CL_REF_PID=''
+
+cl_reference_file() {
+  local f
+  if [[ -n ${CAMERA_LAB_REFERENCE:-} ]]; then
+    [[ -r $CAMERA_LAB_REFERENCE ]] && printf '%s' "$CAMERA_LAB_REFERENCE"
+    return
+  fi
+  f=$(ls -t -- "$CL_OUT"/reference/*.png "$CL_OUT"/reference/*.jpg "$CL_OUT"/reference/*.jpeg 2>/dev/null | head -n 1) || true
+  [[ -n $f ]] && printf '%s' "$f"
+}
+
+cl_reference_shown() { [[ -n $CL_REF_PID ]] && kill -0 "$CL_REF_PID" 2>/dev/null; }
+
+cl_reference_toggle() {
+  local f
+  if cl_reference_shown; then
+    cl_reference_stop
+    return 0
+  fi
+  f=$(cl_reference_file) || true
+  if [[ -z $f ]]; then
+    gum style --foreground 214 "No reference picture: put a macOS still (png or jpg) in $CL_OUT/reference/"
+    sleep 2.5
+    return 0
+  fi
+  setsid mpv --no-config --no-audio --image-display-duration=inf --loop-file=inf \
+    --title='macOS reference' --autofit-larger=45%x45% -- "$f" </dev/null >/dev/null 2>&1 &
+  CL_REF_PID=$!
+}
+
+cl_reference_stop() {
+  [[ -n $CL_REF_PID ]] && kill "$CL_REF_PID" 2>/dev/null || true
+  CL_REF_PID=''
+}
+
 # --- Effects ------------------------------------------------------------------
 
 cl_effects_installed() { [[ -e $CL_EFFECTS_LIB ]]; }
@@ -685,6 +726,7 @@ cl_effects_off() {
 # 2 when something couldn't be put back (its backup is kept), else 0.
 cl_restore_all() {
   local did=0 rc worst=0
+  cl_reference_stop
   cl_preview_stop
   rc=0; cl_conf_restore || rc=$?
   if ((rc == 0)); then
@@ -1015,6 +1057,7 @@ cl_live() {
       "View: split (same frame, left as apps see it, right + post filters)" \
       "View: full A (as apps see it)" \
       "View: full B (+ post filters)" \
+      "Reference: $(cl_reference_shown && echo hide || echo show) the macOS picture in its own window" \
       "Camera (layer 1: denoise.conf, V4L2, resolution)..." \
       "Post filters (layer 2: FFmpeg, preview only)..." \
       "Effects$(cl_effects_installed || echo ": not installed")..." \
@@ -1025,6 +1068,7 @@ cl_live() {
       "View: split"*) CL_VIEW=split; cl_apply_view || true ;;
       "View: full A"*) CL_VIEW=a; cl_apply_view || true ;;
       "View: full B"*) CL_VIEW=b; cl_apply_view || true ;;
+      Reference*) cl_reference_toggle ;;
       Camera*) cl_menu_camera ;;
       Post*) cl_menu_post ;;
       Effects*) cl_menu_effects ;;

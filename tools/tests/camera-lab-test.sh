@@ -198,6 +198,15 @@ preview=$(cl_preview_cmd 1920 1080 node.name /run/s.sock /run/in.conf)
   fail "preview cmd: $preview"
 [[ $preview == *"--input-ipc-server=/run/s.sock "*" - " ]] || fail "preview cmd: no IPC socket or stdin: $preview"
 
+# --- The macOS reference picture: the newest in reference/, or the named one ---------------
+if f=$(cl_reference_file); then fail "reference: found [$f] with no reference dir"; fi
+mkdir -p "$CAMERA_LAB_OUT/reference"
+touch -d '2026-11-16 10:00' "$CAMERA_LAB_OUT/reference/older.jpg"
+touch -d '2026-11-20 18:36' "$CAMERA_LAB_OUT/reference/newer.png"
+same "reference newest" "$(cl_reference_file)" "$CAMERA_LAB_OUT/reference/newer.png"
+same "reference named" "$(CAMERA_LAB_REFERENCE=$CAMERA_LAB_OUT/reference/older.jpg cl_reference_file)" "$CAMERA_LAB_OUT/reference/older.jpg"
+if f=$(CAMERA_LAB_REFERENCE=$work/missing.png cl_reference_file) && [[ -n $f ]]; then fail "reference: named a missing file [$f]"; fi
+
 # --- The saved post stack: empty is empty, not one blank name --------------------------
 declare -a got=()
 CL_STACK=()
