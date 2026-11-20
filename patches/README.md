@@ -6,7 +6,7 @@ Changes to other projects' repositories, kept here as plain `git diff` output so
 | --- | --- | --- | --- |
 | `j616c-installer.patch` | omacom/omarchy-mac-installer | `a576543` (PR #212's head) | J616c developer admission, the Mach-O Stage 1 Recovery modes (`macho-unpadded`, `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix |
 | `omarchy-mac-boot-aurora.patch` | omacom/omarchy-mac-pkgs | `28abebee14de05c35a2caa8dd257d056d15a641e` (main, 2026-11-09, "Merge pull request #110") | Teaches omarchy-mac-boot's `omarchy-apple-silicon-boot-check` to verify Aurora's Stage 2 (OMS-16, JOURNEY 9.24). Also applies to main `76d8b72`; sent upstream as [omacom/omarchy-mac-pkgs#150](https://github.com/omacom/omarchy-mac-pkgs/pull/150) (9.36) |
-| `omarchy-lock-fingerprint-scanning.patch` | omacom/omarchy | `b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab` (quattro, 2026-11-19, "Keep colors in terminal windows an agent opens (#19507)") | The lock screen shows the fingerprint reader matching a finger: the icon pulses and the field says "Checking…" while fprintd reports a finger on the reader (OMS-36, JOURNEY 9.48) |
+| `omarchy-lock-fingerprint-scanning.patch` | omacom/omarchy | `b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab` (quattro, 2026-11-19, "Keep colors in terminal windows an agent opens (#19507)") | The lock screen shows the fingerprint reader matching a finger: the icon pulses and the field says "Checking…" while fprintd reports a finger on the reader (OMS-36, JOURNEY 9.48); sent upstream as [omacom/omarchy#19537](https://github.com/omacom/omarchy/pull/19537) |
 
 ## omarchy-mac-boot-aurora.patch
 
