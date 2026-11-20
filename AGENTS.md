@@ -78,7 +78,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Machine | Reach it | Role |
 | --- | --- | --- |
 | The M4 Max, macOS | `allanclempe@allans-macbook-pro` over SSH | Builds the engine, app and installer package (Xcode), and runs the Lima build VM `omarchy-builder` for the image |
-| The M4 Max, Omarchy | `clempe@dev-machine-mac-1` over Tailscale SSH (the name changes with each fresh install) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
+| The M4 Max, Omarchy | `clempe@dev-machine-mac-2` over Tailscale SSH (the name changes with each fresh install; find the online `dev-machine-mac-<n>` in `tailscale status`) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
 | dev-machine-01 | local | Linux host on the other end of the USB-C cable for `tools/aura-usb/` |
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
