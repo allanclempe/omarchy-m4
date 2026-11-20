@@ -36,7 +36,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
-| `sudo` skips Touch ID over SSH: a `pam_exec` gate line in `/etc/pam.d/sudo`, script at `/usr/local/bin/omarchy-session-remote` (not yet applied, JOURNEY 9.50) | no: the fix is Omarchy's own code, `patches/omarchy-fingerprint-remote-gate.patch` for basecamp/omarchy, not yet sent; the image gets it with the `omarchy` package once upstream ships it, and an installed Mac by its migration on `omarchy update` | OMS-35 |
+| `sudo` skips Touch ID over SSH: a `pam_exec` gate line in `/etc/pam.d/sudo`, script at `/usr/local/bin/omarchy-session-remote` (applied 2026-11-20, JOURNEY 9.50) | no: the fix is Omarchy's own code, `patches/omarchy-fingerprint-remote-gate.patch` for basecamp/omarchy, not yet sent; the image gets it with the `omarchy` package once upstream ships it, and an installed Mac by its migration on `omarchy update` | OMS-35 |
 
 ## Where things are
 
@@ -82,7 +82,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Machine | Reach it | Role |
 | --- | --- | --- |
 | The M4 Max, macOS | `allanclempe@allans-macbook-pro` over SSH | Builds the engine, app and installer package (Xcode), and runs the Lima build VM `omarchy-builder` for the image |
-| The M4 Max, Omarchy | `clempe@dev-machine-mac-1` over Tailscale SSH (the name changes with each fresh install) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
+| The M4 Max, Omarchy | `clempe@dev-machine-mac-2` over Tailscale SSH (the name changes with each fresh install; find the online `dev-machine-mac-<n>` in `tailscale status`) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
 | dev-machine-01 | local | Linux host on the other end of the USB-C cable for `tools/aura-usb/` |
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
