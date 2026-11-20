@@ -35,7 +35,7 @@ To change it, apply it to a branch at the base commit, commit there, and regener
 
 Omarchy 4 locks with omarchy-shell's Quickshell lock screen (`shell/plugins/lock`), and a fingerprint unlock runs through `pam_fprintd`, which says nothing between the finger landing and the verdict. On a match-on-chip reader (a Mac's Touch ID, matched by the Secure Enclave) that gap is long enough to read as "nothing happened". fprintd does publish the reader's finger status, as the `finger-present` property of its device over D-Bus, and Aurora's libfprint driver reports it the moment the enclave says "hold still".
 
-The patch has the lock service watch fprintd while the session is locked with a reader enrolled and the displays on, through `gdbus monitor --system --dest net.reactivated.Fprint` (Quickshell has no D-Bus client; gdbus is GLib's, which Quickshell depends on, and flushes each line). A finger reported during the lock's own attempt sets `fingerprintScanning`; the finger leaving, the attempt settling, an unlock, a blank or a 5 s bound clears it. The lock view then shows the existing "Checking…" text in the field and pulses the fingerprint icon's opacity, off under `omarchy toggle animations` (the icon's brighter colour stands alone there). So the feedback lasts as long as the driver reports the finger: whether that reaches the verdict, or ends when the capture does, is the driver's timing, which the Mac trial in JOURNEY 9.48 measures. `test/shell.d/lock-fingerprint-scan-test.sh` checks the line parser in node and the service, its monitor process and the view in a Quickshell fixture.
+The patch has the lock service watch fprintd while the session is locked with a reader enrolled and the displays on, through `gdbus monitor --system --dest net.reactivated.Fprint` (Quickshell has no D-Bus client; gdbus is GLib's, which Quickshell depends on, and flushes each line). A finger reported during the lock's own attempt sets `fingerprintScanning`; the finger leaving, the attempt settling, an unlock, a blank or a 5 s bound clears it. The lock view then shows the existing "Checking…" text in the field and pulses the fingerprint icon's opacity, off under `omarchy toggle animations` (the icon's brighter colour stands alone there). So the feedback lasts as long as the driver reports the finger: whether that reaches the verdict, or ends when the capture does, is the driver's timing, which the Mac trial in JOURNEY 9.48 measures. The area's three existing tests grow: `lock-fingerprint-retry-test.sh` checks the line parser in node, `lock-fingerprint-service-test.sh` runs a second fixture on the service and its monitor process, and `lock-fingerprint-indicator-test.sh`'s fixture checks the view and the pulse.
 
 Apply and test it under a Hyprland session with `quickshell`, `node` and `jq` (the fixture needs a compositor; the suite skips it otherwise):
 
@@ -43,7 +43,6 @@ Apply and test it under a Hyprland session with `quickshell`, `node` and `jq` (t
 git clone https://github.com/omacom/omarchy && cd omarchy
 git checkout b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab
 git apply /path/to/aurora-m4/patches/omarchy-lock-fingerprint-scanning.patch
-bash test/shell.d/lock-fingerprint-scan-test.sh
 bash test/shell.d/lock-fingerprint-service-test.sh
 bash test/shell.d/lock-fingerprint-indicator-test.sh
 bash test/shell.d/lock-fingerprint-retry-test.sh
