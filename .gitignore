@@ -3,3 +3,10 @@ __pycache__/
 
 # Sums up private team discussion; stays local (AGENTS.md, Working rules).
 docs/questions-for-the-team.md
+
+# After-reinstall setup scripts carry credentials; they live on dev-machine-01 outside git (OMS-39).
+mac-setup*
+make-mac-setup
+brave-sync-code
+.env
+.envrc
