@@ -64,6 +64,11 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `patches/omarchy-mac-boot-aurora.patch` teaches omarchy-mac-boot's boot check Aurora's Stage 2
   (OMS-16), against omacom/omarchy-mac-pkgs `28abebe`; sent upstream as omacom/omarchy-mac-pkgs#150. `patches/README.md` gives each patch's base
   and how to apply and test it.
+- `patches/omarchy-lock-fingerprint-scanning.patch` makes omarchy-shell's lock screen show the
+  fingerprint reader matching a finger (the icon pulses and the field says "Checking…" while the
+  Secure Enclave matches; OMS-36, JOURNEY 9.48), against omacom/omarchy `b20d787`; sent upstream
+  as omacom/omarchy#19537. Not part of the image: the shell comes from Omarchy itself, so it
+  reaches the Mac through upstream.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
   name collisions `[aurora]` causes by being first. It also covers the kernel dependency
