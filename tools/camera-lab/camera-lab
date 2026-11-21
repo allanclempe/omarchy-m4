@@ -100,7 +100,8 @@ cl_load_presets() {
         continue
       fi
       [[ -n ${CL_PCHAIN[$name]+x} ]] || CL_PNAMES+=("$name")
-      CL_PCHAIN[$name]=$chain
+      # ${CL_OUT} in a chain is the lab's output directory (for movie= sources).
+      CL_PCHAIN[$name]=${chain//\$\{CL_OUT\}/$CL_OUT}
       CL_PNOTE[$name]=${note:-}
       CL_PFLAGS[$name]=${flags//[[:space:]]/}
     done <"$file"

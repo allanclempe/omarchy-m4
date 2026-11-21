@@ -332,6 +332,11 @@ EOF
     -vf "$CL_SPECK_GRAPH" -f rawvideo -pix_fmt gray - | python3 "$CL_HELPER" specks 16 16)" "frames=1 dark=1 bright=1"
   cl_graph_check "$(cl_view_graph split 320 180 despeckle cas)" 320 180 >/dev/null || fail "graph check: refused a good graph"
   if cl_graph_check "eq=gamma=abc" 320 180 >/dev/null; then fail "graph check: passed a bad graph"; fi
+  # The shading presets multiply by a gain map under $CAMERA_LAB_OUT; make a small one.
+  mkdir -p "$CAMERA_LAB_OUT/shading"
+  python3 "$lab/shading-gain.py" "$CAMERA_LAB_OUT/shading/gain-binned1216.png" 320x180 >/dev/null ||
+    fail "shading-gain.py failed"
+  cl_load_default_presets
   for name in "${CL_PNAMES[@]}"; do
     "${ff[@]}" -vf "$(cl_render_graph 320 180 "$name")" -f null - 2>"$work/err" ||
       fail "preset $name doesn't run in FFmpeg: $(head -n 1 "$work/err")"
