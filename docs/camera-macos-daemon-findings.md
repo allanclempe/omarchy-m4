@@ -234,3 +234,28 @@ sudo insmod ~/isp-2233-exp/isp/apple-isp.ko binned_presets=1 binned_config=7 bin
 ```
 
 `fd_metering` (step 5) and `semantic` (step 6) go last, because a fault ends the session.
+
+## 6. What macOS's unified log shows during a camera session (2026-11-21)
+
+With the `com.apple.isp` and `com.apple.cmio` subsystems at debug level, a one-minute Photo Booth
+session on the J616c logged the stream setup by name. The daemon itself (`appleh16camerad`,
+`com.apple.isp:daemon`) only logs property ids (`setProperty - 1, 2, 9`, and `105` on every frame,
+with one `Could not set CIL Brightness` while property 105 was first set). The ISP plugin, running in
+`cameracaptured` (`com.apple.isp:plugin` and `com.apple.isp:services`), logs the sequence:
+
+- `InitDeviceConfigsCache`, `SetMultipleOutputSupportEnabled - True`, `SetVideoOutputsEnabled -
+  SecondaryScaler:1` (the app's frames come from the secondary scaler output);
+- `SetStreamingTuningProfile - ISP tuning profile = 0`;
+- `SetObjectDetectionConfiguration` with `overrideMaxFaceCount=10`, then
+  `ObjectDetectionSetCurrentOverrideMaxHumanFaceCount` 10 (0 at the end): face detection runs for
+  the whole session;
+- `SetAEFDSceneMeteringConfig`: the face/scene metering the Linux driver skips on H17;
+- `SetZoomFactor` (value redacted), and the frame-rate band `min 15`, `max 30`;
+- `H16ISPCaptureStreamStart` on channel 0, `First good frame` after about 50 ms, the
+  `SecondaryScaler` frame to the client; `H16ISPServicesRemote: SetProperty 1, 2, 9` round trips.
+
+Every value is `<private>` in the log, so the sequence is known and the payloads aren't; those
+are in the plugin (`H16ISP.mediacapture`) and `H16ISPServices`, both only in the dyld shared
+cache. The capture was `log stream --level debug --predicate 'process == "appleh16camerad" OR
+subsystem BEGINSWITH "com.apple.isp" OR subsystem BEGINSWITH "com.apple.cmio"'` after
+`sudo log config --mode "level:debug,persist:debug" --subsystem com.apple.isp` (and `com.apple.cmio`).
