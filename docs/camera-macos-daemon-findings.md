@@ -259,3 +259,227 @@ are in the plugin (`H16ISP.mediacapture`) and `H16ISPServices`, both only in the
 cache. The capture was `log stream --level debug --predicate 'process == "appleh16camerad" OR
 subsystem BEGINSWITH "com.apple.isp" OR subsystem BEGINSWITH "com.apple.cmio"'` after
 `sudo log config --mode "level:debug,persist:debug" --subsystem com.apple.isp` (and `com.apple.cmio`).
+
+## 7. The ISP capture plugin: what an app's stream sends (2026-11-21, evening)
+
+The plugin `H16ISP.mediacapture`, the service library `H16ISPServices` and `CMCaptureCore` were
+extracted from macOS 26.7.3's dyld shared cache and read like the daemon (section 1), with the
+debug log of section 6 for the order and the values it prints. The plugin keeps its local symbols,
+so every function has its C++ name (`H16ISP::H16ISPDevice::SetSharpness` and so on). Each
+`H16ISPDevice` method builds one command (opcode at `+0x4`, channel at `+0x8`) and calls
+`ISP_SendCommand`, which hands it to the camera kernel extension with `IOConnectCallScalarMethod`
+selector `0xa`, the same as the daemon's sender. A script mapped about 300 methods to their
+opcodes. Calls into other images of the cache can't be followed from an extracted image, so
+CoreFoundation calls are read from context and dictionary keys from the plugin's import list. The
+kernel extension wasn't extracted (`kext/` is empty): it supplies the output presets and may send
+commands of its own, which nothing here shows.
+
+### 7.1 Corrections to sections 2 to 5
+
+- **The plugin, not the daemon, runs an app's stream.** In the Photo Booth session the plugin, in
+  `cameracaptured`, powers the camera on, selects the format and starts the stream; the daemon
+  only answers four properties: `1` and `9` when the device is created, `2` when the stream starts
+  and stops, and `105` on every frame. The daemon's `StartStreaming` (section 2) is not on this
+  path. The plugin's `ISP_PowerOnCamera` is the same code as the daemon's (the same setfile
+  adjustment, the same ideal-percent table with 84 for `0x958`), so section 3 still holds.
+- **The plugin never sends `0x0a49` or `0x0a4a`.** `LTMHWConfigSet` and `CLRProcGammaConfigSet`
+  are compiled in and have no caller. That fits the test of JOURNEY 9.40, where the pair made the
+  frame darker: an app on macOS doesn't get it. Experiment 2 of section 4 is withdrawn.
+- **The third argument of the sender is not a reply size.** The plugin passes 0 for every command,
+  including the reads whose answers it uses (`0x0d02`, the face-detection configuration read,
+  and `0x0a0a`, the sharpness read). The kernel extension decides what comes back. So "macOS sends
+  `0x820e` without asking for a reply" (section 2, row 17) isn't supported.
+- **Property `105` is the camera indicator light.** The daemon's `setProperty` sends `0x060f`
+  (`ISP_SetCILDutyCycle`) for it; `Could not set CIL Brightness to 419` in the log is that path.
+  It has nothing to do with the picture.
+
+### 7.2 What the plugin sends for the session, in order
+
+From the log's order and the code behind each line. Commands that run only when a debug
+preference is set are listed in 7.5 and left out here.
+
+| # | Step | Command and payload | Linux |
+| --- | --- | --- | --- |
+| 1 | `SetFormatIndex` (format 4) | `0x013b` SBS (from the preset), `0x0107` config select (the preset's sensor config), and when the preset uses the front-end scaler (FES): `0x0901` FES output size `{chan, u32 w, u32 h}` (`0x14` bytes) and `0x0900` FES crop `{chan, u32 x, y, w, h}` (`0x1c`); then `0x010e` recycle mode 1, `0x010f` recycle start, `0x0903` FES auto-adjust 1 | same, without the FES pair: Linux crops with `0x0801`/`0x080c` |
+| 2 | frame rate 15 to 30 | kept; sent at the frame receiver start (`0x020a`, `0x0208`) | sent, with Linux's own limits |
+| 3 | `Enable CNR: True` | `0x0a2f` | same |
+| 4 | gain cap `0x6000` "for next stream start" | `0x020c` `{chan, u32 0x6000}` at the stream start: 96.0 in 8.8, the value of the J815 trace | **none** |
+| 5 | object detection, `featureFlags=0x8`, ten faces | kept for the face-detection start (7.4) | none |
+| 6 | `SetStreamingTuningProfile` 0 | **nothing**: a command goes out only when the profile changes (`0x0b19`, ProRes sharpening tuning, 1 for a ProRes output, else 0) | none needed |
+| 7 | `SetAEFDSceneMeteringConfig` | `0x820e`, client's values (7.4) | skipped on H17 |
+| 8 | exposure bias `0x100`, tag 0 | `0x0204` `{chan, u16 0x100, u32 tag 0}` (`0x14`) | none |
+| 9 | AE stability `0x10/0x08` | `0x021a` 16, `0x0229` 8 | 32, 20 |
+| 10 | AE convergence 100/100 | `0x0243` `{chan, u8 100, u8 100}` (`0x10`) | none |
+| 11 | zoom 1.0 | kept; sent at the stream start only when it isn't 1.0, as `0x0810` `{chan, u16 zoom x 1024}` | none needed |
+| 12 | `Enable TNR: True` | the `0xc100` family at the frame receiver start, values from the TNR configuration | the same family |
+| 13 | stream start: metadata | `0x0126`/`0x014f` for sections chosen by client options and preferences | none |
+| 14 | stream start: colour space | **`0x200a` `LTMGammaSet` `{chan, u32}`, `0x2004` `LTMModeSet` `{chan, u16}`, `0x0a48` `EnableHDRC` `{chan, u8}`, `0x831d` `SetAWBRGBColorspace` `{chan, u8}`**, every stream, before the channel starts (7.5) | **none** |
+| 15 | stream start: clocks | MIPI, charge-pump and pixel-clock frequency indexes (`0x011b`, `0x0146`, `0x0120`) | none |
+| 16 | stream start: outputs | `0x0816` secondary scaler source, `0x080c` crop, `0x0b09` output config; ALS `0x0a1c` when the stream's ALS mode asks | first scaler only |
+| 17 | stream start | `0x020c` gain cap (row 4) | none |
+| 18 | frame receiver start | face detection: `0x0d02`, `0x0d03`, `0x0d05`, `0x0d00` (7.4); frame rate; TNR; first buffers; then the kernel extension's start-camera call (user-client selector `0x36`) | pools, frame rate, `0x0100` |
+| 19 | after the first frame | `0x0a0f` histogram on; `0x820e` a second time | none |
+
+### 7.3 Item 1: the tuning profile and the noise/sharpness use cases
+
+- **Tuning profile 0 sends nothing.** `SetStreamingTuningProfile` compares the value with the
+  stream's current profile (0 at creation) and, on a change, sends only `0x0b19` (ProRes sharpening
+  tuning). The log's `ISP tuning profile = 0 (err = 0)` is a no-op.
+- **`ApplyNoiseReductionConfiguration`** runs for use case 0 (video) when the client sets the
+  stream property `NoiseReductionAndSharpeningConfiguration`, and for use cases 1 and 2 from
+  still captures. Its dictionary keys are `RawNoiseFilterStrength`, `SharpeningControl`,
+  `LocalContrastEnhancementStrength` and `MultiBandNoiseReductionConfiguration` (`Enabled`,
+  `MultiBandEnabled`, five `LumaProcessingStrength`, `ChromaProcessingEnabled`, five
+  `ChromaProcessingStrength`). A missing key means **128**; a value above 255 is refused. The
+  commands, in order:
+
+  | Command | Payload | Default |
+  | --- | --- | --- |
+  | `0x0a3d` raw noise filter (RNF) strength | `{chan, u32 use case, u8 strength}`, `0x14` | 128 |
+  | `0x0a13` knob to manual, then `0x0a09` sharpness | `{chan, u32 knob 1}`, `0x10`; `{chan, u32 use case, u8 sharpness}`, `0x14` | 128 |
+  | `0x0a40` local contrast enhancement (LCE) strength | `{chan, u32 use case, u8 strength}`, `0x14` | 128 |
+  | `0x0a3a` MBNR enable | `{chan, u32 use case, u32 mode, u8 chroma}`, `0x18` | mode 2, chroma 0 without an MBNR dictionary |
+  | `0x0a3b` MBNR bands | `{chan, u32 use case}`, then five pairs of u8 (luma, chroma) strengths from `+0x10` and five u8 band enables from `+0x1a`, `0x20` | 128 each, all enabled |
+
+- Whether Photo Booth's stream gets this property can't be read here: the function logs only
+  failures and the dictionary comes from `CMCapture`, which wasn't extracted. What is certain is
+  the shape: four strengths centred on 128 and a five-band MBNR table, each one small command.
+  The same plugin also exposes single knobs as properties (`0x0a0b` noise reduction level,
+  `0x0a2d` CNR level, `0x0a07` scaler sharpening, `0xc402` SNF parameters, one u8 each); none of
+  them shows in the log.
+- Linux sends `0x0a3a` with mode 1 and chroma on, and none of the rest.
+- Confidence: high for the opcodes, layouts and defaults; unknown for the values macOS's client
+  passes.
+
+### 7.4 Item 2: face metering and face detection
+
+- **`0x820e`** has the daemon's layout: `0x24` bytes, the channel at `+0x8` (with bit 31 set in one
+  multi-stream case, not this one), twelve u16 from `+0xc`. The values come from the client's
+  `AEFaceDetectionMetering` dictionary (twelve keys, all required), so the session's numbers aren't
+  in the binary; the daemon's defaults (section 2) are the best available. The first send comes
+  right after the format setup (row 1) and CNR, before the stream starts; the second after the
+  first frame.
+- **Face detection** starts in the frame receiver, before the start-camera call, only when the
+  face-detection output pool (pool type 3) exists:
+  1. `0x0d02` read, `{chan}`, `0x1c` bytes; the u32 at `+0x10` of the answer goes into the next
+     command;
+  2. `0x0d03` `{chan, u32 from the read, five u8}` (`0x18`): bits 0, 1 and 2 of the feature flags,
+     then bit 3 and bit 4 inverted. For the session's flags `0x8`: `0, 0, 0, 0, 1`;
+  3. `0x0d05` `{chan, u8 face-detection mode}` (`0x10`), the mode from the client's
+     `FaceDetectionMode` property (not logged);
+  4. `0x0d00` `{chan}` (`0xc`).
+- **Why `0x820e` faults on Linux** is not settled. It isn't the reply (7.1). What differs: the
+  values (the client's against the daemon's defaults), the timing (macOS also sends it on a
+  running stream) and the face-detection engine, which on macOS is set up in the same stream.
+- `CMCaptureCore` names LTM look-up tables "WithoutFaceBoost", which suggests the firmware's LTM
+  lifts faces with its own face detection. That is an inference from a name.
+
+### 7.5 Item 3: local tone mapping
+
+- **`ApplyColorSpaceConfiguration` is the LTM setup an app's stream gets**, at every stream
+  start, before the frame receiver starts the channel. A colour-space change while outputs are
+  streaming is refused ("Unable to set ltm mode while streaming is active"). Values by the
+  client's colour space; a stream starts with colour space 0's:
+
+  | Colour space | `0x200a` gamma | `0x2004` mode | `0x0a48` HDRC | `0x831d` AWB colour space |
+  | --- | --- | --- | --- | --- |
+  | 0 (default) | 0 | 1 | 0 | 0 |
+  | 1 | 0 | 1 | 0 | 1 |
+  | 2 | 0 | 1 | 0 | 2 |
+  | 3 | 1 | 1 | 0 | 1 |
+  | 4 | 1 | 1 | 1 | 1 |
+  | 5 | 3 | 0 | 0 | 2 |
+  | 6 | 3 | 0 | 0 | 3 |
+
+  Colour spaces 0 to 2 all get gamma 0, LTM mode 1 and HDRC off; which colour space Photo Booth
+  asks for isn't logged. Linux sends none of the four, so its firmware runs with its own defaults.
+- Client properties: `LTMCurve` sends `0x0a44` `{chan, u32 curve}`, clamped to 0 to 3 (its error
+  string calls the command `CISP_CMD_CH_LTM_PROCESSING_MODE_SET`); `LockLTMNow` and `UnlockLTMNow`
+  suspend and resume LTM updates. LTM look-up-table metadata (section `0x13`)
+  and local histograms (`0xc01a` `{chan, u8}`) are statistics for the host. None shows in the log.
+- Only behind debug preferences (`Cam<N>HRLTM`, `Cam<N>HR`, `Cam<N>SNF`,
+  `Cam<N>BinningCompensation`, `Cam<N>FullLSC`, `EnableLTMStaticCLUT`), whose default is "leave the
+  firmware alone": LTM start and stop (`0x2000`, `0x2001`), highlight recovery start and stop
+  (`0x1000`, `0x1001`), static LUT for LTM (`0x2006`), binning compensation (`0xc200`), SNF start
+  (`0xc400`), full-resolution LSC (`0x0a11`, `0x0a12`). A normal session sends none of them.
+
+### 7.6 Item 4: lens shading
+
+- Power-on as in section 3: NVM reads, per-module shading rewritten into the setfile, `0x0a4e`
+  84 before the load.
+- `EnableFullResLSC` `0x0a11` `{chan}` and `DisableFullResLSC` `0x0a12` exist, behind the
+  `Cam<N>FullLSC` preference only. `SetLSCStrength` `0x0a4c` `{chan, float}` is a client property
+  (the plugin also sends −1.0, which looks like "default"); `0x0a4d` reads it. The per-module grids (`0x0507`, `0x0511`) are
+  read for clients that ask for them.
+- No stream-time code ties shading to the sensor mode. So the falloff Linux shows in configs 7 and
+  8 is not corrected by a command macOS sends per stream; the candidates stay the per-module
+  tables (section 4), the kernel extension, and `0x0a11`, which macOS doesn't send but the
+  firmware has.
+
+### 7.7 Item 5: the window, the zoom and the secondary scaler
+
+- Zoom 1.0 sends nothing (row 11).
+- The window comes from the output preset, a `0x78`-byte record per format: `+0x10` sensor
+  config, `+0x24` FES on, `+0x28`/`+0x2c` FES output size, `+0x30` FES crop rectangle, `+0x68` SBS.
+  The presets come from the kernel extension at run time; the plugin holds no 2132 or 1080
+  constant. When a preset turns the FES on, macOS cuts the window with the **front-end scaler**
+  at format selection (row 1); the secondary scaler (`0x080c`, `0x0b09`) then delivers the app's
+  frames. A 2132x1080 FES crop at 454,784 with a 1920x1080 FES output would give the geometry
+  measured by eye in JOURNEY 9.40, scaled in the front end rather than after the pipeline.
+  Whether format 4's preset turns the FES on, and its numbers, are inferences; the mechanism is
+  in the code.
+
+### 7.8 Experiments, ranked
+
+Parameters of the test module (7.9), off by default, writable under
+`/sys/module/apple_isp/parameters/` and read at each stream start, except where noted. As before, the
+firmware keeps state between streams: to get back to the baseline, reload the module. Leave
+`ltm_hw_config` and `clr_gamma_config` unset.
+
+| Rank | Parameters | Commands | Why | Expected effect | Risk |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `ltm_gamma=0 ltm_mode=1 hdrc=0 awb_colorspace=0`; then `ltm_mode=1` alone | `0x200a {chan, 0}`, `0x2004 {chan, 1}`, `0x0a48 {chan, 0}`, `0x831d {chan, 0}`, after the recycle start, before the crop | Every macOS app stream gets these four; Linux none. The only LTM input macOS gives per stream | Shadows and faces lifted, highlights held; or no change if the firmware's default is already mode 1 | Low to medium: exact macOS values for colour space 0, sent before the channel start as the plugin does |
+| 2 | `gain_cap=24576 ae_stability=16 ae_stability_to_stable=8 ae_speed=100 exposure_bias=256` | `0x020c`, `0x021a`/`0x0229` with 16/8, `0x0243`, `0x0204` | macOS's values from the session's log | Less noise in dim light (gain capped at 96x), calmer exposure changes | Low |
+| 3 | `fes_window=1` with the 9.40 window: `binned_presets=1 binned_config=7 binned_crop=1066 binned_crop_h=540 binned_crop_dy=-58` (insmod line) | `0x0901` output 1920x1080 and `0x0900` crop 2132x1080 at 454,784 after the config select; then `0x0801`/`0x080c` crop of the whole 1920x1080 | macOS's presets cut the window in the front end | The same framing with the downscale before the pipeline: finer detail and less noise per output pixel, or no change | Medium: if the FES refuses, the log says so and the stream may not start; a reload undoes it |
+| 4 | `lce_strength` 128, then 192, 64; `sharpness` 128, then 192; `rnf_strength` 128, then 64 and 192; `mbnr_strength=128` | `0x0a40`, `0x0a13`+`0x0a09`, `0x0a3d`, `0x0a3a` (mode 2, chroma 0)+`0x0a3b`, video use case | macOS's noise and sharpness controls, 128 when its client gives no value | LCE: local contrast, face modelling. Sharpness: edge crispness. RNF and MBNR: the noise against texture balance. 128 should look like today if it's the firmware's default | Low to medium: the sharpness knob stays manual until a reload |
+| 5 | `full_res_lsc=1`; then `lsc_strength_bits=0x3f800000` (1.0) | `0x0a11 {chan}`; `0x0a4c {chan, float}`, before the LTM set | The firmware has a switch for shading in full-resolution configs; config 7's falloff is the main gap left | Flatter walls and bench in config 7 | Low to medium |
+| 6 | `ltm_curve` 0 to 3 | `0x0a44 {chan, curve}` | A client property; the curves' meaning is unknown | A different tone curve per value | Low |
+| 7 | `fd_metering_late=1`; then `fd_metering=1` | `0x820e` with the daemon's values, right after the channel start; then before it | macOS sends it on a running stream as well | Exposure weighted to faces | High: it faulted before. Last in a session |
+
+Not now:
+- **Face detection** (`0x0d02`, `0x0d03`, `0x0d05`, `0x0d00`): it needs the face-detection pool
+  and a reader for its output, and the mode value isn't known. Payloads are in 7.4.
+- **The client's `0x820e` values, its colour space and its noise/sharpness dictionary**: they live
+  in `CMCapture` and the camera tuning it loads, which weren't extracted. The next read if the
+  ranked experiments leave a gap.
+- **The kernel extension**: the presets (and so the exact FES numbers) and whatever it sends at
+  the start-camera call.
+
+### 7.9 The test module, second round
+
+- **Source:** the test module of section 5 with the parameters above added, all earlier
+  parameters kept: `ltm_gamma`, `ltm_mode`, `hdrc`, `awb_colorspace`, `ltm_curve`, `full_res_lsc`,
+  `lsc_strength_bits`, `sharpness`, `rnf_strength`, `lce_strength`, `mbnr_strength`, `gain_cap`,
+  `ae_stability`, `ae_stability_to_stable` (defaults 32 and 20, Linux's), `ae_speed`,
+  `exposure_bias`, `fes_window` and `fd_metering_late`. All of them are read at each stream start;
+  the binned window parameters are read at load, so they go on the insmod line. Every test
+  command logs `OMS-34: <what> (<err>)`.
+- **Build:** not built on the Mac yet: it was in macOS when this was written. The changed files
+  (`isp-cam.c`, `isp-cmd.c`, `isp-cmd.h`) compile without warnings against another kernel's
+  headers (`W=1`), with the size asserts holding. Build it on the Mac as in section 5.
+
+```sh
+# read-only: the 30 parameters are listed
+modinfo -F parm ~/isp-2233-exp/isp/apple-isp.ko | cut -d: -f1
+# swap the module; a reboot is the undo
+systemctl --user stop aurora-camera-denoise
+sudo rmmod apple_isp
+sudo insmod ~/isp-2233-exp/isp/apple-isp.ko binned_presets=1 binned_config=7 binned_crop=1066 binned_crop_h=540 binned_crop_dy=-58
+systemctl --user start aurora-camera-denoise
+journalctl -k -b | grep -E 'apple-isp|OMS-34' | tail -5   # "preset 0: 1920x1080 from sensor config 7, crop 2132x1080 at 454,784 ..."
+# step 1, then a new stream; the kernel log shows four "OMS-34: ... (0)" lines
+echo 0 | sudo tee /sys/module/apple_isp/parameters/ltm_gamma
+echo 1 | sudo tee /sys/module/apple_isp/parameters/ltm_mode
+echo 0 | sudo tee /sys/module/apple_isp/parameters/hdrc
+echo 0 | sudo tee /sys/module/apple_isp/parameters/awb_colorspace
+```
