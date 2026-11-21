@@ -336,6 +336,8 @@ EOF
   mkdir -p "$CAMERA_LAB_OUT/shading"
   python3 "$lab/shading-gain.py" "$CAMERA_LAB_OUT/shading/gain-binned1216.png" 320x180 >/dev/null ||
     fail "shading-gain.py failed"
+  python3 "$lab/shading-gain.py" "$CAMERA_LAB_OUT/shading/gain-full1066.png" 320x180 1.00,1.00,1.00,1.08,1.16,1.40 0.08 0.48 >/dev/null ||
+    fail "shading-gain.py failed for the full-resolution gain"
   cl_load_default_presets
   for name in "${CL_PNAMES[@]}"; do
     "${ff[@]}" -vf "$(cl_render_graph 320 180 "$name")" -f null - 2>"$work/err" ||
