@@ -58,7 +58,7 @@ index b489c7e..76e06a4 100644
      classifyProbe: classifyProbe,
      inResumeGrace: inResumeGrace,
 diff --git a/shell/plugins/lock/LockView.qml b/shell/plugins/lock/LockView.qml
-index 9f4aa69..a4bea89 100644
+index 9f4aa69..35f028e 100644
 --- a/shell/plugins/lock/LockView.qml
 +++ b/shell/plugins/lock/LockView.qml
 @@ -12,6 +12,10 @@ Item {
@@ -101,7 +101,7 @@ index 9f4aa69..a4bea89 100644
          horizontalAlignment: Text.AlignHCenter
          verticalAlignment: Text.AlignVCenter
          elide: Text.ElideRight
-@@ -235,11 +243,46 @@ Item {
+@@ -235,11 +243,45 @@ Item {
          anchors.verticalCenter: parent.verticalCenter
          visible: root.fingerprintConfigured
          text: root.fingerprintUnavailable ? "󰺱" : "󰈷"
@@ -116,10 +116,12 @@ index 9f4aa69..a4bea89 100644
 +
 +        // While the reader matches, the icon breathes: the finger was taken
 +        // and the verdict is on its way. The icon's brighter color carries that
-+        // on its own where animations are off.
++        // on its own where animations are off. A rejection's red moment holds
++        // the breath, so the red is seen even when the finger stays on the
++        // reader and is matched again at once; the breath resumes after it.
 +        SequentialAnimation {
 +          objectName: "fingerprintPulse"
-+          running: fingerprintIcon.visible && !root.fingerprintUnavailable && root.fingerprintScanning && !Style.reduceMotion
++          running: fingerprintIcon.visible && !root.fingerprintUnavailable && root.fingerprintScanning && !root.fingerprintRejected && !Style.reduceMotion
 +          loops: Animation.Infinite
 +          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 0.3; duration: Style.duration(420); easing.type: Easing.InOutQuad }
 +          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 1.0; duration: Style.duration(420); easing.type: Easing.InOutQuad }
@@ -128,7 +130,7 @@ index 9f4aa69..a4bea89 100644
 +
 +        // A rejected finger dips the icon once, in red: every wrong finger
 +        // is seen, not only the lockout. The red alone carries it where
-+        // animations are off, and it yields to the next finger's breath.
++        // animations are off.
 +        SequentialAnimation {
 +          id: fingerprintRejectDip
 +          objectName: "fingerprintRejectDip"
@@ -140,17 +142,14 @@ index 9f4aa69..a4bea89 100644
 +        Connections {
 +          target: root
 +          function onFingerprintRejectedChanged() {
-+            if (root.fingerprintRejected && fingerprintIcon.visible && !root.fingerprintUnavailable && !root.fingerprintScanning && !Style.reduceMotion) fingerprintRejectDip.restart()
-+          }
-+          function onFingerprintScanningChanged() {
-+            if (root.fingerprintScanning) fingerprintRejectDip.stop()
++            if (root.fingerprintRejected && fingerprintIcon.visible && !root.fingerprintUnavailable && !Style.reduceMotion) fingerprintRejectDip.restart()
 +          }
 +        }
        }
      }
  
 diff --git a/shell/plugins/lock/Service.qml b/shell/plugins/lock/Service.qml
-index a02708e..4f6a5d8 100644
+index a02708e..70d008b 100644
 --- a/shell/plugins/lock/Service.qml
 +++ b/shell/plugins/lock/Service.qml
 @@ -22,6 +22,17 @@ Item {
@@ -198,7 +197,7 @@ index a02708e..4f6a5d8 100644
    }
  
    // The retry keeps whatever backoff was armed, counting the time spent blank,
-@@ -414,6 +431,40 @@ Item {
+@@ -414,6 +431,42 @@ Item {
      fingerprintReachTimer.stop()
    }
  
@@ -207,12 +206,14 @@ index a02708e..4f6a5d8 100644
 +  // VerifyStatus signal on the same watch. Only a finger during the lock's
 +  // own attempt is a scan: fprintd reports one for any claimant's operation.
 +  // A rejection shows whatever the attempt's state, since pam_fprintd's last
-+  // try can end the attempt before its verdict's line is read.
++  // try can end the attempt before its verdict's line is read, and for its
++  // whole moment: pam_fprintd retries at once, and a finger left on the
++  // reader is matched again within milliseconds, so a rejection the next
++  // scan ended was never seen.
 +  function applyFingerprintMonitorLine(line) {
 +    var present = FingerprintModel.parseFingerPresent(line)
 +    if (present !== null) {
 +      if (present && fingerprintAuthenticating) {
-+        clearFingerprintReject()
 +        fingerprintScanning = true
 +        fingerprintScanTimer.restart()
 +      } else if (!present) {
@@ -239,7 +240,7 @@ index a02708e..4f6a5d8 100644
    // abort() gives no completion signal; settle the attempt here.
    function timeoutFingerprintReach() {
      logEvent("fingerprint-reach-timeout")
-@@ -426,6 +477,7 @@ Item {
+@@ -426,6 +479,7 @@ Item {
      if (!fingerprintAuthenticating) return
      fingerprintAuthenticating = false
      fingerprintReachTimer.stop()
@@ -247,7 +248,7 @@ index a02708e..4f6a5d8 100644
      if (!lockRequested || !fingerprintConfigured) return
  
      // An error can arrive before the sleep watcher notices the wall-clock gap.
-@@ -513,6 +565,8 @@ Item {
+@@ -513,6 +567,8 @@ Item {
          backgroundVersion: root.backgroundVersion
          fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
          fingerprintUnavailable: root.fingerprintUnavailable
@@ -256,7 +257,7 @@ index a02708e..4f6a5d8 100644
          authenticatingPassword: root.authenticatingPassword
          failureMessage: root.failureMessage
          failedAttempts: root.failedAttempts
-@@ -549,6 +603,8 @@ Item {
+@@ -549,6 +605,8 @@ Item {
        backgroundVersion: root.backgroundVersion
        fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
        fingerprintUnavailable: root.fingerprintUnavailable
@@ -265,7 +266,7 @@ index a02708e..4f6a5d8 100644
        authenticatingPassword: false
        failureMessage: ""
        failedAttempts: 0
-@@ -684,6 +740,49 @@ Item {
+@@ -684,6 +742,49 @@ Item {
      onTriggered: root.timeoutFingerprintReach()
    }
  
@@ -316,7 +317,7 @@ index a02708e..4f6a5d8 100644
      id: readlinkProc
      command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
 diff --git a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml b/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
-index e6acc94..1575b73 100644
+index e6acc94..21f2c3a 100644
 --- a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
 +++ b/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
 @@ -1,6 +1,7 @@
@@ -327,7 +328,7 @@ index e6acc94..1575b73 100644
  
  ShellRoot {
    id: root
-@@ -118,17 +119,165 @@ ShellRoot {
+@@ -118,17 +119,166 @@ ShellRoot {
              root.assertTrue(!notice.visible, "notice clears when the reader recovers")
              root.assertTrue(indicator.text === workingGlyph, "icon restores when the reader recovers")
            }
@@ -450,8 +451,8 @@ index e6acc94..1575b73 100644
 +        root.assertTrue(!root.scanPulse.running, "the pulse stops with the scan")
 +        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once the scan ends, at opacity " + root.scanIndicator.opacity)
 +
-+        // With animations on, a rejection dips the icon once; a new scan cuts
-+        // the dip short and the breath takes over whole.
++        // With animations on, a rejection dips the icon once and holds the
++        // breath for its moment, even with the next finger already matching.
 +        if (root.scanDip) {
 +          root.scanView.fingerprintRejected = true
 +          root.assertTrue(root.scanDip.running, "a rejected finger dips the icon")
@@ -473,10 +474,11 @@ index e6acc94..1575b73 100644
 +      try {
 +        root.assertTrue(root.scanIndicator.opacity < 1, "the dip has faded the icon, at opacity " + root.scanIndicator.opacity)
 +        root.scanView.fingerprintScanning = true
-+        root.assertTrue(!root.scanDip.running, "a new scan cuts the dip short")
-+        root.assertTrue(root.scanPulse.running, "and the breath takes over")
-+        root.scanView.fingerprintScanning = false
++        root.assertTrue(root.scanDip.running, "a new scan leaves the dip to finish")
++        root.assertTrue(!root.scanPulse.running, "and the breath waits for the rejection's moment to pass")
 +        root.scanView.fingerprintRejected = false
++        root.assertTrue(root.scanPulse.running, "the breath takes over once the rejection passes")
++        root.scanView.fingerprintScanning = false
 +        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once both end, at opacity " + root.scanIndicator.opacity)
 +      } catch (error) {
 +        root.fail("lock fingerprint indicator fixture threw: " + error)
@@ -496,7 +498,7 @@ index e6acc94..1575b73 100644
      if (node.objectName === name) return node
 diff --git a/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
 new file mode 100644
-index 0000000..7f800b3
+index 0000000..cef9d34
 --- /dev/null
 +++ b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
 @@ -0,0 +1,231 @@
@@ -605,8 +607,9 @@ index 0000000..7f800b3
 +      check(!service.fingerprintMonitoring, "unlocking stops the watch")
 +
 +      // A rejected finger shows for a moment, whatever the attempt's state,
-+      // and the next finger landing, the lock resetting, a blank or the
-+      // moment passing ends it. Other verdicts show nothing.
++      // and the lock resetting, a blank or the moment passing ends it; the
++      // next finger landing doesn't, since pam_fprintd matches a finger left
++      // on the reader again at once. Other verdicts show nothing.
 +      var rejectTimer = findByObjectName(service, "fingerprintRejectTimer")
 +      check(rejectTimer !== null, "the service bounds a rejection with a timer")
 +      if (!rejectTimer) return
@@ -628,8 +631,7 @@ index 0000000..7f800b3
 +      service.fingerprintAuthenticating = true
 +      service.applyFingerprintMonitorLine(root.rejectedLine)
 +      service.applyFingerprintMonitorLine(root.presentLine)
-+      check(!service.fingerprintRejected && service.fingerprintScanning, "the next finger landing ends the rejection and starts its scan")
-+      service.applyFingerprintMonitorLine(root.rejectedLine)
++      check(service.fingerprintRejected && service.fingerprintScanning, "the next finger landing starts its scan and keeps the rejection showing")
 +      service.resetAuthenticationState()
 +      check(!service.fingerprintRejected && !rejectTimer.running, "an unlock's reset ends the rejection")
 +      service.fingerprintAuthenticating = true
