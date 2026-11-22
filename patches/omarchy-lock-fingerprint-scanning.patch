@@ -1,0 +1,994 @@
+diff --git a/shell/plugins/lock/FingerprintModel.js b/shell/plugins/lock/FingerprintModel.js
+index b489c7e..88816e2 100644
+--- a/shell/plugins/lock/FingerprintModel.js
++++ b/shell/plugins/lock/FingerprintModel.js
+@@ -15,6 +15,14 @@ var REACH_TIMEOUT_MS = 20000
+ var SLEEP_GAP_MS = 2000
+ // Ignore transient misses while the asynchronous resume restart lands.
+ var RESUME_GRACE_MS = 5000
++// A finger the reader reported but never released ends its scan here. The
++// verdict or the finger leaving ends it first on a working reader; this is
++// for a daemon that forgot to clear the status, so the icon can't pulse on.
++var SCAN_TIMEOUT_MS = 5000
++// A rejected finger shows for this long, then the icon waits again. Long
++// enough to be seen after the hand has lifted, short enough that a wrong
++// finger doesn't linger long after the next verdict.
++var REJECT_SHOW_MS = 1200
+ 
+ function retryDelayMs(streak) {
+   if (streak <= 0) return MATCH_RETRY_MS
+@@ -67,6 +75,19 @@ function isUnavailable(streak) {
+   return streak >= UNAVAILABLE_AFTER
+ }
+ 
++// fprintd publishes the reader's finger status as the device's finger-present
++// property, and `gdbus monitor` prints each change on one line:
++//   /net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged
++//     ('net.reactivated.Fprint.Device', {'finger-present': <true>}, @as [])
++// True for a finger landing, false for one leaving, null for any other line.
++function parseFingerPresent(line) {
++  var text = String(line || "")
++  if (text.indexOf("PropertiesChanged") === -1) return null
++  var match = /'finger-present':\s*<(true|false)>/.exec(text)
++  if (!match) return null
++  return match[1] === "true"
++}
++
+ if (typeof module !== "undefined") {
+   module.exports = {
+     MATCH_RETRY_MS: MATCH_RETRY_MS,
+@@ -81,6 +102,9 @@ if (typeof module !== "undefined") {
+     REACH_TIMEOUT_MS: REACH_TIMEOUT_MS,
+     SLEEP_GAP_MS: SLEEP_GAP_MS,
+     RESUME_GRACE_MS: RESUME_GRACE_MS,
++    SCAN_TIMEOUT_MS: SCAN_TIMEOUT_MS,
++    REJECT_SHOW_MS: REJECT_SHOW_MS,
++    parseFingerPresent: parseFingerPresent,
+     spannedSleep: spannedSleep,
+     classifyProbe: classifyProbe,
+     inResumeGrace: inResumeGrace,
+diff --git a/shell/plugins/lock/LockView.qml b/shell/plugins/lock/LockView.qml
+index 9f4aa69..da23983 100644
+--- a/shell/plugins/lock/LockView.qml
++++ b/shell/plugins/lock/LockView.qml
+@@ -12,6 +12,12 @@ Item {
+   property int backgroundVersion: 0
+   property bool fingerprintConfigured: false
+   property bool fingerprintUnavailable: false
++  // The reader has a finger and is matching it.
++  property bool fingerprintScanning: false
++  // The reader has just rejected a finger.
++  property bool fingerprintRejected: false
++  // Goes up by one with each rejected finger.
++  property int fingerprintRejectCount: 0
+   property bool authenticatingPassword: false
+   property string failureMessage: ""
+   property int failedAttempts: 0
+@@ -36,6 +42,9 @@ Item {
+     ? Math.min(1, (passwordInput.width - 4) / dotMetrics.advanceWidth)
+     : 1
+   readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && failureMessage.length === 0
++  // Either way of unlocking is being checked: the field says so in place of
++  // its prompt, so a touch of the reader reads as taken, like a typed password.
++  readonly property bool checking: authenticatingPassword || fingerprintScanning
+   readonly property bool errorState: failureMessage.length > 0
+   readonly property var inputBorderSpec: errorState
+     ? Border.surfaceSpec("lock", "border-error", Commons.Color.lock.borderError, root.outlineThickness, "border-alpha")
+@@ -208,14 +217,15 @@ Item {
+       }
+ 
+       Text {
++        objectName: "passwordPlaceholder"
+         textFormat: Text.PlainText
+         anchors.fill: passwordInput
+-        text: root.authenticatingPassword ? Commons.I18n.t("lock.checking") : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)
++        text: root.checking ? Commons.I18n.t("lock.checking") : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)
+         visible: passwordInput.text.length === 0
+-        color: root.authenticatingPassword ? Commons.Color.lock.text : (root.failureMessage.length > 0 ? Commons.Color.lock.textError : Commons.Color.lock.placeholder)
++        color: root.checking ? Commons.Color.lock.text : (root.failureMessage.length > 0 ? Commons.Color.lock.textError : Commons.Color.lock.placeholder)
+         font.family: Style.font.family
+         font.pixelSize: root.fieldFontSize
+-        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0
++        font.italic: !root.checking && root.failureMessage.length > 0
+         horizontalAlignment: Text.AlignHCenter
+         verticalAlignment: Text.AlignVCenter
+         elide: Text.ElideRight
+@@ -235,11 +245,50 @@ Item {
+         anchors.verticalCenter: parent.verticalCenter
+         visible: root.fingerprintConfigured
+         text: root.fingerprintUnavailable ? "󰺱" : "󰈷"
+-        color: root.fingerprintUnavailable ? Commons.Color.lock.textError : Commons.Color.lock.placeholder
++        // Red for a reader the shell can't reach, and for a moment after a
++        // finger it rejected; bright while it matches one.
++        color: root.fingerprintUnavailable || root.fingerprintRejected ? Commons.Color.lock.textError : (root.fingerprintScanning ? Commons.Color.lock.text : Commons.Color.lock.placeholder)
+         font.family: Style.font.family
+         font.pixelSize: Math.round(root.fieldFontSize * 1.1)
+         horizontalAlignment: Text.AlignHCenter
+         verticalAlignment: Text.AlignVCenter
++
++        // While the reader matches, the icon breathes: the finger was taken
++        // and the verdict is on its way. The icon's brighter color carries that
++        // on its own where animations are off. A rejection's red moment holds
++        // the breath, so the red is seen even when the finger stays on the
++        // reader and is matched again at once; the breath resumes after it.
++        SequentialAnimation {
++          objectName: "fingerprintPulse"
++          running: fingerprintIcon.visible && !root.fingerprintUnavailable && root.fingerprintScanning && !root.fingerprintRejected && !Style.reduceMotion
++          loops: Animation.Infinite
++          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 0.3; duration: Style.duration(420); easing.type: Easing.InOutQuad }
++          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 1.0; duration: Style.duration(420); easing.type: Easing.InOutQuad }
++          // A rejection stops the breath and starts the dip from wherever the
++          // breath left the icon; drawing it whole first would flash it.
++          onStopped: if (!root.fingerprintRejected) fingerprintIcon.opacity = 1
++        }
++
++        // A rejected finger dips the icon once, in red: every wrong finger
++        // is seen, not only the lockout. The red alone carries it where
++        // animations are off.
++        SequentialAnimation {
++          id: fingerprintRejectDip
++          objectName: "fingerprintRejectDip"
++          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 0.3; duration: Style.duration(120); easing.type: Easing.OutCubic }
++          NumberAnimation { target: fingerprintIcon; property: "opacity"; to: 1.0; duration: Style.duration(240); easing.type: Easing.OutCubic }
++          onStopped: fingerprintIcon.opacity = 1
++        }
++
++        Connections {
++          target: root
++          function onFingerprintRejectedChanged() {
++            if (!root.fingerprintRejected && !fingerprintRejectDip.running) fingerprintIcon.opacity = 1
++          }
++          function onFingerprintRejectCountChanged() {
++            if (root.fingerprintRejectCount > 0 && fingerprintIcon.visible && !root.fingerprintUnavailable && !Style.reduceMotion) fingerprintRejectDip.restart()
++          }
++        }
+       }
+     }
+ 
+diff --git a/shell/plugins/lock/Service.qml b/shell/plugins/lock/Service.qml
+index a02708e..a311afe 100644
+--- a/shell/plugins/lock/Service.qml
++++ b/shell/plugins/lock/Service.qml
+@@ -22,6 +22,24 @@ Item {
+   property bool pendingSessionLock: false
+   property bool authenticatingPassword: false
+   property bool fingerprintAuthenticating: false
++  // The reader has a finger and is matching it. pam_fprintd says nothing until
++  // the verdict, and a match-on-chip reader (a Mac's Touch ID, behind its
++  // Secure Enclave) takes a moment, so without this the touch looks ignored.
++  property bool fingerprintScanning: false
++  // The reader has just rejected a finger. pam_fprintd retries on its own,
++  // so one wrong finger otherwise goes quietly back to waiting; only the
++  // final lockout showed.
++  property bool fingerprintRejected: false
++  // Counts rejections, so each one is shown even when the next lands while
++  // the last one's red is still up: the flag above doesn't change then.
++  property int fingerprintRejectCount: 0
++  // A finger on the reader, or the moment after a rejection, holds the idle
++  // blank as a password check does: the countdown otherwise ran on through
++  // the match and the retry, and the panel went dark under the finger.
++  readonly property bool fingerprintHoldsDisplay: fingerprintScanning || fingerprintRejected
++  // fprintd is watched for that while the lock can take a touch: locked, a
++  // reader enrolled, and the displays on.
++  readonly property bool fingerprintMonitoring: lockRequested && fingerprintConfigured && !fingerprintPaused
+   property bool passwordPamConfigured: false
+   property bool fingerprintConfigured: false
+   property int fingerprintUnreachedStreak: 0
+@@ -197,6 +215,8 @@ Item {
+     failedAttempts = 0
+     authenticatingPassword = false
+     fingerprintAuthenticating = false
++    fingerprintScanning = false
++    fingerprintRejected = false
+     fingerprintUnreachedStreak = 0
+     fingerprintAttemptFastError = false
+     fingerprintAttemptPromptedAtMs = 0
+@@ -210,6 +230,8 @@ Item {
+     fingerprintRetryTimer.stop()
+     fingerprintReachTimer.stop()
+     fingerprintResumeTimer.stop()
++    fingerprintScanTimer.stop()
++    fingerprintRejectTimer.stop()
+     if (passwordPam.active) passwordPam.abort()
+     if (fingerprintPam.active) fingerprintPam.abort()
+   }
+@@ -267,6 +289,8 @@ Item {
+     if (fingerprintPaused) return
+     fingerprintPaused = true
+     fingerprintRetryTimer.stop()
++    clearFingerprintScan()
++    clearFingerprintReject()
+   }
+ 
+   // The retry keeps whatever backoff was armed, counting the time spent blank,
+@@ -414,6 +438,53 @@ Item {
+     fingerprintReachTimer.stop()
+   }
+ 
++  // The reader's finger status arrives through fprintd's D-Bus property,
++  // which the monitor process prints a line for. Only a finger during the
++  // lock's own attempt, with the watch on, is a scan: fprintd reports one for
++  // any claimant's operation, and a line already in the pipe when a blank
++  // stopped the watch would otherwise start one under the dark panel.
++  function applyFingerprintMonitorLine(line) {
++    var present = FingerprintModel.parseFingerPresent(line)
++    if (present === null) return
++    if (present && fingerprintAuthenticating && fingerprintMonitoring) {
++      fingerprintScanning = true
++      fingerprintScanTimer.restart()
++    } else if (!present) {
++      clearFingerprintScan()
++    }
++  }
++
++  // pam_fprintd tells the lock a finger didn't take with an error message in
++  // the lock's own conversation: the no-match before it retries or ends the
++  // attempt, and the reader's asks to scan again. Either ends the scan, which
++  // a reader that keeps reporting the finger on it would otherwise leave
++  // pulsing, and shows for a moment: pam_fprintd retries at once, and a
++  // finger left on the reader is matched again within milliseconds, so a
++  // rejection the next scan ended was never seen. Each one counts, so a
++  // rejection while the last one's red is still up shows too. The message's
++  // text is translated, so it isn't read.
++  // The rejection is set before the scan ends, so the display hold and the
++  // pulse's reset never see a moment with neither.
++  function noteFingerprintRejected() {
++    logEvent("fingerprint-rejected")
++    if (lockRequested && !fingerprintPaused) {
++      fingerprintRejected = true
++      fingerprintRejectCount += 1
++      fingerprintRejectTimer.restart()
++    }
++    clearFingerprintScan()
++  }
++
++  function clearFingerprintScan() {
++    fingerprintScanTimer.stop()
++    fingerprintScanning = false
++  }
++
++  function clearFingerprintReject() {
++    fingerprintRejectTimer.stop()
++    fingerprintRejected = false
++  }
++
+   // abort() gives no completion signal; settle the attempt here.
+   function timeoutFingerprintReach() {
+     logEvent("fingerprint-reach-timeout")
+@@ -426,6 +497,7 @@ Item {
+     if (!fingerprintAuthenticating) return
+     fingerprintAuthenticating = false
+     fingerprintReachTimer.stop()
++    clearFingerprintScan()
+     if (!lockRequested || !fingerprintConfigured) return
+ 
+     // An error can arrive before the sleep watcher notices the wall-clock gap.
+@@ -513,6 +585,9 @@ Item {
+         backgroundVersion: root.backgroundVersion
+         fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
+         fingerprintUnavailable: root.fingerprintUnavailable
++        fingerprintScanning: root.fingerprintScanning
++        fingerprintRejected: root.fingerprintRejected
++        fingerprintRejectCount: root.fingerprintRejectCount
+         authenticatingPassword: root.authenticatingPassword
+         failureMessage: root.failureMessage
+         failedAttempts: root.failedAttempts
+@@ -549,6 +624,8 @@ Item {
+       backgroundVersion: root.backgroundVersion
+       fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
+       fingerprintUnavailable: root.fingerprintUnavailable
++      fingerprintScanning: false
++      fingerprintRejected: false
+       authenticatingPassword: false
+       failureMessage: ""
+       failedAttempts: 0
+@@ -592,7 +669,8 @@ Item {
+     user: root.userName
+ 
+     onPamMessage: {
+-      if (!messageIsError) root.noteFingerprintReachedDevice()
++      if (messageIsError) root.noteFingerprintRejected()
++      else root.noteFingerprintReachedDevice()
+     }
+ 
+     onCompleted: function(result) {
+@@ -684,6 +762,49 @@ Item {
+     onTriggered: root.timeoutFingerprintReach()
+   }
+ 
++  // The verdict or the finger leaving ends a scan; this bounds one that
++  // neither ended, so the icon can't pulse until the attempt times out.
++  Timer {
++    id: fingerprintScanTimer
++    objectName: "fingerprintScanTimer"
++    interval: FingerprintModel.SCAN_TIMEOUT_MS
++    repeat: false
++    onTriggered: {
++      root.logEvent("fingerprint-scan-timeout")
++      root.clearFingerprintScan()
++    }
++  }
++
++  // A rejected finger shows for a moment, then the icon waits again.
++  Timer {
++    id: fingerprintRejectTimer
++    objectName: "fingerprintRejectTimer"
++    interval: FingerprintModel.REJECT_SHOW_MS
++    repeat: false
++    onTriggered: root.clearFingerprintReject()
++  }
++
++  // Quickshell has no D-Bus client of its own, so gdbus (GLib's, which
++  // Quickshell depends on) watches fprintd's device for the shell, and its
++  // lines are read as they come: gdbus flushes each one. It keeps watching
++  // through fprintd's idle exits and restarts. If gdbus can't run, nothing
++  // restarts it: the lock works as before, without the scan feedback, and
++  // the exit is logged so a trial can see it. The watch reports changes, so
++  // a finger that landed while the displays were off, with the watch
++  // stopped, shows no scan on the wake; its verdict still comes.
++  Process {
++    id: fingerprintMonitorProc
++    objectName: "fingerprintMonitor"
++    command: ["gdbus", "monitor", "--system", "--dest", "net.reactivated.Fprint"]
++    running: root.fingerprintMonitoring
++    stdout: SplitParser {
++      onRead: function(line) { root.applyFingerprintMonitorLine(line) }
++    }
++    onExited: function(exitCode) {
++      if (root.fingerprintMonitoring) root.logEvent("fingerprint-monitor-exited: code=" + exitCode)
++    }
++  }
++
+   Process {
+     id: readlinkProc
+     command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
+@@ -785,7 +906,7 @@ Item {
+       // Only a password check in flight should hold the display up. The
+       // fingerprint PAM stays armed for the whole lock, so gating on
+       // `authenticating` here would keep the panel lit until unlock.
+-      if (root.lockRequested && !root.authenticatingPassword) root.runBlank()
++      if (root.lockRequested && !root.authenticatingPassword && !root.fingerprintHoldsDisplay) root.runBlank()
+     }
+   }
+ 
+@@ -845,6 +966,16 @@ Item {
+     else armBlankTimer()
+   }
+ 
++  // The hold ends with a fresh run-up, unless the lock is gone, the displays
++  // are already off, or a password check holds them in its own right. The
++  // run-up is the idle one even inside a resume's longer grace: a finger on
++  // the reader means the panel is lit and someone is at it.
++  onFingerprintHoldsDisplayChanged: {
++    if (!lockRequested) return
++    if (fingerprintHoldsDisplay) idleBlankTimer.stop()
++    else if (!fingerprintPaused && !authenticatingPassword) armBlankTimer()
++  }
++
+   FileView {
+     path: "/etc/pam.d/omarchy-lock-password"
+     watchChanges: true
+diff --git a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml b/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
+index e6acc94..94ad225 100644
+--- a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
++++ b/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
+@@ -1,6 +1,7 @@
+ import QtQuick
+ import Quickshell
+ import qs.Commons
++import qs.Commons as Commons
+ 
+ ShellRoot {
+   id: root
+@@ -118,17 +119,219 @@ ShellRoot {
+             root.assertTrue(!notice.visible, "notice clears when the reader recovers")
+             root.assertTrue(indicator.text === workingGlyph, "icon restores when the reader recovers")
+           }
++
++          // A reader matching a finger: the field says it is checking and the
++          // icon breathes. The breath runs a few frames before it is stopped,
++          // so its reset is checked on an icon it has really faded.
++          root.checkScan(view, indicator)
++          return
+         }
+ 
+         view.destroy()
++        root.writeResult()
+       } catch (error) {
+         root.fail("lock fingerprint indicator fixture threw: " + error)
+-      } finally {
+         root.writeResult()
+       }
+     }
+   }
+ 
++  property var scanView: null
++  property var scanIndicator: null
++  property var scanPulse: null
++  property bool scanMotion: false
++
++  // Animations are resources, not visual children, so this walks data.
++  function findInData(node, name) {
++    if (!node) return null
++    if (node.objectName === name) return node
++    var kids = node.data || node.children || []
++    for (var i = 0; i < kids.length; i++) {
++      var found = findInData(kids[i], name)
++      if (found) return found
++    }
++    return null
++  }
++
++  function checkScan(view, indicator) {
++    var pulse = findInData(indicator, "fingerprintPulse")
++    var placeholder = findByObjectName(view, "passwordPlaceholder")
++    root.assertTrue(pulse !== null && placeholder !== null, "the icon has its pulse and the field its prompt")
++    if (!pulse || !placeholder) {
++      view.destroy()
++      root.writeResult()
++      return
++    }
++
++    var prompt = placeholder.text
++    var checking = I18n.t("lock.checking")
++    root.assertTrue(prompt !== checking, "the field prompts for a password while nothing is checked")
++
++    view.fingerprintConfigured = true
++    view.fingerprintUnavailable = false
++    root.assertTrue(!pulse.running, "the icon is still while no finger is on the reader")
++    var restingColor = indicator.color
++    // The palette comes from the theme, which this scratch home lacks; the
++    // colours are compared only where the two differ.
++    var coloredPalette = !Qt.colorEqual(Commons.Color.lock.text, Commons.Color.lock.placeholder)
++
++    view.fingerprintScanning = true
++    root.assertTrue(placeholder.text === checking, "the field says it is checking while the reader matches")
++    if (coloredPalette) root.assertTrue(Qt.colorEqual(indicator.color, Commons.Color.lock.text), "the icon brightens while the reader matches")
++
++    view.fingerprintScanning = false
++    root.assertTrue(placeholder.text === prompt, "the field prompts for a password again once the scan ends")
++    if (coloredPalette) root.assertTrue(Qt.colorEqual(indicator.color, restingColor), "the icon rests again once the scan ends")
++
++    view.fingerprintScanning = true
++    view.fingerprintConfigured = false
++    root.assertTrue(!pulse.running, "nothing pulses without a reader to show")
++    view.fingerprintConfigured = true
++    view.fingerprintUnavailable = true
++    root.assertTrue(!pulse.running, "the crossed-out icon of an unreachable reader never pulses")
++    view.fingerprintUnavailable = false
++
++    // `omarchy toggle animations` turns the shell's motion off; the field
++    // still says it is checking.
++    scanMotion = Style.reduceMotion
++    Style.reduceMotion = true
++    root.assertTrue(!pulse.running, "the pulse stays off with animations off")
++    root.assertTrue(placeholder.text === checking, "the field still says it is checking with animations off")
++
++    // A rejected finger: red, with one dip of the icon where animations run,
++    // and the red alone where they don't. The red holds through the next scan.
++    var dip = findInData(indicator, "fingerprintRejectDip")
++    root.assertTrue(dip !== null, "the icon has its rejection dip")
++    if (dip) {
++      view.fingerprintScanning = false
++      view.fingerprintRejected = true
++      if (coloredPalette) root.assertTrue(Qt.colorEqual(indicator.color, Commons.Color.lock.textError), "the icon turns red for a rejected finger")
++      root.assertTrue(!dip.running, "the dip stays off with animations off")
++      root.assertTrue(placeholder.text === prompt, "a rejection leaves the field's prompt alone")
++      view.fingerprintRejected = false
++      if (coloredPalette) root.assertTrue(Qt.colorEqual(indicator.color, restingColor), "the icon rests again once the rejection passes")
++      view.fingerprintScanning = true
++    }
++
++    Style.reduceMotion = false
++    root.assertTrue(pulse.running, "the icon pulses while the reader matches")
++    scanView = view
++    scanIndicator = indicator
++    scanPulse = pulse
++    scanDip = dip
++    pulseTimer.start()
++  }
++
++  property var scanDip: null
++
++  // A few frames into the pulse the icon has faded; stopping the scan then
++  // must draw it whole again, which only the animation's own reset does.
++  Timer {
++    id: pulseTimer
++    interval: 160
++    repeat: false
++    onTriggered: {
++      try {
++        root.assertTrue(root.scanIndicator.opacity < 1, "the pulse has faded the icon, at opacity " + root.scanIndicator.opacity)
++        root.scanView.fingerprintScanning = false
++        root.assertTrue(!root.scanPulse.running, "the pulse stops with the scan")
++        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once the scan ends, at opacity " + root.scanIndicator.opacity)
++
++        // With animations on, a rejection dips the icon once and holds the
++        // breath for its moment, even with the next finger already matching.
++        if (root.scanDip) {
++          root.scanView.fingerprintRejected = true
++          root.scanView.fingerprintRejectCount += 1
++          root.assertTrue(root.scanDip.running, "a rejected finger dips the icon")
++          dipTimer.start()
++          return
++        }
++      } catch (error) {
++        root.fail("lock fingerprint indicator fixture threw: " + error)
++      }
++      root.finishScan()
++    }
++  }
++
++  Timer {
++    id: dipTimer
++    interval: 60
++    repeat: false
++    onTriggered: {
++      try {
++        root.assertTrue(root.scanIndicator.opacity < 1, "the dip has faded the icon, at opacity " + root.scanIndicator.opacity)
++        root.scanView.fingerprintScanning = true
++        root.assertTrue(root.scanDip.running, "a new scan leaves the dip to finish")
++        root.assertTrue(!root.scanPulse.running, "and the breath waits for the rejection's moment to pass")
++        root.scanView.fingerprintRejected = false
++        root.assertTrue(root.scanPulse.running, "the breath takes over once the rejection passes")
++        root.scanView.fingerprintScanning = false
++        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once both end, at opacity " + root.scanIndicator.opacity)
++
++        // Back-to-back rejections: the red is still up when the next lands.
++        root.scanView.fingerprintRejected = true
++        root.scanView.fingerprintRejectCount += 1
++        againTimer.start()
++        return
++      } catch (error) {
++        root.fail("lock fingerprint indicator fixture threw: " + error)
++      }
++      root.finishScan()
++    }
++  }
++
++  Timer {
++    id: againTimer
++    interval: 450
++    repeat: false
++    onTriggered: {
++      try {
++        root.assertTrue(!root.scanDip.running && root.scanView.fingerprintRejected, "the first dip has ended with the red still up")
++        root.scanView.fingerprintRejectCount += 1
++        root.assertTrue(root.scanDip.running, "a second rejection while the red still shows dips again")
++        root.scanDip.stop()
++        root.scanView.fingerprintRejected = false
++        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once the red passes, at opacity " + root.scanIndicator.opacity)
++
++        // The breath handing over to a rejection's dip.
++        root.scanView.fingerprintScanning = true
++        handoverTimer.start()
++        return
++      } catch (error) {
++        root.fail("lock fingerprint indicator fixture threw: " + error)
++      }
++      root.finishScan()
++    }
++  }
++
++  Timer {
++    id: handoverTimer
++    interval: 160
++    repeat: false
++    onTriggered: {
++      try {
++        root.assertTrue(root.scanIndicator.opacity < 1, "the breath has faded the icon, at opacity " + root.scanIndicator.opacity)
++        root.scanView.fingerprintRejected = true
++        root.scanView.fingerprintRejectCount += 1
++        root.assertTrue(!root.scanPulse.running && root.scanDip.running, "a rejection mid-breath hands over to the dip")
++        root.assertTrue(root.scanIndicator.opacity < 1, "the handover doesn't flash the icon whole, at opacity " + root.scanIndicator.opacity)
++        root.scanDip.stop()
++        root.scanView.fingerprintScanning = false
++        root.scanView.fingerprintRejected = false
++        root.assertTrue(root.scanIndicator.opacity === 1, "the icon is drawn whole once it all ends, at opacity " + root.scanIndicator.opacity)
++      } catch (error) {
++        root.fail("lock fingerprint indicator fixture threw: " + error)
++      }
++      root.finishScan()
++    }
++  }
++
++  function finishScan() {
++    Style.reduceMotion = root.scanMotion
++    root.scanView.destroy()
++    root.writeResult()
++  }
++
+   function findByObjectName(node, name) {
+     if (!node) return null
+     if (node.objectName === name) return node
+diff --git a/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
+new file mode 100644
+index 0000000..81d547d
+--- /dev/null
++++ b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
+@@ -0,0 +1,320 @@
++import QtQuick
++import Quickshell
++import qs.Commons
++
++ShellRoot {
++  id: root
++
++  readonly property string rootPath: Quickshell.env("OMARCHY_PATH")
++  readonly property string resultPath: Quickshell.env("OMARCHY_QML_TEST_RESULT")
++  property var failures: []
++  property int checks: 0
++
++  readonly property string presentLine: "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <true>}, @as [])"
++  readonly property string absentLine: "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <false>}, @as [])"
++
++  Item { id: host; width: 800; height: 600 }
++
++  function check(condition, message) {
++    checks += 1
++    if (!condition) failures.push(message)
++  }
++
++  // Animations and timers are resources, not visual children, so walk data.
++  function findByObjectName(node, name) {
++    if (!node) return null
++    if (node.objectName === name) return node
++    var kids = node.data || node.children || []
++    for (var i = 0; i < kids.length; i++) {
++      var found = findByObjectName(kids[i], name)
++      if (found) return found
++    }
++    return null
++  }
++
++  // The process that turns the displays off.
++  function blankProcess(service) {
++    var objects = service.data || []
++    for (var i = 0; i < objects.length; i++) {
++      var command = objects[i].command
++      if (command && String(command).indexOf("omarchy-brightness-display off") !== -1) return objects[i]
++    }
++    return null
++  }
++
++  // The idle blank countdown is the timer with an idle run-up of its own.
++  function idleBlank(service) {
++    var objects = service.data || []
++    for (var i = 0; i < objects.length; i++) {
++      if (objects[i].idleMs !== undefined && objects[i].resumeMs !== undefined) return objects[i]
++    }
++    return null
++  }
++
++  function load(path) {
++    var component = Qt.createComponent("file://" + rootPath + path, Component.PreferSynchronous)
++    if (component.status !== Component.Ready) throw new Error(component.errorString())
++    return component
++  }
++
++  function runService() {
++    var service = load("/shell/plugins/lock/Service.qml").createObject(host, { omarchyPath: rootPath })
++    if (!service) throw new Error("Service failed to instantiate")
++    try {
++      var scanTimer = findByObjectName(service, "fingerprintScanTimer")
++      var monitor = findByObjectName(service, "fingerprintMonitor")
++      check(scanTimer !== null, "the service bounds a scan with a timer")
++      check(monitor !== null, "the service has a monitor process for fprintd")
++      if (!scanTimer || !monitor) return
++
++      check(monitor.command[0] === "gdbus" && monitor.command.indexOf("net.reactivated.Fprint") > 0,
++        "the monitor watches fprintd through gdbus")
++      check(!service.fingerprintMonitoring && !monitor.running, "nothing watches fprintd while the session is unlocked")
++
++      service.lockRequested = true
++      check(!service.fingerprintMonitoring, "locking without a reader enrolled watches nothing")
++      service.fingerprintConfigured = true
++      // Quickshell reports the process running once started, and stopped only
++      // once it has exited, so the stops below are read from the rule.
++      check(service.fingerprintMonitoring && monitor.running, "locking with a reader enrolled starts the watch")
++
++      service.fingerprintAuthenticating = false
++      service.applyFingerprintMonitorLine(root.presentLine)
++      check(!service.fingerprintScanning, "a finger outside the lock's own attempt is not its scan")
++
++      service.fingerprintAuthenticating = true
++      service.applyFingerprintMonitorLine("Monitoring signals from all objects owned by net.reactivated.Fprint")
++      check(!service.fingerprintScanning, "the monitor's header starts no scan")
++
++      service.applyFingerprintMonitorLine(root.presentLine)
++      check(service.fingerprintScanning, "a finger on the reader during an attempt starts the scan")
++      check(scanTimer.running, "a scan runs under its bound")
++
++      service.applyFingerprintMonitorLine(root.absentLine)
++      check(!service.fingerprintScanning && !scanTimer.running, "the finger leaving ends the scan")
++
++      service.applyFingerprintMonitorLine(root.presentLine)
++      service.settleFingerprintAttempt()
++      check(!service.fingerprintScanning && !scanTimer.running, "the attempt settling ends the scan")
++
++      service.fingerprintAuthenticating = true
++      service.applyFingerprintMonitorLine(root.presentLine)
++      service.resetAuthenticationState()
++      check(!service.fingerprintScanning && !scanTimer.running, "an unlock's reset ends the scan")
++
++      service.fingerprintAuthenticating = true
++      service.applyFingerprintMonitorLine(root.presentLine)
++      scanTimer.triggered()
++      check(!service.fingerprintScanning, "a scan the daemon never ends is bounded")
++
++      service.applyFingerprintMonitorLine(root.presentLine)
++      check(service.fingerprintScanning, "the scan can start again after its bound")
++      service.pauseFingerprint()
++      check(!service.fingerprintScanning, "blanking the displays ends the scan")
++      check(!service.fingerprintMonitoring, "nothing watches fprintd while the displays are off")
++      // Stopping gdbus is asynchronous, and the attempt runs on through the
++      // blank, so a line already in the pipe can still arrive.
++      check(service.fingerprintAuthenticating, "the attempt runs on through the blank")
++      service.applyFingerprintMonitorLine(root.presentLine)
++      check(!service.fingerprintScanning, "a finger line read after the blank starts no scan")
++      service.resumeFingerprint()
++      check(service.fingerprintMonitoring, "a wake watches fprintd again")
++
++      service.lockRequested = false
++      check(!service.fingerprintMonitoring, "unlocking stops the watch")
++
++      // pam_fprintd's error message, a no-match or an ask to scan again, ends
++      // the scan and shows for a moment; the lock resetting, a blank or the
++      // moment passing ends that, and the next finger landing doesn't, since
++      // pam_fprintd matches a finger left on the reader again at once.
++      var rejectTimer = findByObjectName(service, "fingerprintRejectTimer")
++      check(rejectTimer !== null, "the service bounds a rejection with a timer")
++      if (!rejectTimer) return
++      service.lockRequested = true
++      service.fingerprintAuthenticating = true
++      service.applyFingerprintMonitorLine(root.presentLine)
++      service.noteFingerprintRejected()
++      check(service.fingerprintRejected && rejectTimer.running, "a rejected finger shows, under its bound")
++      check(!service.fingerprintScanning && !scanTimer.running, "a rejection ends the scan, though the reader still reports the finger")
++      service.applyFingerprintMonitorLine(root.absentLine)
++      check(service.fingerprintRejected, "the rejected finger leaving keeps the rejection showing")
++      var count = service.fingerprintRejectCount
++      service.noteFingerprintRejected()
++      check(service.fingerprintRejectCount === count + 1, "a rejection while the last one still shows counts as a new one")
++      rejectTimer.triggered()
++      check(!service.fingerprintRejected && !rejectTimer.running, "the rejection ends when its moment passes")
++      service.noteFingerprintRejected()
++      service.applyFingerprintMonitorLine(root.presentLine)
++      check(service.fingerprintRejected && service.fingerprintScanning, "the next finger landing starts its scan and keeps the rejection showing")
++      service.resetAuthenticationState()
++      check(!service.fingerprintRejected && !rejectTimer.running, "an unlock's reset ends the rejection")
++      service.fingerprintAuthenticating = true
++      service.noteFingerprintRejected()
++      service.pauseFingerprint()
++      check(!service.fingerprintRejected, "blanking the displays ends the rejection")
++      service.noteFingerprintRejected()
++      check(!service.fingerprintRejected && !rejectTimer.running, "a rejection while the displays are off shows nothing")
++      service.resumeFingerprint()
++      service.lockRequested = false
++      service.noteFingerprintRejected()
++      check(!service.fingerprintRejected, "a rejection after the unlock shows nothing")
++      service.lockRequested = true
++
++      // A finger on the reader holds the idle blank, and so does the moment
++      // after a rejection; lifting it, the verdict or the moment passing
++      // starts a fresh run-up. The blank's own command is swapped for `true`
++      // before it may fire, or it would drive this machine's real displays.
++      var blank = idleBlank(service)
++      check(blank !== null, "the service has its idle blank countdown")
++      if (blank) {
++        service.clearFingerprintReject()
++        service.fingerprintAuthenticating = true
++        service.armBlankTimer()
++        check(blank.running, "the countdown runs while the lock waits")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        check(!blank.running, "a finger on the reader holds the countdown")
++        service.applyFingerprintMonitorLine(root.absentLine)
++        check(blank.running, "the finger lifting starts a fresh run-up")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.noteFingerprintRejected()
++        service.applyFingerprintMonitorLine(root.absentLine)
++        check(!blank.running, "the moment after a rejection keeps holding it")
++        findByObjectName(service, "fingerprintRejectTimer").triggered()
++        check(blank.running, "the rejection's moment passing starts a fresh run-up")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.pauseFingerprint()
++        check(!blank.running, "a hold ending in a blank arms nothing while the displays are off")
++        service.resumeFingerprint()
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.authenticatingPassword = true
++        service.applyFingerprintMonitorLine(root.absentLine)
++        check(!blank.running, "a hold ending during a password check leaves the check holding the display")
++        service.authenticatingPassword = false
++        check(blank.running, "the password check ending starts the run-up")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.lockRequested = false
++        service.resetAuthenticationState()
++        check(!blank.running, "a hold ending in an unlock arms nothing")
++        blank.stop()
++
++        // The blank's trigger refuses while a finger holds the display, even
++        // when input restarted the countdown during the hold.
++        var blanker = blankProcess(service)
++        if (blanker) blanker.command = ["true"]
++        check(blanker !== null && blanker.command.length === 1 && blanker.command[0] === "true", "the blank's command is a stand-in before the trigger fires")
++        if (blanker && blanker.command[0] === "true") {
++          service.lockRequested = true
++          service.fingerprintAuthenticating = true
++          service.applyFingerprintMonitorLine(root.presentLine)
++          service.armBlankTimer()
++          blank.triggered()
++          check(!service.fingerprintPaused, "the countdown firing under a finger doesn't blank")
++          service.clearFingerprintScan()
++          service.armBlankTimer()
++          blank.triggered()
++          check(service.fingerprintPaused, "the countdown firing with nothing holding it blanks")
++          service.resumeFingerprint()
++          blank.stop()
++          service.lockRequested = false
++        }
++      }
++      service.lockRequested = false
++    } finally {
++      service.lockRequested = false
++      service.destroy()
++    }
++  }
++
++  // The monitor's lines reach the scan through the process's own parser,
++  // which the direct calls above don't exercise: a printf stands in for gdbus
++  // and prints one finger landing, read once the event loop turns. A new
++  // service asks fprintd-list about enrolment on creation, and that answer
++  // lands in the event loop too and settles any attempt, so the stand-in
++  // starts only once the probe has exited. Each step moves on when what it
++  // waits for happens; the timer only fails a step that never does.
++  property var wiringService: null
++  property bool wiringDone: false
++
++  function probeProcess(service) {
++    var objects = service.data || []
++    for (var i = 0; i < objects.length; i++) {
++      var command = objects[i].command
++      if (command && String(command).indexOf("fprintd-list") !== -1) return objects[i]
++    }
++    return null
++  }
++
++  function startWiring() {
++    var service = load("/shell/plugins/lock/Service.qml").createObject(host, { omarchyPath: rootPath })
++    if (!service) throw new Error("Service failed to instantiate for the wiring check")
++    wiringService = service
++    wiringTimeout.start()
++    var probe = probeProcess(service)
++    check(probe !== null, "the service has its enrolment probe")
++    if (probe && probe.running) probe.exited.connect(function() { Qt.callLater(root.armWiring) })
++    else Qt.callLater(root.armWiring)
++  }
++
++  function armWiring() {
++    var service = wiringService
++    if (!service || wiringDone) return
++    try {
++      var monitor = findByObjectName(service, "fingerprintMonitor")
++      monitor.command = ["printf", "%s\\n", root.presentLine]
++      service.fingerprintScanningChanged.connect(function() {
++        if (service.fingerprintScanning) root.finishWiring(true)
++      })
++      service.fingerprintConfigured = true
++      service.lockRequested = true
++      service.fingerprintAuthenticating = true
++      check(!service.fingerprintScanning, "nothing is scanning before the monitor's line arrives")
++    } catch (error) {
++      root.failures.push("lock fingerprint scan fixture threw: " + error)
++      root.finishWiring(false)
++    }
++  }
++
++  function finishWiring(scanned) {
++    if (wiringDone) return
++    wiringDone = true
++    wiringTimeout.stop()
++    var service = wiringService
++    wiringService = null
++    check(scanned, "a finger the monitor process reports starts the scan")
++    if (service) {
++      service.lockRequested = false
++      service.destroy()
++    }
++    writeResult()
++  }
++
++  function writeResult() {
++    var payload = JSON.stringify({ ok: failures.length === 0, checks: checks, failures: failures })
++    if (resultPath) {
++      Quickshell.execDetached(["bash", "-lc", "printf '%s' '" + payload.replace(/'/g, "'\\''") + "' > '" + resultPath.replace(/'/g, "'\\''") + "'"])
++    }
++  }
++
++  Timer {
++    interval: 1
++    running: true
++    repeat: false
++    onTriggered: {
++      try {
++        root.runService()
++        root.startWiring()
++      } catch (error) {
++        root.failures.push("lock fingerprint scan fixture threw: " + error)
++        if (root.wiringService) root.finishWiring(false)
++        else root.writeResult()
++      }
++    }
++  }
++
++  Timer {
++    id: wiringTimeout
++    interval: 5000
++    repeat: false
++    onTriggered: root.finishWiring(false)
++  }
++}
+diff --git a/test/shell.d/lock-fingerprint-retry-test.sh b/test/shell.d/lock-fingerprint-retry-test.sh
+index eb662b4..86f631b 100755
+--- a/test/shell.d/lock-fingerprint-retry-test.sh
++++ b/test/shell.d/lock-fingerprint-retry-test.sh
+@@ -179,4 +179,33 @@ assert(model.REACH_TIMEOUT_MS < 25000,
+   "the reach bound lands before GDBus fails a stuck Claim at 25s and pam_fprintd's 30s verify timeout reports as a non-error message")
+ assert(model.REACH_TIMEOUT_MS >= 10000,
+   'the reach bound outlasts a slow device open, so a reader that takes seconds to claim is not killed mid-Claim on every attempt')
++
++// The scan: fprintd's finger-present property, as gdbus monitor prints its
++// changes, is what tells the lock the reader has a finger and is matching.
++const present = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <true>}, @as [])"
++// fprintd bundles both properties in one change when the finger it asked for
++// lands: this is the line a Mac's Touch ID produced.
++const landed = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-needed': <false>, 'finger-present': <true>}, @as [])"
++const absent = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-present': <false>}, @as [])"
++const needed = "/net/reactivated/Fprint/Device/0: org.freedesktop.DBus.Properties.PropertiesChanged ('net.reactivated.Fprint.Device', {'finger-needed': <true>}, @as [])"
++const verdict = "/net/reactivated/Fprint/Device/0: net.reactivated.Fprint.Device.VerifyStatus ('verify-match', true)"
++const header = 'Monitoring signals from all objects owned by net.reactivated.Fprint'
++const owner = 'The name net.reactivated.Fprint is owned by :1.42'
++
++assertEqual(model.parseFingerPresent(present), true, 'a finger landing on the reader reads as present')
++assertEqual(model.parseFingerPresent(landed), true, 'a finger landing bundled with the reader no longer asking reads as present')
++assertEqual(model.parseFingerPresent(absent), false, 'a finger leaving the reader reads as absent')
++assertEqual(model.parseFingerPresent(needed), null, "the reader asking for a finger is not a finger")
++assertEqual(model.parseFingerPresent(verdict), null, 'the verdict signal carries no finger status')
++assertEqual(model.parseFingerPresent(header), null, "the monitor's own header is not a finger")
++assertEqual(model.parseFingerPresent(owner), null, 'a name owner change is not a finger')
++assertEqual(model.parseFingerPresent(''), null, 'an empty line is not a finger')
++assertEqual(model.parseFingerPresent(undefined), null, 'no line is not a finger')
++
++// A scan the daemon never ends is bounded, and the bound leaves a slow reader
++// time to return its verdict first.
++assert(model.SCAN_TIMEOUT_MS >= 2000, 'the scan bound leaves a slow reader time to match')
++
++// A rejection shows long enough to be seen after the hand lifts.
++assert(model.REJECT_SHOW_MS >= 800, 'a rejection shows long enough to be seen after the hand lifts')
+ JS
+diff --git a/test/shell.d/lock-fingerprint-service-test.sh b/test/shell.d/lock-fingerprint-service-test.sh
+index fb020ee..df6c343 100644
+--- a/test/shell.d/lock-fingerprint-service-test.sh
++++ b/test/shell.d/lock-fingerprint-service-test.sh
+@@ -7,3 +7,22 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+ require_quickshell "lock fingerprint service test"
+ 
+ run_qml_fixture lock-fingerprint-service "fingerprint service handles enrollment, failures and recovery" Ui Commons
++
++# A new lock service asks fprintd-list about enrolment, and the scan fixture's
++# wiring check waits for that answer before it sends its stand-in line. Where
++# this machine's lock has fingerprint PAM, the real fprintd-list can take
++# longer than that wait to start the daemon, and an answer of no enrolment
++# landing late would settle the attempt under the check. A stub answers at
++# once, with an enrolment.
++printf '#!/bin/bash\nprintf "Fingerprints for user %%s on Stub:\\n - #0: right-index-finger\\n" "$1"\n' >"$QML_FIXTURE_TMP/bin/fprintd-list"
++chmod +x "$QML_FIXTURE_TMP/bin/fprintd-list"
++
++# A lock with a reader enrolled starts the watch on fprintd. The scan fixture
++# never lets one run long enough to spawn it, and the wiring check swaps in a
++# printf, but should that change, a real gdbus would join this machine's system
++# bus and could start the host's fprintd. The stub prints the monitor's header,
++# then waits until the lock stops it or the shell is gone.
++printf '#!/bin/bash\necho "Monitoring signals from all objects owned by net.reactivated.Fprint"\nwhile kill -0 "$PPID" 2>/dev/null; do sleep 0.2; done\n' >"$QML_FIXTURE_TMP/bin/gdbus"
++chmod +x "$QML_FIXTURE_TMP/bin/gdbus"
++
++run_qml_fixture lock-fingerprint-scan "fingerprint service shows the reader matching a finger" Ui Commons

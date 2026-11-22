@@ -6,6 +6,7 @@ Changes to other projects' repositories, kept here as plain `git diff` output so
 | --- | --- | --- | --- |
 | `j616c-installer.patch` | omacom/omarchy-mac-installer | `a576543` (PR #212's head) | J616c developer admission, the Mach-O Stage 1 Recovery modes (`macho-unpadded`, `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix |
 | `omarchy-mac-boot-aurora.patch` | omacom/omarchy-mac-pkgs | `28abebee14de05c35a2caa8dd257d056d15a641e` (main, 2026-11-09, "Merge pull request #110") | Teaches omarchy-mac-boot's `omarchy-apple-silicon-boot-check` to verify Aurora's Stage 2 (OMS-16, JOURNEY 9.24). Also applies to main `76d8b72`; sent upstream as [omacom/omarchy-mac-pkgs#150](https://github.com/omacom/omarchy-mac-pkgs/pull/150) (9.36) |
+| `omarchy-lock-fingerprint-scanning.patch` | omacom/omarchy | `b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab` (quattro, 2026-11-19, "Keep colors in terminal windows an agent opens (#19507)") | The lock screen shows the fingerprint reader matching a finger: the icon pulses and the field says "Checking…" while fprintd reports a finger on the reader, the icon turns red for a finger it rejects, and a finger on the reader holds the idle blank (OMS-36, JOURNEY 9.48 to 9.50); sent upstream as [omacom/omarchy#19537](https://github.com/omacom/omarchy/pull/19537) |
 
 ## omarchy-mac-boot-aurora.patch
 
@@ -29,3 +30,24 @@ docker exec -u tester -e HOME=/home/tester arch omarchy-mac-boot/test/all
 `OMARCHY_TEST_RUNTIME=/work/runtime`, with a checkout of the runtime `test/integration/runtime` pins (omacom/omarchy `81fd2d23ca6e3462183a4dc8360de3113fa8d80c`), also runs the one test that otherwise skips.
 
 To change it, apply it to a branch at the base commit, commit there, and regenerate it with `git diff 28abebee14de05c35a2caa8dd257d056d15a641e HEAD > patches/omarchy-mac-boot-aurora.patch`.
+
+## omarchy-lock-fingerprint-scanning.patch
+
+Omarchy 4 locks with omarchy-shell's Quickshell lock screen (`shell/plugins/lock`), and a fingerprint unlock runs through `pam_fprintd`, which says nothing between the finger landing and the verdict. On a match-on-chip reader (a Mac's Touch ID, matched by the Secure Enclave) that gap is long enough to read as "nothing happened". fprintd does publish the reader's finger status, as the `finger-present` property of its device over D-Bus, and Aurora's libfprint driver reports it the moment the enclave says "hold still".
+
+The patch has the lock service watch fprintd while the session is locked with a reader enrolled and the displays on, through `gdbus monitor --system --dest net.reactivated.Fprint` (Quickshell has no D-Bus client; gdbus is GLib's, which Quickshell depends on, and flushes each line). A finger reported during the lock's own attempt, with the watch on, sets `fingerprintScanning`; the finger leaving, a rejection, the attempt settling, an unlock, a blank or a 5 s bound clears it. The lock view then shows the existing "Checking…" text in the field and pulses the fingerprint icon's opacity, off under `omarchy toggle animations` (the icon's brighter colour stands alone there). So the feedback lasts as long as the driver reports the finger: whether that reaches the verdict, or ends when the capture does, is the driver's timing, which the Mac trial in JOURNEY 9.48 measures. A finger the reader rejects turns the icon red for a moment and dips it once (JOURNEY 9.49), where before only the final lockout showed. The lock learns of it from pam_fprintd's error message in its own PAM conversation, sent for a no-match and for the reader's asks to scan again, not from the monitor, which hears every program using the reader (JOURNEY 9.51); each rejection dips again, even while the last one's red is still up. A finger on the reader, or a rejection's moment, holds the lock's 5 s idle blank as a password check does, and a fresh run-up starts when it ends (JOURNEY 9.50); a touch on an already dark panel still doesn't wake it, since blanking stops the watch. The area's three existing tests grow: `lock-fingerprint-retry-test.sh` checks the line parser in node, `lock-fingerprint-service-test.sh` runs a second fixture on the service and its monitor process, with `gdbus` and `fprintd-list` stubbed so it stays off the test machine's system bus, and `lock-fingerprint-indicator-test.sh`'s fixture checks the view and the pulse.
+
+Apply and test it under a Hyprland session with `quickshell`, `node` and `jq` (the fixture needs a compositor; the suite skips it otherwise):
+
+```
+git clone https://github.com/omacom/omarchy && cd omarchy
+git checkout b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab
+git apply /path/to/aurora-m4/patches/omarchy-lock-fingerprint-scanning.patch
+bash test/shell.d/lock-fingerprint-service-test.sh
+bash test/shell.d/lock-fingerprint-indicator-test.sh
+bash test/shell.d/lock-fingerprint-retry-test.sh
+```
+
+To try it on an installed Omarchy without rebuilding, apply the patch's `shell/plugins/lock` part over the installed tree, `$OMARCHY_PATH` (`/usr/share/omarchy` from the `omarchy-dev` package, as on the Mac; `~/.local/share/omarchy` for a `omarchy dev link` checkout; `git apply` works outside a repository), and run `omarchy-restart-shell` from an unlocked session; JOURNEY 9.48 has the block for the Mac, with the check that the installed files are upstream's, the backup and the way back. The next package upgrade or `omarchy update` puts upstream's files back.
+
+To change it, apply it to a branch at the base commit, commit there, and regenerate it with `git diff b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab HEAD > patches/omarchy-lock-fingerprint-scanning.patch`.
