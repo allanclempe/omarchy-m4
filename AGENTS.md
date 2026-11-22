@@ -68,7 +68,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `patches/omarchy-lock-fingerprint-scanning.patch` makes omarchy-shell's lock screen show the
   fingerprint reader matching a finger (the icon pulses and the field says "Checking…" while the
   Secure Enclave matches), turns the icon red for a rejected finger, and holds the idle blank while
-  a finger is on the reader (OMS-36, JOURNEY 9.48 to 9.50), against omacom/omarchy `b20d787`; sent upstream
+  a finger is on the reader (OMS-36, JOURNEY 9.48 to 9.51), against omacom/omarchy `b20d787`; sent upstream
   as omacom/omarchy#19537. Not part of the image: the shell comes from Omarchy itself, so it
   reaches the Mac through upstream.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate

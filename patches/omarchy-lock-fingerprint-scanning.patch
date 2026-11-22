@@ -146,7 +146,7 @@ index 9f4aa69..da23983 100644
      }
  
 diff --git a/shell/plugins/lock/Service.qml b/shell/plugins/lock/Service.qml
-index a02708e..4ee1740 100644
+index a02708e..a311afe 100644
 --- a/shell/plugins/lock/Service.qml
 +++ b/shell/plugins/lock/Service.qml
 @@ -22,6 +22,24 @@ Item {
@@ -201,7 +201,7 @@ index a02708e..4ee1740 100644
    }
  
    // The retry keeps whatever backoff was armed, counting the time spent blank,
-@@ -414,6 +438,50 @@ Item {
+@@ -414,6 +438,53 @@ Item {
      fingerprintReachTimer.stop()
    }
  
@@ -230,13 +230,16 @@ index a02708e..4ee1740 100644
 +  // rejection the next scan ended was never seen. Each one counts, so a
 +  // rejection while the last one's red is still up shows too. The message's
 +  // text is translated, so it isn't read.
++  // The rejection is set before the scan ends, so the display hold and the
++  // pulse's reset never see a moment with neither.
 +  function noteFingerprintRejected() {
 +    logEvent("fingerprint-rejected")
++    if (lockRequested && !fingerprintPaused) {
++      fingerprintRejected = true
++      fingerprintRejectCount += 1
++      fingerprintRejectTimer.restart()
++    }
 +    clearFingerprintScan()
-+    if (!lockRequested || fingerprintPaused) return
-+    fingerprintRejected = true
-+    fingerprintRejectCount += 1
-+    fingerprintRejectTimer.restart()
 +  }
 +
 +  function clearFingerprintScan() {
@@ -252,7 +255,7 @@ index a02708e..4ee1740 100644
    // abort() gives no completion signal; settle the attempt here.
    function timeoutFingerprintReach() {
      logEvent("fingerprint-reach-timeout")
-@@ -426,6 +494,7 @@ Item {
+@@ -426,6 +497,7 @@ Item {
      if (!fingerprintAuthenticating) return
      fingerprintAuthenticating = false
      fingerprintReachTimer.stop()
@@ -260,7 +263,7 @@ index a02708e..4ee1740 100644
      if (!lockRequested || !fingerprintConfigured) return
  
      // An error can arrive before the sleep watcher notices the wall-clock gap.
-@@ -513,6 +582,9 @@ Item {
+@@ -513,6 +585,9 @@ Item {
          backgroundVersion: root.backgroundVersion
          fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
          fingerprintUnavailable: root.fingerprintUnavailable
@@ -270,7 +273,7 @@ index a02708e..4ee1740 100644
          authenticatingPassword: root.authenticatingPassword
          failureMessage: root.failureMessage
          failedAttempts: root.failedAttempts
-@@ -549,6 +621,8 @@ Item {
+@@ -549,6 +624,8 @@ Item {
        backgroundVersion: root.backgroundVersion
        fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
        fingerprintUnavailable: root.fingerprintUnavailable
@@ -279,7 +282,7 @@ index a02708e..4ee1740 100644
        authenticatingPassword: false
        failureMessage: ""
        failedAttempts: 0
-@@ -592,7 +666,8 @@ Item {
+@@ -592,7 +669,8 @@ Item {
      user: root.userName
  
      onPamMessage: {
@@ -289,7 +292,7 @@ index a02708e..4ee1740 100644
      }
  
      onCompleted: function(result) {
-@@ -684,6 +759,49 @@ Item {
+@@ -684,6 +762,49 @@ Item {
      onTriggered: root.timeoutFingerprintReach()
    }
  
@@ -339,7 +342,7 @@ index a02708e..4ee1740 100644
    Process {
      id: readlinkProc
      command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
-@@ -785,7 +903,7 @@ Item {
+@@ -785,7 +906,7 @@ Item {
        // Only a password check in flight should hold the display up. The
        // fingerprint PAM stays armed for the whole lock, so gating on
        // `authenticating` here would keep the panel lit until unlock.
@@ -348,7 +351,7 @@ index a02708e..4ee1740 100644
      }
    }
  
-@@ -845,6 +963,16 @@ Item {
+@@ -845,6 +966,16 @@ Item {
      else armBlankTimer()
    }
  
@@ -600,10 +603,10 @@ index e6acc94..94ad225 100644
      if (node.objectName === name) return node
 diff --git a/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
 new file mode 100644
-index 0000000..3db4127
+index 0000000..81d547d
 --- /dev/null
 +++ b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,320 @@
 +import QtQuick
 +import Quickshell
 +import qs.Commons
@@ -911,7 +914,8 @@ index 0000000..3db4127
 +        root.startWiring()
 +      } catch (error) {
 +        root.failures.push("lock fingerprint scan fixture threw: " + error)
-+        root.writeResult()
++        if (root.wiringService) root.finishWiring(false)
++        else root.writeResult()
 +      }
 +    }
 +  }
@@ -962,10 +966,10 @@ index eb662b4..86f631b 100755
 +assert(model.REJECT_SHOW_MS >= 800, 'a rejection shows long enough to be seen after the hand lifts')
  JS
 diff --git a/test/shell.d/lock-fingerprint-service-test.sh b/test/shell.d/lock-fingerprint-service-test.sh
-index fb020ee..435086d 100644
+index fb020ee..df6c343 100644
 --- a/test/shell.d/lock-fingerprint-service-test.sh
 +++ b/test/shell.d/lock-fingerprint-service-test.sh
-@@ -7,3 +7,21 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+@@ -7,3 +7,22 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
  require_quickshell "lock fingerprint service test"
  
  run_qml_fixture lock-fingerprint-service "fingerprint service handles enrollment, failures and recovery" Ui Commons
@@ -979,10 +983,11 @@ index fb020ee..435086d 100644
 +printf '#!/bin/bash\nprintf "Fingerprints for user %%s on Stub:\\n - #0: right-index-finger\\n" "$1"\n' >"$QML_FIXTURE_TMP/bin/fprintd-list"
 +chmod +x "$QML_FIXTURE_TMP/bin/fprintd-list"
 +
-+# The scan fixture locks with a reader enrolled, which starts the lock's watch
-+# on fprintd. The real gdbus would put it on this machine's system bus, where
-+# it can start the host's fprintd. A stub prints the monitor's header, then
-+# waits until the lock stops it or the shell is gone.
++# A lock with a reader enrolled starts the watch on fprintd. The scan fixture
++# never lets one run long enough to spawn it, and the wiring check swaps in a
++# printf, but should that change, a real gdbus would join this machine's system
++# bus and could start the host's fprintd. The stub prints the monitor's header,
++# then waits until the lock stops it or the shell is gone.
 +printf '#!/bin/bash\necho "Monitoring signals from all objects owned by net.reactivated.Fprint"\nwhile kill -0 "$PPID" 2>/dev/null; do sleep 0.2; done\n' >"$QML_FIXTURE_TMP/bin/gdbus"
 +chmod +x "$QML_FIXTURE_TMP/bin/gdbus"
 +
