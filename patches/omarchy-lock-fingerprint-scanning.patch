@@ -149,10 +149,10 @@ index 9f4aa69..35f028e 100644
      }
  
 diff --git a/shell/plugins/lock/Service.qml b/shell/plugins/lock/Service.qml
-index a02708e..70d008b 100644
+index a02708e..0c5a19f 100644
 --- a/shell/plugins/lock/Service.qml
 +++ b/shell/plugins/lock/Service.qml
-@@ -22,6 +22,17 @@ Item {
+@@ -22,6 +22,21 @@ Item {
    property bool pendingSessionLock: false
    property bool authenticatingPassword: false
    property bool fingerprintAuthenticating: false
@@ -164,13 +164,17 @@ index a02708e..70d008b 100644
 +  // so one wrong finger otherwise goes quietly back to waiting; only the
 +  // final lockout showed.
 +  property bool fingerprintRejected: false
++  // A finger on the reader, or the moment after a rejection, holds the idle
++  // blank as a password check does: the countdown otherwise ran on through
++  // the match and the retry, and the panel went dark under the finger.
++  readonly property bool fingerprintHoldsDisplay: fingerprintScanning || fingerprintRejected
 +  // fprintd is watched for that while the lock can take a touch: locked, a
 +  // reader enrolled, and the displays on.
 +  readonly property bool fingerprintMonitoring: lockRequested && fingerprintConfigured && !fingerprintPaused
    property bool passwordPamConfigured: false
    property bool fingerprintConfigured: false
    property int fingerprintUnreachedStreak: 0
-@@ -197,6 +208,8 @@ Item {
+@@ -197,6 +212,8 @@ Item {
      failedAttempts = 0
      authenticatingPassword = false
      fingerprintAuthenticating = false
@@ -179,7 +183,7 @@ index a02708e..70d008b 100644
      fingerprintUnreachedStreak = 0
      fingerprintAttemptFastError = false
      fingerprintAttemptPromptedAtMs = 0
-@@ -210,6 +223,8 @@ Item {
+@@ -210,6 +227,8 @@ Item {
      fingerprintRetryTimer.stop()
      fingerprintReachTimer.stop()
      fingerprintResumeTimer.stop()
@@ -188,7 +192,7 @@ index a02708e..70d008b 100644
      if (passwordPam.active) passwordPam.abort()
      if (fingerprintPam.active) fingerprintPam.abort()
    }
-@@ -267,6 +282,8 @@ Item {
+@@ -267,6 +286,8 @@ Item {
      if (fingerprintPaused) return
      fingerprintPaused = true
      fingerprintRetryTimer.stop()
@@ -197,7 +201,7 @@ index a02708e..70d008b 100644
    }
  
    // The retry keeps whatever backoff was armed, counting the time spent blank,
-@@ -414,6 +431,42 @@ Item {
+@@ -414,6 +435,42 @@ Item {
      fingerprintReachTimer.stop()
    }
  
@@ -240,7 +244,7 @@ index a02708e..70d008b 100644
    // abort() gives no completion signal; settle the attempt here.
    function timeoutFingerprintReach() {
      logEvent("fingerprint-reach-timeout")
-@@ -426,6 +479,7 @@ Item {
+@@ -426,6 +483,7 @@ Item {
      if (!fingerprintAuthenticating) return
      fingerprintAuthenticating = false
      fingerprintReachTimer.stop()
@@ -248,7 +252,7 @@ index a02708e..70d008b 100644
      if (!lockRequested || !fingerprintConfigured) return
  
      // An error can arrive before the sleep watcher notices the wall-clock gap.
-@@ -513,6 +567,8 @@ Item {
+@@ -513,6 +571,8 @@ Item {
          backgroundVersion: root.backgroundVersion
          fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
          fingerprintUnavailable: root.fingerprintUnavailable
@@ -257,7 +261,7 @@ index a02708e..70d008b 100644
          authenticatingPassword: root.authenticatingPassword
          failureMessage: root.failureMessage
          failedAttempts: root.failedAttempts
-@@ -549,6 +605,8 @@ Item {
+@@ -549,6 +609,8 @@ Item {
        backgroundVersion: root.backgroundVersion
        fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
        fingerprintUnavailable: root.fingerprintUnavailable
@@ -266,7 +270,7 @@ index a02708e..70d008b 100644
        authenticatingPassword: false
        failureMessage: ""
        failedAttempts: 0
-@@ -684,6 +742,49 @@ Item {
+@@ -684,6 +746,49 @@ Item {
      onTriggered: root.timeoutFingerprintReach()
    }
  
@@ -316,6 +320,30 @@ index a02708e..70d008b 100644
    Process {
      id: readlinkProc
      command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
+@@ -785,7 +890,7 @@ Item {
+       // Only a password check in flight should hold the display up. The
+       // fingerprint PAM stays armed for the whole lock, so gating on
+       // `authenticating` here would keep the panel lit until unlock.
+-      if (root.lockRequested && !root.authenticatingPassword) root.runBlank()
++      if (root.lockRequested && !root.authenticatingPassword && !root.fingerprintHoldsDisplay) root.runBlank()
+     }
+   }
+ 
+@@ -845,6 +950,14 @@ Item {
+     else armBlankTimer()
+   }
+ 
++  // The hold ends with a fresh run-up, unless the lock is gone, the displays
++  // are already off, or a password check holds them in its own right.
++  onFingerprintHoldsDisplayChanged: {
++    if (!lockRequested) return
++    if (fingerprintHoldsDisplay) idleBlankTimer.stop()
++    else if (!fingerprintPaused && !authenticatingPassword) armBlankTimer()
++  }
++
+   FileView {
+     path: "/etc/pam.d/omarchy-lock-password"
+     watchChanges: true
 diff --git a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml b/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
 index e6acc94..21f2c3a 100644
 --- a/test/shell.d/fixtures/lock-fingerprint-indicator/shell.qml
@@ -498,10 +526,10 @@ index e6acc94..21f2c3a 100644
      if (node.objectName === name) return node
 diff --git a/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
 new file mode 100644
-index 0000000..cef9d34
+index 0000000..c2e3cea
 --- /dev/null
 +++ b/test/shell.d/fixtures/lock-fingerprint-scan/shell.qml
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,272 @@
 +import QtQuick
 +import Quickshell
 +import qs.Commons
@@ -535,6 +563,15 @@ index 0000000..cef9d34
 +    for (var i = 0; i < kids.length; i++) {
 +      var found = findByObjectName(kids[i], name)
 +      if (found) return found
++    }
++    return null
++  }
++
++  // The idle blank countdown is the timer with an idle run-up of its own.
++  function idleBlank(service) {
++    var objects = service.data || []
++    for (var i = 0; i < objects.length; i++) {
++      if (objects[i].idleMs !== undefined && objects[i].resumeMs !== undefined) return objects[i]
 +    }
 +    return null
 +  }
@@ -639,6 +676,38 @@ index 0000000..cef9d34
 +      service.pauseFingerprint()
 +      check(!service.fingerprintRejected, "blanking the displays ends the rejection")
 +      service.resumeFingerprint()
++
++      // A finger on the reader holds the idle blank, and so does the moment
++      // after a rejection; lifting it, the verdict or the moment passing
++      // starts a fresh run-up. Nothing here lets the blank fire: it would
++      // drive this machine's real displays.
++      var blank = idleBlank(service)
++      check(blank !== null, "the service has its idle blank countdown")
++      if (blank) {
++        service.clearFingerprintReject()
++        service.fingerprintAuthenticating = true
++        service.armBlankTimer()
++        check(blank.running, "the countdown runs while the lock waits")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        check(!blank.running, "a finger on the reader holds the countdown")
++        service.applyFingerprintMonitorLine(root.absentLine)
++        check(blank.running, "the finger lifting starts a fresh run-up")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.applyFingerprintMonitorLine(root.rejectedLine)
++        service.applyFingerprintMonitorLine(root.absentLine)
++        check(!blank.running, "the moment after a rejection keeps holding it")
++        findByObjectName(service, "fingerprintRejectTimer").triggered()
++        check(blank.running, "the rejection's moment passing starts a fresh run-up")
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.pauseFingerprint()
++        check(!blank.running, "a hold ending in a blank arms nothing while the displays are off")
++        service.resumeFingerprint()
++        service.applyFingerprintMonitorLine(root.presentLine)
++        service.lockRequested = false
++        service.resetAuthenticationState()
++        check(!blank.running, "a hold ending in an unlock arms nothing")
++        blank.stop()
++      }
 +      service.lockRequested = false
 +    } finally {
 +      service.lockRequested = false
