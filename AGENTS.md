@@ -36,6 +36,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
+| Aurora's `aurora-touchid-rearm` installed and `-auth optional pam_aurora_touchid.so` added after the last auth line of `system-auth` and `omarchy-lock-password`, so the password re-arms Touch ID after a lockout, 2026-11-21 | not in the build yet; `omarchy-apply-lock` rewrites `omarchy-lock-password`, so its line needs a durable home (JOURNEY 9.49) | OMS-40 |
 
 ## Where things are
 
@@ -66,7 +67,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   and how to apply and test it.
 - `patches/omarchy-lock-fingerprint-scanning.patch` makes omarchy-shell's lock screen show the
   fingerprint reader matching a finger (the icon pulses and the field says "Checking…" while the
-  Secure Enclave matches; OMS-36, JOURNEY 9.48), against omacom/omarchy `b20d787`; sent upstream
+  Secure Enclave matches), turns the icon red for a rejected finger, and holds the idle blank while
+  a finger is on the reader (OMS-36, JOURNEY 9.48 to 9.50), against omacom/omarchy `b20d787`; sent upstream
   as omacom/omarchy#19537. Not part of the image: the shell comes from Omarchy itself, so it
   reaches the Mac through upstream.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate

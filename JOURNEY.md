@@ -811,3 +811,20 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **Not done: a touch on a dark panel doesn't wake it.** Blanking stops the gdbus watch (`fingerprintMonitoring` needs `!fingerprintPaused`), so a finger on a dark panel is never seen; a key or the pointer wakes it. Keeping the watch running while blank is a separate change.
 - **The trial on the Mac**, as 9.49's: the backup back, the branch's patch on, the shell restarted (the block in 9.49 applies unchanged, since the patch is regenerated at the same URL). Then lock, wait about 4 s, and rest a finger on the sensor: the panel should stay on through the match and for 5 s after a lift.
 - **Tried on the Mac** (Allan, 2026-11-22): the patch with all five commits applied as above; the panel stays on through a touch. Allan: "looking good." Next, the review of this work, then the three new commits go to omacom/omarchy#19537.
+- **The review of the three new commits** (Claude Sonnet, high; no GPT Sol route here) found no bug in the blank hold and six things fixed in a sixth commit on the fork branch, `051e958`, local like the three before it:
+  - a rejection landing while the last one's red was still up changed no property, so it got no dip: with the finger left on the reader the rejections come about 0.9 s apart, inside the 1.2 s window. A `fingerprintRejectCount` now starts each dip; the flag still drives the red and both holds;
+  - the breath stopping for a rejection could draw the icon whole before the dip started, a one-frame flash; the breath's reset now waits while a rejection shows;
+  - the blank trigger's refusal under a finger was untested, since nothing let the countdown fire; the fixture now swaps the blank's command for `true` first, fires it under a finger and with nothing holding it, and checks a hold ending during a password check arms nothing. Two checks that passed with their code removed are reordered, and three comments that still said the next scan ends a rejection are reworded. Removing the trigger's gate or the dip's handler now fails the tests (tried);
+  - the README row, its paragraph and the AGENTS.md bullet now mention the blank hold, and AGENTS.md's hand-fix table has a row for 9.49's OMS-40 re-arm, not in the build yet.
+  Left for Allan: a hold ending inside a resume's 15 s grace re-arms the 5 s idle run-up; a finger on the reader means the panel is lit and someone is at it.
+- **The Mac block, whole, read-only first** (the review: 9.50 pointed at 9.49's, which started with a write). From an unlocked session at the Mac's seat:
+  ```
+  sha256sum ~/oms36-lock-backup/{FingerprintModel.js,LockView.qml,Service.qml} | cut -c1-16
+  ```
+  Expected `6684762de3e3b884`, `e5ec598e4dfafc0c`, `cf9da581ab749194`, upstream `b20d787`'s files, so the backup is a clean base. Then:
+  ```
+  sudo cp -a ~/oms36-lock-backup/* /usr/share/omarchy/shell/plugins/lock/
+  curl -fsSLo /tmp/oms36.patch https://raw.githubusercontent.com/allanclempe/omarchy-m4/oms-36-lock-fingerprint-scanning/patches/omarchy-lock-fingerprint-scanning.patch
+  cd /usr/share/omarchy && sudo git apply --check --include='shell/plugins/lock/*' /tmp/oms36.patch && sudo git apply --include='shell/plugins/lock/*' /tmp/oms36.patch && sha256sum shell/plugins/lock/{FingerprintModel.js,LockView.qml,Service.qml} | cut -c1-16 && omarchy-restart-shell
+  ```
+  Expected: nothing from either `git apply`, then `ed629671f8c89cd8`, `92059f570c21d4b4`, `7869fa4225bf5bda`, and the bar goes and comes back. The way back is the first `cp` alone, then `omarchy-restart-shell`.
