@@ -828,3 +828,24 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   cd /usr/share/omarchy && sudo git apply --check --include='shell/plugins/lock/*' /tmp/oms36.patch && sudo git apply --include='shell/plugins/lock/*' /tmp/oms36.patch && sha256sum shell/plugins/lock/{FingerprintModel.js,LockView.qml,Service.qml} | cut -c1-16 && omarchy-restart-shell
   ```
   Expected: nothing from either `git apply`, then `ed629671f8c89cd8`, `92059f570c21d4b4`, `7869fa4225bf5bda`, and the bar goes and comes back. The way back is the first `cp` alone, then `omarchy-restart-shell`.
+
+### 9.51 Marcelo's review of #19537: the rejection from the lock's own PAM, and late monitor lines gated (OMS-36, 2026-11-23)
+- **The review** (maralcbr, 2026-11-22, on `e2a7b4c`, no blockers): (1) a no-match can leave "Checking…" up on a reader that keeps `finger-present` true while the finger rests; end the scan on pam_fprintd's error message in `fingerprintPam.onPamMessage` rather than parsing `VerifyStatus`, since the monitor sees every claimant's signals; (2) a `true` line already in gdbus's pipe when a blank stops the watch can restart the scan, so gate it on `fingerprintMonitoring` too; and two test nits: stub `gdbus` so the scan fixture stays off the host's system bus, and move the wiring check on events, not two fixed 400 ms waits.
+- **What pam_fprintd sends** (fprintd `v1.94.4`, `pam/pam_fprintd.c`): a no-match as `send_err_msg("Failed to match fingerprint")` before `VerifyStop` and the next try, the last try included, so it lands before the attempt completes. The reader's asks to scan again (`verify-retry-scan`, swipe too short, not centred, remove and retry) are error messages too; the timeout is an info message. The text is translated, so the lock doesn't read it: any error message in the fingerprint conversation ends the scan and shows the red. A retry showing red is taken as right: the touch didn't take.
+- **The change**, a seventh commit on the fork branch, `Show a rejection from the lock's own PAM conversation, and gate late monitor lines` (local, not on the PR yet): `noteFingerprintRejected()` from `onPamMessage` on `messageIsError`, logged as `fingerprint-rejected`, clears the scan and shows the rejection unless the lock is gone or the displays are off; the monitor now reads only `finger-present`, and `parseVerifyStatus` with its tests is gone. The race 13cf167 worked around (the last try's verdict line read after the attempt ended) can't happen on this path. The scan fixture checks a rejection ending the scan with the finger still reported, a finger line after a blank starting nothing, and a rejection while dark or unlocked showing nothing. The runner stubs `gdbus` (prints the monitor's header, then waits for the shell), and the wiring check starts on the enrolment probe's exit and passes on `fingerprintScanningChanged`, with a 5 s timeout as the failure path. The three fingerprint tests pass on dev-machine-01; removing the gate, the scan clear, the dark-panel guard or the parser's hookup each fails them (tried). The `onPamMessage` hookup itself has no fixture (`messageIsError` can't be faked from QML), so the Mac trial checks it.
+- **The trial on the Mac**, read-only first, from an unlocked session at the Mac's seat:
+  ```
+  sha256sum ~/oms36-lock-backup/{FingerprintModel.js,LockView.qml,Service.qml} | cut -c1-16
+  ```
+  Expected `6684762de3e3b884`, `e5ec598e4dfafc0c`, `cf9da581ab749194`. Then:
+  ```
+  sudo cp -a ~/oms36-lock-backup/* /usr/share/omarchy/shell/plugins/lock/
+  curl -fsSLo /tmp/oms36.patch https://raw.githubusercontent.com/allanclempe/omarchy-m4/oms-36-lock-fingerprint-scanning/patches/omarchy-lock-fingerprint-scanning.patch
+  cd /usr/share/omarchy && sudo git apply --check --include='shell/plugins/lock/*' /tmp/oms36.patch && sudo git apply --include='shell/plugins/lock/*' /tmp/oms36.patch && sha256sum shell/plugins/lock/{FingerprintModel.js,LockView.qml,Service.qml} | cut -c1-16 && omarchy-restart-shell
+  ```
+  Expected: nothing from either `git apply`, then `62c2c61c83edd20f`, `92059f570c21d4b4`, `64af911017a07008`, and the bar goes and comes back. The way back is the first `cp` alone, then `omarchy-restart-shell`.
+  Then lock and: a wrong finger, lifted; a wrong finger left on the reader for two rejections; the right finger. Each rejection should turn the icon red and dip it, and the pulse should stop at the rejection though the finger is still down. Afterwards, unlocked (read-only, works over SSH too):
+  ```
+  journalctl --user -b --since "-10 min" --no-pager | grep "omarchy lock" | grep -E "fingerprint|unlocked"
+  ```
+  Expected: one `fingerprint-rejected` line per wrong finger, then `unlocked`.
