@@ -1,0 +1,267 @@
+diff --git i/linux-user/i386/cpu_loop.c w/linux-user/i386/cpu_loop.c
+index fe922fceb..24fdcc9b2 100644
+--- i/linux-user/i386/cpu_loop.c
++++ w/linux-user/i386/cpu_loop.c
+@@ -218,6 +218,15 @@ void cpu_loop(CPUX86State *env)
+         cpu_exec_end(cs);
+         qemu_process_cpu_events(cs);
+ 
++        /*
++         * Remember the exception for sigcontext.trapno, as linux does in
++         * thread.trap_nr.  Only hardware exception vectors qualify; the
++         * EXCP_* values at 0x100 and above are emulation internals.
++         */
++        if (trapnr >= EXCP00_DIVZ && trapnr <= EXCP12_MCHK) {
++            env->trap_nr = trapnr;
++        }
++
+         switch(trapnr) {
+         case 0x80:
+ #ifndef TARGET_X86_64
+diff --git i/linux-user/i386/signal.c w/linux-user/i386/signal.c
+index b646fde43..9650fac94 100644
+--- i/linux-user/i386/signal.c
++++ w/linux-user/i386/signal.c
+@@ -367,8 +367,6 @@ static void setup_sigcontext(CPUX86State *env,
+                              abi_ptr fxstate_addr,
+                              abi_ptr fpend_addr)
+ {
+-    CPUState *cs = env_cpu(env);
+-
+ #ifndef TARGET_X86_64
+     uint16_t magic;
+ 
+@@ -385,7 +383,7 @@ static void setup_sigcontext(CPUX86State *env,
+     __put_user(env->regs[R_EDX], &sc->edx);
+     __put_user(env->regs[R_ECX], &sc->ecx);
+     __put_user(env->regs[R_EAX], &sc->eax);
+-    __put_user(cs->exception_index, &sc->trapno);
++    __put_user(env->trap_nr, &sc->trapno);
+     __put_user(env->error_code, &sc->err);
+     __put_user(env->eip, &sc->eip);
+     __put_user(env->segs[R_CS].selector, (uint32_t *)&sc->cs);
+@@ -416,7 +414,7 @@ static void setup_sigcontext(CPUX86State *env,
+     __put_user(env->regs[14], &sc->r14);
+     __put_user(env->regs[15], &sc->r15);
+ 
+-    __put_user(cs->exception_index, &sc->trapno);
++    __put_user(env->trap_nr, &sc->trapno);
+     __put_user(env->error_code, &sc->err);
+     __put_user(env->eip, &sc->rip);
+ 
+diff --git i/linux-user/main.c w/linux-user/main.c
+index 60a695b7c..99b545fe4 100644
+--- i/linux-user/main.c
++++ w/linux-user/main.c
+@@ -879,6 +879,21 @@ int main(int argc, char **argv, char **envp)
+     }
+     mmap_next_start = task_unmapped_base;
+ 
++#if TARGET_ABI_BITS == 64 && HOST_LONG_BITS == 64 && \
++    TARGET_VIRT_ADDR_SPACE_BITS <= 47
++    /*
++     * With no reserved_va, mmap.c keeps such a guest's mappings inside its
++     * own address space (guest_mmap_max). Search from high in that space,
++     * as the guest kernel's default top-down layout would place them:
++     * SQL Server's PAL refuses mappings below 2^46, which it takes for the
++     * legacy layout. 3/4 of the space leaves 32 TiB on x86-64.
++     */
++    if (!reserved_va) {
++        mmap_next_start = TARGET_PAGE_ALIGN(
++            ((abi_ulong)1 << TARGET_VIRT_ADDR_SPACE_BITS) / 4 * 3);
++    }
++#endif
++
+     /* Similarly for elf_et_dyn_base. */
+     if (reserved_va) {
+         if (ELF_ET_DYN_BASE < reserved_va) {
+diff --git i/linux-user/mmap.c w/linux-user/mmap.c
+index cc0c2ee6c..0544da369 100644
+--- i/linux-user/mmap.c
++++ w/linux-user/mmap.c
+@@ -417,6 +417,27 @@ abi_ulong task_unmapped_base;
+ abi_ulong elf_et_dyn_base;
+ abi_ulong mmap_next_start;
+ 
++/*
++ * The highest guest address for a mapping the guest didn't place itself.
++ * Without reserved_va, guest_addr_max admits every host address. A 64-bit
++ * guest with a smaller address space than the host's must still not be
++ * handed addresses past its own: on an arm64 host with 48-bit user
++ * addresses, an x86-64 guest would get mappings above 2^47, which x86-64
++ * programs take for kernel addresses (SQL Server's PAL sign-extends them
++ * from bit 47 and faults).
++ */
++static abi_ulong guest_mmap_max(void)
++{
++#if TARGET_ABI_BITS == 64 && HOST_LONG_BITS == 64 && \
++    TARGET_VIRT_ADDR_SPACE_BITS <= 47
++    if (!reserved_va) {
++        return MIN(guest_addr_max,
++                   ((abi_ulong)1 << TARGET_VIRT_ADDR_SPACE_BITS) - 1);
++    }
++#endif
++    return guest_addr_max;
++}
++
+ /*
+  * Subroutine of mmap_find_vma, used when we have pre-allocated
+  * a chunk of guest address space.
+@@ -492,7 +513,8 @@ abi_ulong mmap_find_vma(abi_ulong start, abi_ulong size, abi_ulong align)
+          */
+         repeat = (ptr == prev ? repeat + 1 : 0);
+ 
+-        if (h2g_valid(ptr + size - 1)) {
++        if (h2g_valid(ptr + size - 1) &&
++            h2g(ptr + size - 1) <= guest_mmap_max()) {
+             addr = h2g(ptr);
+ 
+             if ((addr & (align - 1)) == 0) {
+@@ -944,6 +966,24 @@ static abi_long target_mmap__locked(abi_ulong start, abi_ulong len,
+             start += offset - host_offset;
+             flags |= MAP_FIXED;
+         }
++    } else if (!(flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) &&
++               guest_mmap_max() < guest_addr_max) {
++        /*
++         * As for reserved_va, place the mapping inside the guest's address
++         * space ourselves: the host would put it top-down, past the end.
++         */
++        abi_ulong real_start = start & -host_page_size;
++        off_t host_offset = offset & -host_page_size;
++        size_t real_len = len + offset - host_offset;
++        abi_ulong align = MAX(host_page_size, TARGET_PAGE_SIZE);
++
++        start = mmap_find_vma(real_start, real_len, align);
++        if (start == (abi_ulong)-1) {
++            errno = ENOMEM;
++            return -1;
++        }
++        start += offset - host_offset;
++        flags |= MAP_FIXED;
+     }
+ 
+     host_prot = target_to_host_prot(target_prot);
+diff --git i/linux-user/syscall.c w/linux-user/syscall.c
+index 9f454502c..905ba6a4c 100644
+--- i/linux-user/syscall.c
++++ w/linux-user/syscall.c
+@@ -691,6 +691,21 @@ static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4, \
+ }
+ 
+ safe_syscall3(ssize_t, read, int, fd, void *, buff, size_t, count)
++
++/*
++ * Linux AIO passthrough. Every 64-bit guest and host of the same endianness
++ * (x86-64 on arm64 among them) share aio_context_t, struct iocb, struct
++ * io_event and struct timespec byte for byte, and with guest_base 0 a guest
++ * pointer inside them is the host pointer, so the host kernel can take them
++ * as they are. Anything else keeps the old -ENOSYS.
++ */
++#if defined(TARGET_NR_io_setup) && defined(__NR_io_setup) && \
++    TARGET_ABI_BITS == 64 && HOST_LONG_BITS == 64 && \
++    HOST_BIG_ENDIAN == TARGET_BIG_ENDIAN
++#define QEMU_LINUX_AIO_PASSTHROUGH 1
++safe_syscall5(int, io_getevents, unsigned long, ctx_id, long, min_nr,
++              long, nr, void *, events, struct timespec *, timeout)
++#endif
+ safe_syscall3(ssize_t, write, int, fd, const void *, buff, size_t, count)
+ safe_syscall4(int, openat, int, dirfd, const char *, pathname, \
+               int, flags, mode_t, mode)
+@@ -13976,6 +13991,56 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+         return get_errno(epoll_ctl(arg1, arg2, arg3, epp));
+     }
+ 
++#ifdef QEMU_LINUX_AIO_PASSTHROUGH
++    case TARGET_NR_io_setup:
++        if (guest_base) {
++            return -TARGET_ENOSYS;
++        }
++        if (!access_ok(cpu, VERIFY_WRITE, arg2, sizeof(abi_ulong))) {
++            return -TARGET_EFAULT;
++        }
++        return get_errno(syscall(__NR_io_setup, (unsigned int)arg1,
++                                 g2h_untagged(arg2)));
++    case TARGET_NR_io_destroy:
++        if (guest_base) {
++            return -TARGET_ENOSYS;
++        }
++        return get_errno(syscall(__NR_io_destroy, (unsigned long)arg1));
++    case TARGET_NR_io_submit:
++        if (guest_base) {
++            return -TARGET_ENOSYS;
++        }
++        return get_errno(syscall(__NR_io_submit, (unsigned long)arg1,
++                                 (long)arg2, g2h_untagged(arg3)));
++    case TARGET_NR_io_cancel:
++        if (guest_base) {
++            return -TARGET_ENOSYS;
++        }
++        return get_errno(syscall(__NR_io_cancel, (unsigned long)arg1,
++                                 g2h_untagged(arg2), g2h_untagged(arg3)));
++    case TARGET_NR_io_getevents:
++    {
++        struct timespec ts, *pts = NULL;
++
++        if (guest_base) {
++            return -TARGET_ENOSYS;
++        }
++        if (arg5) {
++            struct target_timespec *tts;
++
++            if (!lock_user_struct(VERIFY_READ, tts, arg5, 1)) {
++                return -TARGET_EFAULT;
++            }
++            __get_user(ts.tv_sec, &tts->tv_sec);
++            __get_user(ts.tv_nsec, &tts->tv_nsec);
++            unlock_user_struct(tts, arg5, 0);
++            pts = &ts;
++        }
++        return get_errno(safe_io_getevents(arg1, arg2, arg3,
++                                           g2h_untagged(arg4), pts));
++    }
++#endif
++
+ #if defined(TARGET_NR_epoll_wait)
+     case TARGET_NR_epoll_wait:
+ #endif
+diff --git i/target/i386/cpu.h w/target/i386/cpu.h
+index e6a197602..2f0889bd7 100644
+--- i/target/i386/cpu.h
++++ w/target/i386/cpu.h
+@@ -2181,6 +2181,16 @@ typedef struct CPUArchState {
+ 
+     /* exception/interrupt handling */
+     int error_code;
++#ifdef CONFIG_USER_ONLY
++    /*
++     * The number of the last cpu exception taken by this thread, mirroring
++     * linux's thread.trap_nr, which is what the kernel reports in
++     * sigcontext.trapno.  CPUState::exception_index cannot be used for this:
++     * cpu_exec() resets it before returning, long before the signal frame is
++     * built during delivery.
++     */
++    int trap_nr;
++#endif
+     int exception_is_int;
+     target_ulong exception_next_eip;
+     target_ulong dr[8]; /* debug registers; note dr4 and dr5 are unused */
+diff --git i/target/i386/tcg/user/excp_helper.c w/target/i386/tcg/user/excp_helper.c
+index 0957ad2e9..26a4c0ef9 100644
+--- i/target/i386/tcg/user/excp_helper.c
++++ w/target/i386/tcg/user/excp_helper.c
+@@ -31,10 +31,10 @@ void x86_cpu_record_sigsegv(CPUState *cs, vaddr addr,
+ 
+     /*
+      * The error_code that hw reports as part of the exception frame
+-     * is copied to linux sigcontext.err.  The exception_index is
+-     * copied to linux sigcontext.trapno.  Short of inventing a new
+-     * place to store the trapno, we cannot let our caller raise the
+-     * signal and set exception_index to EXCP_INTERRUPT.
++     * is copied to linux sigcontext.err.  The trapno reported in
++     * linux sigcontext.trapno is recorded separately in env->trap_nr
++     * by cpu_loop(), since cpu_exec() clears exception_index before
++     * the signal frame is built.
+      */
+     env->cr[2] = addr;
+     env->error_code = (maperr ? 0 : PG_ERROR_P_MASK)

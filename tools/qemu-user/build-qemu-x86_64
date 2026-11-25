@@ -1,0 +1,56 @@
+#!/bin/bash
+# Build the J616c's patched, static qemu-x86_64 (OMS-41).
+#
+# Usage: build-qemu-x86_64 OUTPUT_FILE
+#
+# Fetches upstream qemu QEMU_VERSION (sha256-pinned), applies apply-oms41.py and
+# builds x86_64-linux-user static in a Debian trixie arm64 container, which
+# ships the static libraries a static qemu needs (Arch's glib has none). Run it
+# on an aarch64 host with Docker; the derivation takes the result as its
+# QEMU_X86_64 input and checks it against QEMU_X86_64_SHA256 there.
+#
+# The changes (see apply-oms41.py):
+#   1. x86-64 guests on a 48-bit arm64 host get mappings inside their own 47
+#      bits, starting high as the default x86-64 layout does.
+#   2. Linux AIO passes through to the host kernel.
+#   3. sigcontext.trapno carries the real trap number (upstream 586284af4c2c,
+#      in qemu 11.2): SQL Server grows its thread stacks on that.
+#
+# Debian's packages aren't pinned, so a rebuild can differ byte for byte from
+# the pinned binary; the derivation then refuses it until the pin is bumped
+# after a fresh test on the Mac (record it in JOURNEY).
+set -euo pipefail
+
+QEMU_VERSION=11.1.2
+QEMU_SHA256=731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016
+BUILDER=debian:trixie
+
+out=${1:?usage: build-qemu-x86_64 OUTPUT_FILE}
+here=$(cd "$(dirname "$0")" && pwd)
+[[ $(uname -m) == aarch64 ]] || { echo "build-qemu-x86_64: run on an aarch64 host" >&2; exit 1; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+curl -fsSLo "$work/qemu.tar.xz" "https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz"
+[[ $(sha256sum "$work/qemu.tar.xz" | cut -d' ' -f1) == "$QEMU_SHA256" ]] ||
+  { echo "build-qemu-x86_64: qemu-$QEMU_VERSION.tar.xz does not match its pin" >&2; exit 1; }
+cp "$here/apply-oms41.py" "$work/"
+
+docker run --rm --platform linux/arm64 -v "$work:/work" -w /work "$BUILDER" sh -euc "
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential ninja-build python3 \
+    python3-venv pkg-config libglib2.0-dev libpcre2-dev libffi-dev zlib1g-dev flex bison \
+    libselinux1-dev >/dev/null
+  tar -xJf qemu.tar.xz
+  cd qemu-$QEMU_VERSION
+  python3 ../apply-oms41.py
+  mkdir build && cd build
+  ../configure --static --target-list=x86_64-linux-user --disable-system --disable-tools \
+    --disable-docs --disable-plugins >/dev/null
+  ninja qemu-x86_64 >/dev/null
+  cp qemu-x86_64 /work/qemu-x86_64-oms41
+  chown $(id -u):$(id -g) /work/qemu-x86_64-oms41
+"
+install -m 0755 "$work/qemu-x86_64-oms41" "$out"
+file -b "$out" | grep -q 'static-pie linked' || { echo "build-qemu-x86_64: $out is not static" >&2; exit 1; }
+sha256sum "$out"

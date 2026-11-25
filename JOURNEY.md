@@ -894,3 +894,125 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
 - **Correction (2026-11-20, later the same day): the gate was redundant. pam_fprintd already skips a remote session.** Looking for prior work before sending anything upstream: Omarchy (now omacom/omarchy; basecamp/omarchy redirects) has no PR or issue for `sudo` over SSH; the nearest are issue 16458 and PR 16459, "sudo without a terminal waits on an invisible fingerprint prompt", for agents and launchers, whose fix leaves remote sessions alone. fprintd's own issue 3 (2013, "Should not ask for fingerprint for non local sessions / seats") was closed in 2020 by commits `3274a311` ("pam: Don't ask for fingerprints for remote logins", 2019-08-07) and `18d4aa6d` ("pam: Use systemd to check whether a session is remote", 2020-02-04). `pam_fprintd.c` has `is_remote()`: PAM's `RHOST` item, which sudo sets only when its `pam_rhost` default is on (off on Linux), then `sd_session_is_remote(NULL)`, libsystemd's question about the calling process's own session. The check is in `v1.94.5`, the Mac's fprintd, and `/usr/lib/security/pam_fprintd.so` there links `libsystemd.so.0`. From a child process in the Tailscale SSH session on the Mac (`session-c67.scope`), `sd_session_is_remote(NULL)` returns 1 (Python ctypes); for the seat's session 3 it returns 0. The journal has the before state: at 08:27:29, before the gate existed, Tailscale opened a pty session (`c26`), `sudo` ran its auth stack (the lid gate exited 1) and the command started 2 s later with no fprintd start. And the after state, with the gate reverted: Allan's `sudo` over SSH at 12:47 asked for the password at once, no fprintd start in the journal. The `sudo -s` that asked for his finger at 11:58 ran in a foot terminal under Hyprland at the seat (pts/0, `app-Hyprland-xdg-terminal-exec` scope, no logind session), as designed.
 - **What was undone:** the hand fix on the Mac (Allan, 12:0x: `sudo.oms35-bak` copied back, the local script removed; verified read-only: the stack's top is the lid gate then pam_fprintd, and the script is gone). The patch, its `patches/README.md` entry and the AGENTS.md row are dropped from this branch; this section stays as the record. The Omarchy clone with the change is not kept.
 - **What still waits on the sensor,** and isn't this task: `sudo` from a process in no logind session (an agent under the user manager on the Mac, a launcher), where neither pam_fprintd's check nor a logind-based gate can tell anything: omacom/omarchy issue 16458, PR 16459. And `pkexec` over SSH, whose PAM runs in polkit's helper, a system service outside any session. If Allan's original wait came from an agent session on the Mac, that is the task to open, pointing at PR 16459.
+
+### 9.53 x86-64 containers: SQL Server 2022 runs under a patched qemu-user (OMS-41, 2026-11-23 to 2026-11-25)
+
+Allan's work compose stack on `dev-machine-mac-2` didn't come up: its Service Bus emulator needs
+`mcr.microsoft.com/mssql/server:2022-latest`, which exists for amd64 only, and every container that
+depends on it waited. The image's Docker runs amd64 images under Debian's `qemu-user-static` 11.1.2
+through binfmt (flags `PF`). Four separate failures, each found with a throwaway container:
+
+1. **16 KiB kernel pages.** `libcrypto.so.3: failed to map segment from shared object`, exit 127:
+   x86 libraries are linked for 4 KiB pages. Reproduced outside Docker with the image's `openssl`
+   under `qemu-x86_64-static -L`, and fixed by Aurora's per-process 4 KiB user pages: under
+   `userpages 4k` the same command prints `OpenSSL 3.0.2 15 Mar 2022`. `user4k=on` was already on
+   the acceptance install's command line (`/etc/default/limine`), `aurora-userpages` already
+   installed with the kernel. The fix for Docker: containerd under `userpages 4k`, so every
+   container inherits it (drop-in `/etc/systemd/system/containerd.service.d/50-user4k.conf`,
+   applied by Allan 2026-11-25). Native arm64 containers keep working.
+2. **Addresses above 2^47.** Then exit 139: qemu placed guest mappings top-down near 2^48 (with
+   equal page sizes `mmap_h_eq_g()` passes the host a NULL hint, and without `-R` `guest_addr_max`
+   is `~0`), and SQL Server's PAL sign-extends pointers from bit 47 (fault address
+   `0xffffffff2d616d00` for a mapping at `0x0000ffff2d...`). `QEMU_RESERVED_VA` can't help: the
+   x86-64 vsyscall page then can't be placed. Once inside 47 bits, the PAL refused the legacy
+   layout too ("Invalid mapping of address 0x2aaaad750000 in reserved address space below
+   0x400000000000"), so mappings must start high, as x86-64's default top-down layout puts them.
+3. **No Linux AIO.** qemu-user implements no `io_*` syscall: `io_setup(1024, …) = -1 errno=38`,
+   then "Unable to create a new asynchronous I/O context". x86-64 and arm64 share `iocb`,
+   `io_event`, `timespec` and `aio_context_t` byte for byte, so with `guest_base` 0 the calls can
+   go to the host kernel as they are.
+4. **`sigcontext.trapno` is -1.** With 1 to 3 fixed, SQL Server printed its banner (16.0.4325.4)
+   and died with `c0000005` (stack signature `0x9A90642B`). A delegated investigation found it,
+   on dev-machine-01 while the Mac was off the network: a `__chkstk` probe for a 132,416-byte
+   frame touches the guard page under a 128 KiB thread stack. Natively the PAL grows the stack 18
+   times during startup (each SIGSEGV is followed by `mprotect(RW)` and a new `PROT_NONE` guard
+   lower down); it does so only when `trapno` is 14, and qemu reports -1 because `cpu_exec()`
+   resets `exception_index` before the signal frame is built. Upstream fixed it in qemu
+   `586284af4c2c` (2026-09-10, in 11.2.0-rc1, not in 11.1.x; Launchpad #1913913, the same bug in
+   Wine). The error code's present bit also differs from the kernel's for a `PROT_NONE` page
+   (`0x7` against `0x6`); SQL Server doesn't care, and it stays as qemu has it.
+
+`tools/qemu-user/apply-oms41.py` makes all three qemu changes on a pristine 11.1.2 tree (diff in
+`qemu-11.1-oms41.patch`, the backport alone in `qemu-586284af4c2c-trapno.patch`), and
+`tools/qemu-user/build-qemu-x86_64` builds the static binary in a Debian trixie arm64 container.
+The binary tested on the Mac has sha256 `2ad7fe7f489ebcdb8bdc9c9bdfcb578965dc340bfc2cd290c2dfb5c081ca1810`.
+
+- **On the Mac, 2026-11-25:** as a container entrypoint, SQL Server reached "ready for client
+  connections" in 40 s, and `sqlcmd` created a database and a table, inserted, checkpointed and
+  read back 4 rows. Allan then installed the binary as `/usr/local/bin/qemu-x86_64-oms41` and an
+  `/etc/binfmt.d/qemu-x86_64-static.conf` override of the package's rule naming it (`PF` kept),
+  and restarted `systemd-binfmt`. A plain `docker run` of the image with its own entrypoint was
+  ready in 30 s, and Allan's stack came up.
+- **In the build:** `tools/derive-j616c-image` takes the binary as a new `QEMU_X86_64` input pinned
+  by `QEMU_X86_64_SHA256`, installs it, writes the binfmt override from the image's own rule (and
+  checks it names the binary with `F`), installs the containerd drop-in
+  (`tools/image/containerd-user4k.conf`), and warns if `user4k=on` isn't visible in the image's
+  command-line defaults. Not yet run; OMS-14's next acceptance run covers it.
+- **Ruled out on the way:** a VM. A KVM guest doesn't boot on this Mac (9.54), and inside one SQL
+  Server would still run under qemu-user, so failures 2 to 4 would remain. FEX handles AIO and
+  keeps guests in 47 bits, but `/usr/bin/FEX` is dynamically linked, so binfmt can't use it inside
+  an x86 container.
+- **Left open:** the AIO ring the kernel maps for `io_setup` sits above 2^47 and outside qemu's page
+  tracking; nothing has failed on it. Moving to qemu 11.2 drops the backport block from the script.
+- **Soak-test note:** `dev-machine-mac-2` dropped off the network around 12:05 AEST on 2026-11-25
+  and came back before 13:00 without rebooting (uptime 4 h 14 min at 13:03). Cause not looked at.
+
+### 9.54 KVM guests livelock: the guest timer FIQ is unmasked while its interrupt is still pending (OMS-42, 2026-11-23 to 2026-11-25)
+
+On the way to 9.53, a Lima VM (Ubuntu arm64, KVM) never reached SSH on `dev-machine-mac-2`
+(linux-aurora 7.3.0.aurora1-40). Host KVM comes up normally ("Non-architectural vgic", "VHE mode
+initialized successfully", `/dev/kvm` present).
+
+- An Ubuntu 24.04 kernel booted straight under QEMU/KVM with `earlycon` boots with one vCPU, and
+  hangs with two or four, on E-cores, P-cores or mixed: `rcu: Possible timer handling issue on
+  cpu=1`, no answer to the NMI backtrace. A 1-vCPU Lima VM hangs too, 0.12 s into PCI setup.
+- `/proc/interrupts`: `kvm guest vtimer` 897,668,668 after a few minutes of VMs (the host's own
+  timer 75 M since boot), and the vGIC maintenance interrupt 0.
+- `VM_TMR_FIQ_ENA_EL2` writes take on all 14 cores (`tools/vm-timer-probe`, a module that refuses
+  to stay loaded): set `0xf`, clear `0xc`, restored. Bits 2 and 3 are set on every core and
+  unknown to the AIC driver. The Mac's AIC is `apple,t6041-aic3`, which falls back to the generic
+  `t8122-aic3` entry.
+- tracefs (`tools/vm-timer-probe/trace-kvm-timer.sh`) over 3 s of a hung 2-vCPU guest: 2.5 M
+  vtimer FIQs, all on vCPU 1, each FIQ → `kvm_timer_update_irq` level 1 → `vgic_update_irq_pending`
+  → exit (IRQ) → entry at the same guest PC, with no vCPU put or load in between. QMP: vCPU 1 has
+  PSTATE `…c5` (IRQ and FIQ masked) just after a device register store; vCPU 0 spins in `wfe`
+  waiting for it.
+- Reading of the code (arch/arm64/kvm/vgic/vgic.c, `vgic_irq_handle_resampling()`): without
+  hardware deactivation (Apple), KVM unmasks the timer FIQ when `!(irq->active ||
+  irq->pending_latch)`. A level timer interrupt still pending in the list register is neither, so
+  KVM unmasks while the line is high; the guest, with interrupts masked, never takes it, and the
+  M4 takes the physical FIQ before the guest's next instruction. Proposed fix: while the list
+  register shows it pending, unmask only when `vgic_get_phys_line_level()` reports the line low.
+  Not built or tested; installing a kernel needs Allan's approval.
+
+### 9.55 x86-64 containers: the qemu-user fix moves into the package, and the image takes it (OMS-41, 2026-11-25)
+
+- **Upstream:** the three linux-user fixes from 9.53 went to omacom/omarchy-pkgs as #3505 (head
+  `c61ca8b`, open): `qemu-user-static` and `qemu-user-static-binfmt` built from the QEMU 11.1.3
+  release with patches `1000` (64-bit guest mappings inside 47 bits), `1001` (Linux AIO passthrough)
+  and `1002` (upstream `586284af4c2c`, `trapno`), in place of the Debian repackage
+  (`1:1.11.1.2+ds.3-1`). The same patches, plus the containerd drop-in, also went to
+  aurora-silicon/alarm-aurora as #457 (open). `[aurora]` publishes no `qemu-user-static` yet; if #457
+  lands, `[aurora]`'s build wins, being first in `pacman.conf`.
+- **On `dev-machine-mac-2`:** the PR's recipe was built on the Mac (`bin/build --arch aarch64
+  --package qemu-user-static`; its `pkgbuilds/qemu-user-static/` files hash the same as `c61ca8b`'s)
+  and installed with `pacman -U` at 20:48 AEST: `qemu-user-static 1:11.1.3-1`, sha256 `6b31a898…dc23`,
+  and `qemu-user-static-binfmt 1:11.1.3-1`, sha256 `41834906…df3b`. The `/etc/binfmt.d` override from
+  9.53 was removed at 15:02, so the kernel's rule is the package's own
+  (`interpreter /usr/bin/qemu-x86_64-static`, `flags: PF`). The containerd drop-in and `user4k=on`
+  stay. `/usr/local/bin/qemu-x86_64-oms41` is still on disk, unused. The PR's own test record:
+  SQL Server 2022 ready in 35 s from a plain `docker run`, `sqlcmd` round trip, a Compose stack with
+  the Service Bus emulator healthy, x86-64, armv7 and arm64 Alpine containers, all 33 rules registered.
+- **Updates:** `vercmp 1:11.1.3-1 1:1.11.1.2+ds.3-1` is 1, so `omarchy update` keeps the PR's build
+  without an `IgnorePkg`, and takes omarchy's own once it publishes a higher version.
+- **In the build:** `tools/derive-j616c-image` drops the static binary and the override. Its
+  `QEMU_X86_64` input becomes `QEMU_PKGS`, a directory with the two packages above, each pinned by
+  sha256 (a directory, as the file names carry a colon that `docker -v` can't take). It installs them
+  with `pacman -U` over the image's Debian build, checks both are `1:11.1.3-1`, that the package's
+  rule names `/usr/bin/qemu-x86_64-static` with `F`, and that no `/etc/binfmt.d` override shadows it,
+  and lists them in `versions.txt`. The containerd drop-in and the `user4k=on` warning are unchanged.
+  `tools/qemu-user/` stays as the patches' source and the record of 9.53. Not yet run; the next
+  derivation (the OMS-30 reinstall's image) covers it. Drop the input once #3505 is published.
+- **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
+  hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
+  install, which won't carry it.
