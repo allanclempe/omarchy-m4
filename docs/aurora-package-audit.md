@@ -97,6 +97,9 @@ update switches it to Aurora's build. That has side effects beyond the boot chai
   `fprintd`, `iio-sensor-proxy-aurora` replaces `iio-sensor-proxy` (the same mechanism the
   derivation guards against for `m1n1-aurora`). None of the replaced packages is installed on this
   Mac (`pacman -Qq`), so nothing is swapped today; installing one later would pull Aurora's in.
+  The exception since OMS-28: the image installs `fprintd` for Touch ID, so the derivation adds
+  `fprintd-aurora` to `IgnorePkg`. Without it, `-Syu` would replace `fprintd` with Aurora's, whose
+  `libfprint-aurora` would push out the `libfprint-git` Omarchy's Touch ID path uses.
 - **Conflicts declared by the Aurora package:** `networkmanager-aurora` conflicts with
   `networkmanager` and depends on `aurora-keep-config`. `upower-aurora` conflicts with `upower`
   and depends on `aurora-keep-config` (it has no Replaces, so it must be swapped in explicitly).
@@ -110,7 +113,7 @@ question for the M team (open question 2).
 
 | Report gap | Aurora packages | Installed now | Task |
 | --- | --- | --- | --- |
-| Touch ID / SEP unavailable | `aurora-sep` (pulls `fprintd-aurora`, `libfprint-aurora` "with the Aurora SEP driver", `aurora-touchid-rearm`, `aurora-xart`). Omarchy's M1–M3 and Neo image installs Touch ID at first boot with Aurora's `install-aurora-sep.sh` (omarchy-mac-installer `docs/one-image-m123-neo.md`); that script also edits `/etc/default/update-m1n1`, where the J616c image keeps its Stage 2 pin. **Decided (OMS-2, JOURNEY 9.38): left out.** Touch ID takes Omarchy's own consent path (omarchy-mac with `patches/omarchy-mac-touchid-j616c.patch`, and Omarchy's `libfprint-git` once it takes SEP interface v5) | no fprintd or libfprint at all, and no `install-aurora-sep.sh` | OMS-2 |
+| Touch ID / SEP unavailable | `aurora-sep` (pulls `fprintd-aurora`, `libfprint-aurora` "with the Aurora SEP driver", `aurora-touchid-rearm`, `aurora-xart`). Omarchy's M1–M3 and Neo image installs Touch ID at first boot with Aurora's `install-aurora-sep.sh` (omarchy-mac-installer `docs/one-image-m123-neo.md`); that script also edits `/etc/default/update-m1n1`, where the J616c image keeps its Stage 2 pin. **Decided (OMS-2, JOURNEY 9.38): left out.** Touch ID takes Omarchy's own consent path (omarchy-mac with `patches/omarchy-mac-touchid-j616c.patch`, and Omarchy's `libfprint-git` once it takes SEP interface v5) | none of Aurora's: since OMS-28 the image has Arch's `fprintd`, Omarchy's `libfprint-git -6` and omarchy-mac `0.2.3-2.1`, with `fprintd-aurora` in `IgnorePkg` | OMS-2, OMS-28 |
 | Ambient light not read; keyboard light follows no sensor | `iio-sensor-proxy-aurora` (replaces `iio-sensor-proxy`), `aurora-kbd-light`. These are userspace. The kernel half is done: on `7.3.0.aurora1-40` the AOP exposes `aop-sensors-als` and reads lux (JOURNEY 9.32), so OMS-3 is down to these two packages | neither | OMS-3 |
 | No hardware video decode | `libva-v4l2-request-avd` 1.3.r11-1, built 2026-11-12 from omacom/libva-v4l2_request. Aurora's default ALARM image ships it and selects it with a system driver alias rather than a global environment override (alarm-aurora README) | Omarchy's `libva-v4l2_request-avd` 1.3.r11.r169, built 2026-10-14 (a different package name) | OMS-4 |
 | Wi-Fi first join on 5 GHz | `aurora-wifi-firmware` (keeps Wi-Fi and Bluetooth firmware in step with the installed macOS); `networkmanager-aurora` (Wake-on-LAN across sleep; pulls `aurora-keep-config`). `iwd-aurora` only adds OWE for the Neo's MT7932 | Arch `iwd` 3.12-2, `networkmanager` 1.58.1-3 | OMS-5 |

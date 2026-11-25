@@ -882,3 +882,139 @@ is the same aura b13 object, filled for ESP `272043e7…` and `m1n1/boot-ctxr.bi
   - at 22.0 s: "Touch ID: restored 1 enrolled identity/identities; enrolment survived reboot";
   - at 32.7 s and 39.3 s: two matches, each with the unlock policy satisfied (generations 2 and 3).
 - So the enrolment survives a boot from full power-off as well as a restart (9.42). Still open on OMS-2: macOS's own Touch ID and keychain, and the report.
+
+### 9.47 Touch ID goes into the image: pinned omarchy-mac and libfprint-git builds (OMS-28, 2026-11-19)
+- Done means a clean reinstall, and Touch ID on the soak-test Mac rests on hand changes (9.41). So the derivation now installs what those hand changes did, as packages pacman owns. Allan's decisions: build them ahead of the derivation and pin them by sha256, as Stage 2 is; give omarchy-mac a pkgrel just above the repo's.
+- **omarchy-mac is 0.2.3, not #160's tree.** #140 branched from omarchy-mac-pkgs `28abebe`, where omarchy-mac is 0.2.6; omacom's `[omarchy]` still ships 0.2.3 (`ea0097a`). Building #160's head would bring 0.2.4–0.2.6 to the J616c untried, and its recipe insists on the tree's own version. Instead, #140's and #160's script and test changes go onto `ea0097a` (`patches/omarchy-mac-0.2.3-touchid-j616c.patch`). It's what the soak-test Mac runs, plus #160's guard.
+  - The four scripts and the consent test applied with a three-way merge. The README change was left out, since it conflicts with 0.2.3 and isn't needed to run.
+  - On `ea0097a` with the patch, every omarchy-mac test file gives the same result as without it, except the consent test (6 ok to 8 ok). `setup-test.sh` stops on this Linux host either way.
+- **`tools/build-touchid-packages`** takes omacom/omarchy-pkgs at #2737's head `2f4d1968`, whose omarchy-mac recipe is master's 0.2.3-2 (`f9d0eda`). It adds the patch to omarchy-mac's recipe as pkgrel `2.1`, and runs omarchy-pkgs' own `bin/build --mirror edge --arch aarch64`, in omacom's builder image, as their CI builds a package.
+- **Building it here, on x86_64 under qemu-user, took two fixes.**
+  - This host's qemu binfmt had flags `PF`, without credentials, so `sudo` in the builder container failed ("effective uid is not 0"). With Allan's OK it was re-registered from `tonistiigi/binfmt:qemu-v9.2.2`, now `POCF`. Undo: `sudo systemctl restart systemd-binfmt`, or a reboot.
+  - Both packages' `check()` then failed for qemu's reasons. libfprint's umockdev tests couldn't read a pty's attributes, and a USB transfer timed out. omarchy-mac's lock test finds its waiting `flock` by command line, which qemu prefixes. So on a non-aarch64 host the script first runs omarchy-mac's Touch ID tests natively (8 ok), then replaces each recipe's `check()` with one that says it was skipped. libfprint's tests ran in omacom's native aarch64 CI at this commit. A native build runs every `check()` unchanged.
+- **The packages** (`BUILDINFO` records the inputs and how the tests ran):
+  - `omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst`, sha256 `e5cc85eb2975e40078dce8bf9dc7ecc253a2ca8d0a8304d567611efab807c1fb`. Its eligibility admits `apple,j616c`, both options writers add `xart_guard=1`, and the source revision is `ea0097a`.
+  - `libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst`, sha256 `856fab055b76bc8858be27453d30a3d70b2ea51d1f6ddb94cd8df2feebc62daa`. It has the same file list, metadata, and SEP and interface-version strings as #2737's CI build, which runs on the soak-test Mac.
+- **`tools/derive-j616c-image`** takes the package directory as a new sixth input and checks both packages against `TOUCHID_PINS`. It stops if `[omarchy]` offers anything other than omarchy-mac `0.2.3-2` and libfprint-git `-5`. Then it:
+  - installs both packages, then `fprintd` and `usbutils`, so Omarchy's fingerprint setup installs nothing (its `pacman -S` could put the v4-only `-5` back);
+  - checks that the installed omarchy-mac admits the J616c and writes the guard, and that no Touch ID agreement or options file is in the image;
+  - adds `fprintd-aurora` to `IgnorePkg`. It declares `replaces=fprintd`, and with `[aurora]` first, `-Syu` would otherwise swap it in, and its `libfprint-aurora` would push `libfprint-git` out. That's the same trap as `m1n1-aurora`. The soak-test Mac doesn't have this line yet, since only new images get it.
+
+  shellcheck reports nothing new in the derivation or the build script.
+- **Not yet:**
+  - a run of the derivation, which needs the Lima VM on the macOS side;
+  - a fresh install from that image, where Omarchy's setup offers Touch ID and enrols with no hand step;
+  - a first `omarchy update` after it;
+  - macOS's own Touch ID check (OMS-2) before installing.
+
+### 9.48 Review of the Touch ID image work: corrections and what's open (OMS-28, 2026-11-20)
+- **libfprint's interface test now runs in emulated builds.** 9.47's build skipped all of libfprint's `check()` under qemu-user, including its Aurora interface test, the plain-Python check of the v4 and v5 handling that is the point of `-6`. Only meson's umockdev device tests fail under qemu. So the build script now keeps the interface test and skips only `meson test`.
+  - For the pinned build, the test was run natively here on the same sources: libfprint `6f9479c` with omarchy-pkgs `2f4d1968`'s patches, applied as the aarch64 `prepare()` applies them. It passed.
+  - The device tests ran in omacom's native aarch64 CI at that commit.
+- **Five scripts in the 0.2.3 patch, not four.** 9.47 counted four, but the 0.2.3 patch touches two entrypoints and three libs (plus the consent test); `patches/README.md` now says five. 9.41's four was right: those were the scripts before #160 added `enable-fingerprint` (9.45), and they're what the soak-test Mac got.
+- **The pins can't be rebuilt byte for byte.** Each package records its build date, so `tools/build-touchid-packages` gives new sha256s on every run, and the derivation refuses those, by design. Rebuilding means re-pinning `TOUCHID_PINS` on purpose. The derivation needs the pinned files themselves. They are in `~/aurora-m4-work/oms28-touchid-pkgs` on dev-machine-01, and have to reach the Lima VM for a derivation run. Where they're kept for good is open.
+- **The derivation's checks:**
+  - The `[omarchy]` version check now runs beside the `[aurora]` pin check, before anything is installed, and lists every mismatch in one message.
+  - Both options writers (`touchid-enable` and `enable-fingerprint`) are checked for `xart_guard=1`, not just one.
+  - A package the repo no longer offers is now reported in that message. Under `set -e`, a failed `pacman -Si` used to stop the run silently; that applied to the existing `[aurora]` loop too.
+- **The image's pacman.conf** has `LocalFileSigLevel = Optional`, as the soak-test Mac shows, so `pacman -U` of the unsigned local packages works.
+- **The soak-test Mac still lacks the `IgnorePkg` guard.** It runs `fprintd` and `libfprint-git -6` installed by hand (9.41), and its pacman.conf ignores only `m1n1-aurora`. Its next `omarchy update` would replace `fprintd` with `fprintd-aurora`, and `libfprint-aurora` would push `libfprint-git` out. Until it's reinstalled from an image with the line, it needs this, with Allan's approval:
+  ```
+  grep -n '^IgnorePkg' /etc/pacman.conf
+  sudo sed -i 's/^IgnorePkg = m1n1-aurora$/IgnorePkg = m1n1-aurora fprintd-aurora/' /etc/pacman.conf
+  pacman-conf IgnorePkg
+  ```
+  The first line should print `IgnorePkg = m1n1-aurora`, and the last should list both names. The undo is the same `sed` with the two patterns swapped.
+- `docs/aurora-package-audit.md`'s Touch ID row now says what the image has. The README lists `tools/build-touchid-packages` and says the derivation needs the pinned packages.
+
+### 9.49 macOS's Touch ID after Linux's enrolment (OMS-2, OMS-28, 2026-11-20)
+- Allan booted the Mac into macOS (26.7.3) after the Linux enrolment (9.41), two restarts and a boot from power-off (9.42, 9.46), and tried Touch ID there. **It works.** Linux's keybag creation, enrolment and matches, all under xART guard 1 with no refusal, left macOS's own Touch ID intact.
+- `fdesetup status`: **FileVault is On.** So the guard mattered: with FileVault on, a wrong write to the shared xART store can stop macOS from starting (9.38).
+- That closes the last open check on OMS-2's Touch ID trial. Still open on OMS-2: the test report, which picks Touch ID up at its next run.
+
+### 9.50 Touch ID's packages built natively, every test run, and re-pinned (OMS-28, 2026-11-20)
+- With the Mac in macOS, `tools/build-touchid-packages` ran natively in the Lima VM `omarchy-builder` (aarch64) from branch head `548f58a`, under `caffeinate`. The output is in `build/oms28/touchid-pkgs` on the Mac, next to the other build outputs. That answers where the pinned files live; nothing is published.
+- **Natively, every `check()` ran and passed.** `BUILDINFO` says "each package's check(), natively".
+  - libfprint-git: the Aurora interface test, then meson's tests, 132 ok and 0 failed. These are the umockdev device tests qemu couldn't run (9.47).
+  - omarchy-mac: its whole suite, 117 ok and 0 failed, including `setup-test.sh`, which stops on dev-machine-01.
+- **The new pins** replace 9.47's emulated builds, with the same inputs (omarchy-pkgs `2f4d1968`, omarchy-mac-pkgs `ea0097a` plus the patch `11d68ed8…`):
+  - `omarchy-mac-0.2.3-2.1-aarch64.pkg.tar.zst`, sha256 `65e5717edeaa64859f3eb562182d76e463b7ea6a85f63c5f749a94894264e76c`;
+  - `libfprint-git-1:1.94.100.r10.g6f9479c-6-aarch64.pkg.tar.zst`, sha256 `4a78586a805987cd0e78d5be15a05240915f02a9e33d986863c0db4d5ac70aff`.
+- Next: the derivation in the VM with these, on the inputs of the OMS-24 acceptance image (9.34).
+
+### 9.51 The derivation with Touch ID (OMS-28, 2026-11-20)
+- **Run:** `tools/derive-j616c-image` at `b08a735`, in the Lima VM under `caffeinate`, on the OMS-24 acceptance image's inputs:
+  - the 2026-11-13 edge payload (`~/work/out`) and its rootfs (`alarm-rootfs-42a4eeaa…`);
+  - Aurora's key from `build/alarm-pkgs/aurora-alarm.asc`;
+  - the Recovery app with `raw-ctxr` from `build/oms24/recovery`;
+  - Stage 2 from `build/aura-stage2-94d8e6e/build/aura.bin`;
+  - plus `build/oms28/touchid-pkgs` (9.50).
+
+  The script and log are in `build/oms28/` on the Mac.
+- **Passed in 236 s.** `[aurora]` still offers exactly `AURORA_PINS`, and `[omarchy]` still offers omarchy-mac `0.2.3-2` and libfprint-git `-5`, so neither repo has moved since 9.34.
+  - Installed: `omarchy-mac 0.2.3-2.1`, `libfprint-git 1:1.94.100.r10.g6f9479c-6`, `fprintd 1.94.5-2`, with every boot-chain, Mesa, audio and firmware pin as before.
+  - No `.pacnew`, and no replacement prompt in pacman's log. The only warnings are mkinitcpio's usual "possibly missing firmware" ones.
+  - The J616c, guard and no-agreement checks passed, and `IgnorePkg` is `m1n1-aurora fprintd-aurora`.
+- **Payload:** `omarchy-2026.11.13-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`, 4,023,953,102 bytes, sha256 `23e98f324bec620acbf6aede39c2dd90102df9993a30dffb6f5ca2ba89fe8e34`, in the VM's `~/work/j616c-out-oms28`.
+- **Next:**
+  - `mac-image-check`, the developer catalog, the app (version above the installed 2.3.18) and the package, as in 9.34;
+  - then a fresh install, where Omarchy's fingerprint setup offers Touch ID and enrols with no hand step, followed by the first `omarchy update`.
+
+### 9.52 The installer with Touch ID (OMS-28, 2026-11-20)
+- **Built on the Mac** by `build/oms28/build-installer.sh` (log `build/oms28/build-installer.log`), from the `work/omi-oms24` checkout. Nothing has changed `patches/j616c-installer.patch` since OMS-24.
+  - **Payload check:** `mac-image-check payload edge` in the VM: "ok - the edge mac image payload meets the contract". As in 9.29, the checker refuses the `-j616c-dev` name, so it ran on a symlink under the standard edge name, with a copy of the metadata naming that file. The derivation's output is root-owned, and `protected_hardlinks` refuses a hard link to it.
+  - **Developer catalog:**
+    - OMS-24's inputs with evidence revision `j616c-dev.20261120` and `latest_version` 2.3.19;
+    - the same engine (`v0.9.2-omarchy.20261116.87a727c96a25`) and J616c metadata (`supported_fw` cut to 26.6.2, as the derivation's metadata hasn't changed since 9.34);
+    - the new payload.
+
+    `make-unsigned-catalog.py --developer`: 36 models, sequence 1795119450, sha256 `e28577df…07aa`. It was signed with the local key and verified against the trust root, with 4 offline artifacts.
+  - **App** 2.3.19 (build 2611192017), `OMARCHY_DEVELOPER_BUILD=1 OMARCHY_OFFLINE_BUILD=1`. Its embedded payload is `23e98f32…8e34`, the derivation's (9.51).
+  - **Package:** `build/oms28/Omarchy-J616c-Developer.pkg`, 4,050,089,112 bytes, sha256 `a2ab4389ce6768b2fbf386bd8891378a16204fc7183494505fe2e6334ce04112`.
+- **Next, Allan's:** remove the current install (OMS-23), install this package, then the Recovery step, first boot and owner setup. Then:
+  - `omarchy-setup-security-fingerprint` should offer Touch ID and enrol with no hand step;
+  - then the first `omarchy update`, then the report.
+
+  A fresh install gets a new volume group, so a new OS identity lane in the enclave. The old Linux enrolment is orphaned, and Touch ID is set up again.
+
+### 9.53 The acceptance install removed, for the Touch ID reinstall (OMS-28, 2026-11-20)
+- Read from macOS first: Omarchy's four partitions after macOS:
+  - `disk0s3`, the 6 GB stub container `disk3`;
+  - `disk0s4`, the ESP, PARTUUID `B2E659A5-FD54-454E-A7BF-75A3FA15D04A`;
+  - `disk0s5`, Boot, `9D4A6C2A-2925-4563-AD03-C63C37147581`;
+  - `disk0s6`, Root, 128.8 GB.
+
+  The ESP's and Boot's PARTUUIDs match AGENTS.md's known-good values.
+- Allan removed them with `diskutil` (OMS-23: the app still can't): `apfs deleteContainer disk3`, then `eraseVolume free none` on `disk0s4`–`s6`. Afterwards `disk0` holds the ISC container (`disk0s1`), macOS (`disk0s2`, 719.8 GB), 274.9 GB free, and macOS Recovery (`disk0s7`).
+- Gone with the root: the soak-test install's hand changes (9.41), and the read-only iBoot System Container image from 9.41. macOS's Touch ID was checked after the Linux enrolment (9.49), so it wasn't needed.
+- Next: install `build/oms28/Omarchy-J616c-Developer.pkg` (9.52).
+
+### 9.54 The fresh install offers Touch ID; the first update asks to replace the boot scripts (OMS-28, OMS-37, 2026-11-20)
+- Allan installed `build/oms28/Omarchy-J616c-Developer.pkg` (9.52) into the freed space, then went through the Recovery step, first boot and owner setup.
+- **Touch ID was offered on the first boot, and enrolled and matched.** No package was installed and no file edited by hand: OMS-28's goal. The image's omarchy-mac `0.2.3-2.1`, libfprint-git `-6` and fprintd carried it.
+- **The first `omarchy update` stopped at a prompt:** replace `asahi-fwextract` with `[omarchy]`'s `aurora-fwextract`? That breaks zero hand steps, and accepting it would have been unsafe:
+  - `aurora-fwextract 0.9.2-1` (omacom-packaged, built 2026-11-17, after 9.33's first update) replaces, conflicts with and provides `asahi-fwextract`, and depends on `aurora-scripts` and `lzfse`.
+  - `aurora-scripts 20261023-1`, also new in `[omarchy]` on 2026-11-17, replaces and conflicts with `asahi-scripts`. The image pins Aurora's `asahi-scripts 20261023-9`.
+  - Compared file by file, omacom's `aurora-scripts` lacks `bootchain.py`, `bootchain_arch.py`, `aurora-stage2-commit`, the Stage 2 trial units and their preset, and `stage2-sign-hook`, and has a different `update-m1n1` and `95-m1n1-install.hook`. Taking it would replace the Stage 2 builder and trial the update policy relies on (OMS-13, OMS-17), and its hook could rebuild `m1n1/boot-ctxr.bin` at once.
+- Allan answered no. The derivation's pin checks didn't catch it: they watch `[aurora]`'s pinned builds and `[omarchy]`'s omarchy-mac and libfprint-git, not a new `[omarchy]` package that replaces a pinned `[aurora]` one.
+- OMS-37 tracks it: `IgnorePkg` for `aurora-scripts` and `aurora-fwextract` (the `m1n1-aurora` precedent), a derivation check for any repo package that replaces or conflicts with a pinned one, and a question to the M team.
+
+### 9.55 After the "no": the update stops, and nothing changed (OMS-37, 2026-11-20)
+- After Allan declined `aurora-fwextract`, pacman asked to remove `asahi-scripts`. That's the conflict `aurora-scripts` brings. Declining that too ended the update.
+- **Read over Tailscale SSH (`dev-machine-mac-2`, the fresh install):** pacman's log shows both attempts stopping at "starting full system upgrade", before any transaction. Nothing was installed or removed, and no hook ran. `asahi-scripts 20261023-9` (Aurora's) and `asahi-fwextract 0.9.2-1` are still installed. Kernel, aura, omarchy-mac `0.2.3-2.1` and libfprint-git `-6` are as installed, with no pacman lock left behind. `IgnorePkg = m1n1-aurora fprintd-aurora`, as the image sets it.
+- **What pulls `aurora-scripts` in:** `[omarchy]`'s `omarchy-mac-boot 20261104-2`. Its only dependency change from the installed `-1` is `asahi-scripts` → `aurora-scripts>=20260127.1`. Aurora's `asahi-scripts` provides only `aurora-stage2-ctxr-slot` and `aurora-stage2-trial`, so it can't satisfy that. `[omarchy]`'s own `aura` and `m1n1-aurora` builds need it too, but the image ignores or outranks them. Only `omarchy-aurora-firmware` depends on `omarchy-mac-boot`, and on any version.
+- **So holding the boot scripts means holding `omarchy-mac-boot` at `20261104-1` as well:** `IgnorePkg` gains `aurora-scripts aurora-fwextract omarchy-mac-boot`. The rest of the pending update (60 packages) goes through. Proposed as a hand fix on the Mac, with a backup of `/etc/pacman.conf` and its undo. The image's version of the fix is OMS-37.
+
+### 9.56 The update with the holds: past the boot scripts, stopped by PipeWire (OMS-37, OMS-38, 2026-11-20)
+- With `IgnorePkg = m1n1-aurora fprintd-aurora aurora-scripts aurora-fwextract omarchy-mac-boot` (9.55), `omarchy update` passed the boot scripts with no prompt:
+  - "ignoring package replacement (asahi-fwextract => aurora-fwextract)";
+  - "ignoring package replacement (fprintd => fprintd-aurora)";
+  - "omarchy-mac-boot: ignoring package upgrade (20261104-1 => 20261104-2)";
+  - omarchy-mac `0.2.3-2.1` and libfprint-git `-6` kept as newer than `[omarchy]`'s.
+- **Then it failed on dependencies:** "installing spandsp (3.1.1-1) breaks dependency 'libspandsp.so=2-64' required by pipewire-audio".
+  - Arch's `[extra]` moved `spandsp` to 3.1.1 (`libspandsp.so=4`) and rebuilt PipeWire as `1:1.6.11-2`.
+  - The installed PipeWire set is `[extra]`'s `1:1.6.11-1`, which needs `libspandsp.so=2`.
+  - `[aurora]`, first in pacman.conf, carries `pipewire-audio 1:1.6.10-1.6`, so pacman never offers `[extra]`'s rebuild, but takes `spandsp` from `[extra]`.
+
+  This is the collision the package audit predicted (OMS-18). It's unrelated to Touch ID or the boot scripts. OMS-38 tracks it.
+- **Proposed hand fix for the soak-test Mac:** hold `spandsp` at 0.0.6 too. It leaves the working audio stack exactly as installed, and nothing in the pending update needs `spandsp` 3. The alternative, pulling `[extra]`'s PipeWire `1.6.11-2` explicitly, changes the audio packages, so it waits for OMS-38's decision.

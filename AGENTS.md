@@ -35,7 +35,8 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Raw Stage 1 enrolled by hand after `bputil -nc` (the build's `macho-unpadded` object is refused by Stage 2) | installer patch: `raw-ctxr` mode for J616c; the installer enrolled it on the acceptance install (JOURNEY 9.35) | OMS-24 |
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
-| `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | in omacom/omarchy-mac-pkgs#160: omarchy-mac writes `xart_guard=1` on a J616c with the owner's agreement (JOURNEY 9.45); ships when #160 does | OMS-27 |
+| `options apple_sep xart_guard=1` in `/etc/modprobe.d/zz-oms2-xart-guard.conf`, for the Touch ID trial (the `-40` kernel runs the J616c with the guard off) | derivation: omarchy-mac `0.2.3-2.1`, built with omacom/omarchy-mac-pkgs#160, writes `xart_guard=1` on a J616c with the owner's agreement (JOURNEY 9.45, 9.47); upstream when #160 merges | OMS-27, OMS-28 |
+| omarchy-mac's four Touch ID scripts patched by hand, and `libfprint-git -6` (SEP interface v5) from omacom/omarchy-pkgs#2737's CI artifact | derivation: pinned omarchy-mac `0.2.3-2.1` and `libfprint-git -6`, built by `tools/build-touchid-packages`, plus `fprintd`; `IgnorePkg` gains `fprintd-aurora` (JOURNEY 9.47). Not yet proven by a fresh install | OMS-28 |
 
 ## Where things are
 
@@ -45,6 +46,10 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `j616c-boot-fix.html` is the team write-up: root causes, test log, asks per team.
 - `tools/wifi-reload-timing.sh` times Wi-Fi's rejoin after a `brcmfmac` reload, plain and with the
   radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
+- `tools/build-touchid-packages` builds the two packages that give the image Touch ID: omarchy-mac
+  `0.2.3-2.1` (omacom's 0.2.3 with `patches/omarchy-mac-0.2.3-touchid-j616c.patch`) and
+  `libfprint-git -6` (omacom/omarchy-pkgs#2737), with omarchy-pkgs' own `bin/build` for aarch64. The
+  derivation takes its output directory and checks each package against `TOUCHID_PINS` (OMS-28).
 - `tools/touchid-probe.sh` checks Touch ID's state on the Mac without loading anything. With
   `--load` it attaches the Secure Enclave read-only (no xART writes, no keybag) and reports how far
   the driver got (JOURNEY 9.38). Run it at the Mac with sudo, and reboot after `--load`.
@@ -53,7 +58,8 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
   and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in, and the update policy:
   Stage 2 rebuilt from the pin and tried by Aurora's trials). Its header has usage.
-  It pins the exact `[aurora]` builds (`AURORA_PINS`); its last run made the acceptance image (JOURNEY 9.34).
+  It pins the exact `[aurora]` builds (`AURORA_PINS`) and the Touch ID packages (`TOUCHID_PINS`);
+  its last run made the acceptance image (JOURNEY 9.34), before Touch ID was added.
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
   Recovery boot modes for aura's Stage 1 (`raw-ctxr`, which the J616c uses, and the Mach-O
   `macho-unpadded` and padded `macho-ctxr`), the engine changes, camera tuning collection on every

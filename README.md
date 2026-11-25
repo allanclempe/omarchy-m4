@@ -89,7 +89,8 @@ Updates rebuild Stage 2, and Aurora's trial boot tries each rebuild once before 
 | --- | --- |
 | [`JOURNEY.md`](JOURNEY.md) | The running log: what was tried, what broke and why, with the evidence. Start at section 9. |
 | [`j616c-boot-fix.html`](j616c-boot-fix.html) | The write-up for the Omarchy and Aurora teams: root causes, test log, asks per team. |
-| [`tools/derive-j616c-image`](tools/derive-j616c-image) | Turns an Omarchy edge image into the J616c image: Aurora's boot chain, kernel, Mesa and audio at pinned builds, and the update policy. Usage is in its header. |
+| [`tools/derive-j616c-image`](tools/derive-j616c-image) | Turns an Omarchy edge image into the J616c image: Aurora's boot chain, kernel, Mesa and audio at pinned builds, Touch ID's packages, and the update policy. Usage is in its header. |
+| [`tools/build-touchid-packages`](tools/build-touchid-packages) | Builds the two packages that give the image Touch ID (omarchy-mac with the J616c support, and a libfprint-git for SEP interface v5), which the derivation pins by sha256. |
 | [`patches/j616c-installer.patch`](patches/j616c-installer.patch) | Installer changes: J616c admission, the `raw-ctxr` Stage 1 mode the J616c uses (and two Mach-O modes), camera tuning collection on every Mac, and a Wi-Fi collection fix. Applies to omacom/omarchy-mac-installer at `a576543`. |
 | [`patches/omarchy-mac-boot-aurora.patch`](patches/omarchy-mac-boot-aurora.patch) | Teaches omarchy-mac-boot's boot check Aurora's Stage 2 (upstream as omacom/omarchy-mac-pkgs#150). [`patches/README.md`](patches/README.md) gives each patch's base and how to test it. |
 | [`docs/aurora-package-audit.md`](docs/aurora-package-audit.md) | Every `[aurora]` package sorted for this Mac: used, a candidate for a gap, left out, or not for this Mac. |
@@ -104,7 +105,9 @@ Updates rebuild Stage 2, and Aurora's trial boot tries each rebuild once before 
 There is no ready-made image to download. The image is rebuilt from this repo:
 
 1. Build an Omarchy edge image with omarchy-mac-installer's image builder.
-2. Build the Stage 2 from aura `94d8e6e4`, then run `tools/derive-j616c-image` on an aarch64
+2. Build the Stage 2 from aura `94d8e6e4`. Get the two Touch ID packages the derivation pins
+   (`TOUCHID_PINS`): the files built for it, since a rebuild gives new sha256s and means
+   re-pinning (`tools/build-touchid-packages`). Then run `tools/derive-j616c-image` on an aarch64
    Linux host with Docker. Its header lists the inputs.
 3. Build the installer from `patches/j616c-installer.patch`. Its Recovery app needs macOS and
    Xcode. Set `OMARCHY_APP_VERSION` above the app already installed, or the package keeps the old
