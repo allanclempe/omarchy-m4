@@ -77,6 +77,10 @@ row below. A task whose fix lives only on the Mac isn't done.
   (Aurora's 7.3 kernel, until omacom's 7.3 carries the J616c).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
+- After a reinstall, Allan's own setup of the Mac (remote access, git, the development tools) comes
+  from a script kept on dev-machine-01 at
+  `~/.local/share/omarchy-mac-setup/`, outside git: it carries credentials, so it is never
+  committed, and `.gitignore` refuses its file names (OMS-39). Its README has the steps.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
   are rebuilt from the patch and the scripts above; JOURNEY section 8 records how.
 
