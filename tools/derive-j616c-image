@@ -46,14 +46,16 @@
 #     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
 #     which every Omarchy ESP shares (OMS-12), and /boot from the partition
 #     after it rather than the Boot UUID every install shares (OMS-15);
-#   - lets x86-64 containers run (OMS-41): installs a patched static qemu-x86_64
-#     (tools/qemu-user, the QEMU_X86_64 input, pinned by QEMU_X86_64_SHA256) as
-#     /usr/local/bin/qemu-x86_64-oms41, points the image's qemu-x86_64 binfmt rule
-#     at it through an /etc/binfmt.d override of the same name, and runs
-#     containerd under Aurora's userpages 4k (tools/image/containerd-user4k.conf),
-#     since x86 libraries built for 4 KiB pages don't map on the 16 KiB kernel.
-#     Stock qemu-user also hands x86-64 programs addresses above 2^47, has no
-#     Linux AIO and reports trapno -1: SQL Server 2022 needs all three fixed;
+#   - lets x86-64 containers run (OMS-41): installs qemu-user-static and
+#     qemu-user-static-binfmt built from omacom/omarchy-pkgs#3505 (QEMU 11.1.3
+#     with three linux-user patches; the QEMU_PKGS input, pinned by
+#     QEMU_PKG_SHA256) over the image's Debian build, and runs containerd under
+#     Aurora's userpages 4k (tools/image/containerd-user4k.conf), since x86
+#     libraries built for 4 KiB pages don't map on the 16 KiB kernel. The Debian
+#     qemu-user also hands x86-64 programs addresses above 2^47, has no Linux AIO
+#     and reports trapno -1: SQL Server 2022 needs all three fixed. The PR's
+#     version sorts above the Debian build, so updates keep it, and take
+#     omarchy's own build once it publishes a higher one;
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.bin (aura's raw Stage 1, which the installer
@@ -62,12 +64,13 @@
 #
 # Run on an aarch64 Linux host with
 # Docker and passwordless sudo:
-#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 QEMU_X86_64 OUTPUT_DIR
+#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 QEMU_PKGS OUTPUT_DIR
 # STAGE2 is build/aura.bin from aura STAGE2_COMMIT built with the aura PKGBUILD's
 # Stage 2 flags (RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1
 # BUILTIN_LOGO=aurora); its sha256 must be STAGE2_SHA256.
-# QEMU_X86_64 is the output of tools/qemu-user/build-qemu-x86_64; its sha256 must
-# be QEMU_X86_64_SHA256.
+# QEMU_PKGS is a directory holding the two packages omarchy-pkgs builds at
+# QEMU_PR_COMMIT (`bin/build --arch aarch64 --package qemu-user-static`, files
+# under build-output/edge/aarch64/); each must match QEMU_PKG_SHA256.
 # RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
 # the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app, which
 # predates that mode and would refuse this Mac's installation configuration.
@@ -114,22 +117,32 @@ declare -A AURORA_PINS=(
 STAGE2_COMMIT=94d8e6e4
 STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
-# The patched qemu-x86_64 tested on the Mac with SQL Server 2022 (OMS-41, JOURNEY 9.53).
-QEMU_X86_64_SHA256=2ad7fe7f489ebcdb8bdc9c9bdfcb578965dc340bfc2cd290c2dfb5c081ca1810
-QEMU_X86_64_PATH=/usr/local/bin/qemu-x86_64-oms41
+# qemu-user-static from omacom/omarchy-pkgs#3505, the build installed and tested
+# on the Mac with SQL Server 2022 (OMS-41, JOURNEY 9.55). Drop the input once
+# omarchy's repo publishes it.
+QEMU_PR_COMMIT=c61ca8b62661
+QEMU_VERSION=1:11.1.3-1
+declare -A QEMU_PKG_SHA256=(
+  [qemu-user-static]=6b31a8986c0b73f009110f3f064f91c4acf6317056ec6367cbff9d2b10fbdc23
+  [qemu-user-static-binfmt]=418349063bb0fc15098f4cd3b160f9c0ddcba066ced7d021d487c71123c0df3b
+)
 QEMU_BINFMT=qemu-x86_64-static.conf
 
 log() { printf '[%4ss] %s\n' "$SECONDS" "$*"; }
 fail() { printf 'derive-j616c-image: %s\n' "$*" >&2; exit 1; }
 
 host() {
-  local edge=$1 rootfs=$2 key=$3 recovery=$4 stage2=$5 qemu=$6 out=$7 image
+  local edge=$1 rootfs=$2 key=$3 recovery=$4 stage2=$5 qemu=$6 out=$7 image pkg file
   [[ -d $edge && -f $rootfs && -f $key && -f $recovery/omarchy-recovery-app.json \
-    && -d "$recovery/Omarchy Installer.app" && -f $stage2 && -f $qemu ]] ||
-    fail "usage: $0 EDGE_OUT ROOTFS AURORA_KEY RECOVERY_DIR STAGE2 QEMU_X86_64 OUT"
+    && -d "$recovery/Omarchy Installer.app" && -f $stage2 && -d $qemu ]] ||
+    fail "usage: $0 EDGE_OUT ROOTFS AURORA_KEY RECOVERY_DIR STAGE2 QEMU_PKGS OUT"
   [[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$STAGE2_SHA256" ]] || fail "$stage2 is not the pinned aura $STAGE2_COMMIT Stage 2"
-  [[ $(sha256sum "$qemu" | cut -d' ' -f1) == "$QEMU_X86_64_SHA256" ]] ||
-    fail "$qemu is not the pinned patched qemu-x86_64 (tools/qemu-user/build-qemu-x86_64)"
+  for pkg in "${!QEMU_PKG_SHA256[@]}"; do
+    file=$qemu/$pkg-$QEMU_VERSION-aarch64.pkg.tar.zst
+    [[ -f $file ]] || fail "$qemu has no $(basename "$file") (omarchy-pkgs at $QEMU_PR_COMMIT)"
+    [[ $(sha256sum "$file" | cut -d' ' -f1) == "${QEMU_PKG_SHA256[$pkg]}" ]] ||
+      fail "$file is not the pinned build from omarchy-pkgs $QEMU_PR_COMMIT"
+  done
   mkdir -p "$out"
   [[ -z $(ls -A "$out") ]] || fail "$out is not empty"
   image=omarchy-j616c-derive:$(sha256sum "$rootfs" | cut -c1-16)
@@ -141,7 +154,7 @@ host() {
     -v "$(cd "$(dirname "$key")" && pwd)/$(basename "$key"):/aurora.asc:ro" \
     -v "$(cd "$recovery" && pwd):/recovery:ro" -v "$(cd "$out" && pwd):/out" -v /work \
     -v "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2"):/stage2.bin:ro" \
-    -v "$(cd "$(dirname "$qemu")" && pwd)/$(basename "$qemu"):/qemu-x86_64:ro" \
+    -v "$(cd "$qemu" && pwd):/qemu-pkgs:ro" \
     "$image" /bin/bash /tools/derive-j616c-image --in-container
 }
 
@@ -336,19 +349,26 @@ PY
   in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
     fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
-  log "x86-64 containers: patched qemu-x86_64, its binfmt rule, containerd under userpages 4k"
-  # The image's Docker uses qemu-user-static-binfmt's rule; keep the package and
-  # override its rule by name, so removing the override restores stock qemu.
-  [[ -f $T/usr/lib/binfmt.d/$QEMU_BINFMT && -x $T/usr/bin/userpages &&
-     -f $T/usr/lib/systemd/system/containerd.service ]] ||
-    fail "the image lacks qemu-user-static-binfmt's $QEMU_BINFMT, aurora-userpages or containerd; recheck OMS-41"
-  install -D -m 0755 /qemu-x86_64 "$T$QEMU_X86_64_PATH"
-  install -d "$T/etc/binfmt.d"
-  sed "s#:/usr/bin/qemu-x86_64-static:#:$QEMU_X86_64_PATH:#" "$T/usr/lib/binfmt.d/$QEMU_BINFMT" \
-    >"$T/etc/binfmt.d/$QEMU_BINFMT"
-  # F (fix binary) keeps the interpreter usable inside containers.
-  grep -Eq "^:qemu-x86_64:.*:$QEMU_X86_64_PATH:[A-Z]*F[A-Z]*$" "$T/etc/binfmt.d/$QEMU_BINFMT" ||
-    fail "the $QEMU_BINFMT override does not name $QEMU_X86_64_PATH with the F flag; has the stock rule changed?"
+  log "x86-64 containers: qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT, containerd under userpages 4k"
+  [[ -x $T/usr/bin/userpages && -f $T/usr/lib/systemd/system/containerd.service ]] ||
+    fail "the image lacks aurora-userpages or containerd; recheck OMS-41"
+  in_chroot pacman -Qq qemu-user-static-binfmt >/dev/null 2>&1 ||
+    fail "the image has no qemu-user-static-binfmt to replace; recheck OMS-41"
+  install -d "$T/tmp/qemu-pkgs"
+  cp /qemu-pkgs/*-"$QEMU_VERSION"-aarch64.pkg.tar.zst "$T/tmp/qemu-pkgs/"
+  in_chroot pacman -U --noconfirm /tmp/qemu-pkgs/qemu-user-static-"$QEMU_VERSION"-aarch64.pkg.tar.zst \
+    /tmp/qemu-pkgs/qemu-user-static-binfmt-"$QEMU_VERSION"-aarch64.pkg.tar.zst >>"$W/pacman.log" 2>&1 ||
+    fail "could not install qemu-user-static $QEMU_VERSION (pacman.log)"
+  rm -rf "$T/tmp/qemu-pkgs"
+  for pkg in "${!QEMU_PKG_SHA256[@]}"; do
+    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg $QEMU_VERSION" ]] ||
+      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not $QEMU_VERSION"
+  done
+  # The package's own rule, with F (fix binary), which keeps the interpreter usable
+  # inside containers. An override in /etc would take precedence over it.
+  grep -Eq '^:qemu-x86_64:.*:/usr/bin/qemu-x86_64-static:[A-Z]*F[A-Z]*$' "$T/usr/lib/binfmt.d/$QEMU_BINFMT" ||
+    fail "$QEMU_BINFMT does not name /usr/bin/qemu-x86_64-static with the F flag"
+  [[ ! -e $T/etc/binfmt.d/$QEMU_BINFMT ]] || fail "/etc/binfmt.d/$QEMU_BINFMT would override the package's rule"
   install -D -m 0644 /tools/image/containerd-user4k.conf \
     "$T/etc/systemd/system/containerd.service.d/50-user4k.conf"
   # userpages refuses 4k without user4k=on. The acceptance install had it in
@@ -359,7 +379,8 @@ PY
 
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
   in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "$VAAPI_AURORA" "${DONGLE_FIRMWARE[@]#core/}" | tee "$W/versions.txt"
+    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "$VAAPI_AURORA" "${DONGLE_FIRMWARE[@]#core/}" \
+    qemu-user-static qemu-user-static-binfmt | tee "$W/versions.txt"
   # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
   if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
   # And what got installed is exactly what was pinned.
@@ -391,7 +412,7 @@ PY
   printf '\n# J616c: aura releases up to 1.0.0b13.1 leave a post-M4 ANS powered off for\n# U-Boot (fixed in aura aaec599f). Remove once the aura package has that fix.\nM1N1=%s\n' \
     "$STAGE2_PATH" >>"$T/etc/default/update-m1n1"
   echo "aura Stage 2 $STAGE2_COMMIT $STAGE2_SHA256" >>"$W/versions.txt"
-  echo "qemu-x86_64 OMS-41 $QEMU_X86_64_SHA256" >>"$W/versions.txt"
+  echo "qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT (omacom/omarchy-pkgs#3505)" >>"$W/versions.txt"
 
   log "updates: Stage 2 rebuilt from the pin and tried once (OMS-13)"
   # The pacman hook must keep rebuilding Stage 2, and nothing may hold the kernel

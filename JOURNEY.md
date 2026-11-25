@@ -984,3 +984,35 @@ initialized successfully", `/dev/kvm` present).
   M4 takes the physical FIQ before the guest's next instruction. Proposed fix: while the list
   register shows it pending, unmask only when `vgic_get_phys_line_level()` reports the line low.
   Not built or tested; installing a kernel needs Allan's approval.
+
+### 9.55 x86-64 containers: the qemu-user fix moves into the package, and the image takes it (OMS-41, 2026-11-25)
+
+- **Upstream:** the three linux-user fixes from 9.53 went to omacom/omarchy-pkgs as #3505 (head
+  `c61ca8b`, open): `qemu-user-static` and `qemu-user-static-binfmt` built from the QEMU 11.1.3
+  release with patches `1000` (64-bit guest mappings inside 47 bits), `1001` (Linux AIO passthrough)
+  and `1002` (upstream `586284af4c2c`, `trapno`), in place of the Debian repackage
+  (`1:1.11.1.2+ds.3-1`). The same patches, plus the containerd drop-in, also went to
+  aurora-silicon/alarm-aurora as #457 (open). `[aurora]` publishes no `qemu-user-static` yet; if #457
+  lands, `[aurora]`'s build wins, being first in `pacman.conf`.
+- **On `dev-machine-mac-2`:** the PR's recipe was built on the Mac (`bin/build --arch aarch64
+  --package qemu-user-static`; its `pkgbuilds/qemu-user-static/` files hash the same as `c61ca8b`'s)
+  and installed with `pacman -U` at 20:48 AEST: `qemu-user-static 1:11.1.3-1`, sha256 `6b31a898…dc23`,
+  and `qemu-user-static-binfmt 1:11.1.3-1`, sha256 `41834906…df3b`. The `/etc/binfmt.d` override from
+  9.53 was removed at 15:02, so the kernel's rule is the package's own
+  (`interpreter /usr/bin/qemu-x86_64-static`, `flags: PF`). The containerd drop-in and `user4k=on`
+  stay. `/usr/local/bin/qemu-x86_64-oms41` is still on disk, unused. The PR's own test record:
+  SQL Server 2022 ready in 35 s from a plain `docker run`, `sqlcmd` round trip, a Compose stack with
+  the Service Bus emulator healthy, x86-64, armv7 and arm64 Alpine containers, all 33 rules registered.
+- **Updates:** `vercmp 1:11.1.3-1 1:1.11.1.2+ds.3-1` is 1, so `omarchy update` keeps the PR's build
+  without an `IgnorePkg`, and takes omarchy's own once it publishes a higher version.
+- **In the build:** `tools/derive-j616c-image` drops the static binary and the override. Its
+  `QEMU_X86_64` input becomes `QEMU_PKGS`, a directory with the two packages above, each pinned by
+  sha256 (a directory, as the file names carry a colon that `docker -v` can't take). It installs them
+  with `pacman -U` over the image's Debian build, checks both are `1:11.1.3-1`, that the package's
+  rule names `/usr/bin/qemu-x86_64-static` with `F`, and that no `/etc/binfmt.d` override shadows it,
+  and lists them in `versions.txt`. The containerd drop-in and the `user4k=on` warning are unchanged.
+  `tools/qemu-user/` stays as the patches' source and the record of 9.53. Not yet run; the next
+  derivation (the OMS-30 reinstall's image) covers it. Drop the input once #3505 is published.
+- **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
+  hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
+  install, which won't carry it.
