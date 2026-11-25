@@ -89,6 +89,10 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/vm-timer-probe/` has the KVM guest-timer probes (OMS-42, JOURNEY 9.54): a module that checks
   `VM_TMR_FIQ_ENA_EL2` writes on every core (refuses to stay loaded) and a tracefs script for a
   hanging 2-vCPU guest. Both run at the Mac with sudo.
+- After a reinstall, Allan's own setup of the Mac (remote access, git, the development tools) comes
+  from a script kept on dev-machine-01 at
+  `~/.local/share/omarchy-mac-setup/`, outside git: it carries credentials, so it is never
+  committed, and `.gitignore` refuses its file names (OMS-39). Its README has the steps.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
   are rebuilt from the patch and the scripts above; JOURNEY section 8 records how.
 
