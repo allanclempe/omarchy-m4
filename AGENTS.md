@@ -37,6 +37,8 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
 | Aurora's `aurora-touchid-rearm` installed and `-auth optional pam_aurora_touchid.so` added after the last auth line of `system-auth` and `omarchy-lock-password`, so the password re-arms Touch ID after a lockout, 2026-11-21 | not in the build yet; `omarchy-apply-lock` rewrites `omarchy-lock-password`, so its line needs a durable home (JOURNEY 9.49) | OMS-40 |
+| containerd run under `userpages 4k` (drop-in `containerd.service.d/50-user4k.conf`), so x86 container libraries map on the 16 KiB kernel, 2026-11-25 | derivation installs `tools/image/containerd-user4k.conf`; not yet run (JOURNEY 9.53) | OMS-41 |
+| Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25 | derivation takes it as the pinned `QEMU_X86_64` input (`tools/qemu-user/build-qemu-x86_64`) and writes the override; not yet run (JOURNEY 9.53) | OMS-41 |
 
 ## Where things are
 
@@ -77,6 +79,14 @@ row below. A task whose fix lives only on the Mac isn't done.
   (Aurora's 7.3 kernel, until omacom's 7.3 carries the J616c).
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
+- `tools/qemu-user/` is the patched qemu-user that runs x86-64 containers (OMS-41, JOURNEY 9.53):
+  `apply-oms41.py` changes a pristine qemu 11.1.2 tree (47-bit guest layout, Linux AIO passthrough,
+  and the upstream `trapno` fix `586284af4c2c`), `build-qemu-x86_64` builds the static binary on an
+  aarch64 host with Docker, and `pferr.c` shows what a guest sees for a write to a `PROT_NONE` page.
+  Drop the backport block when moving to qemu 11.2.
+- `tools/vm-timer-probe/` has the KVM guest-timer probes (OMS-42, JOURNEY 9.54): a module that checks
+  `VM_TMR_FIQ_ENA_EL2` writes on every core (refuses to stay loaded) and a tracefs script for a
+  hanging 2-vCPU guest. Both run at the Mac with sudo.
 - Build outputs (engine, payloads, signed catalog, app, package) are too large for the repo. They
   are rebuilt from the patch and the scripts above; JOURNEY section 8 records how.
 
