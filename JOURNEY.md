@@ -1094,7 +1094,16 @@ initialized successfully", `/dev/kvm` present).
   cases bar `hugetlb` under 4K pages), `aiotest` (6/6) and `node` 10/10 under 4K pages. The
   derivation's `QEMU_PR_COMMIT` and `QEMU_PKG_SHA256` now pin them, and the `QEMU_PKGS` directory
   holds them (the `c61ca8b` packages kept in a subdirectory as the undo path). The derivation is not
-  yet run with them. Not installed on mac-2, which still runs the `c61ca8b` build from 9.55 and
-  can't start `node:22`.
-- **Left open:** review of #3505, #3602 and #3603; installing the new build on mac-2 (sudo, Allan's
-  call); a run on an ARM machine with 4 KiB kernel pages.
+  yet run with them.
+- **Installed on mac-2:** Allan installed the `10cb154` packages with `pacman -U` at 17:06 AEST
+  (pacman.log: "reinstalled", same version) and restarted `systemd-binfmt`.
+  `/usr/bin/qemu-x86_64-static` now hashes `e6d9b051…8f0e`, and the rule is `enabled`, interpreter
+  `/usr/bin/qemu-x86_64-static`, `flags: PF`. Through binfmt: `docker run` of amd64 `node:22-slim`
+  printed `hi` 5/5. A plain `docker run` of SQL Server 2022 with its own entrypoint was ready in 30 s,
+  with both `sqlservr` processes under the installed emulator, and passed 20,000 inserts,
+  `CHECKPOINT` and `DBCC CHECKDB` with no severe errors in its log. With the image's entrypoint,
+  `sa`'s password is set some seconds after "ready for client connections", so a login straight
+  after that line fails (error 18456); wait for "Password policy update was successful". No
+  failed units. Undo: `pacman -U` the `c61ca8b` packages in `~/build/oms-41/pkgs-c61ca8b/`
+  (sha256 `6b31a898…dc23`, `41834906…df3b`), then restart `systemd-binfmt`.
+- **Left open:** review of #3505, #3602 and #3603; a run on an ARM machine with 4 KiB kernel pages.
