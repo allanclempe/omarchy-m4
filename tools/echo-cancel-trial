@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Try the J616c echo canceller (OMS-44) without installing it.
+#
+#   tools/echo-cancel-trial start   # run it and make it the default input
+#   tools/echo-cancel-trial status  # show its nodes, links and the default input
+#   tools/echo-cancel-trial stop    # stop it and give the default back
+#
+# Run at the Mac as the desktop user (no sudo). "start" runs
+# tools/image/pipewire-j616c-echo-cancel.conf, the block the image installs, in
+# a separate PipeWire process: a transient user unit, oms44-aec, gone at the
+# next reboot. It writes nothing outside $XDG_RUNTIME_DIR, except that
+# WirePlumber remembers the default input it sets; "stop" sets the previous one
+# back.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+block=$here/image/pipewire-j616c-echo-cancel.conf
+unit=oms44-aec
+source_name=j616c_echo_cancel.source
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+run=$XDG_RUNTIME_DIR/oms44-aec
+die() { echo "echo-cancel-trial: $*" >&2; exit 1; }
+
+case ${1:-} in
+start)
+  [[ -r $block ]] || die "missing $block"
+  systemctl --user is-active --quiet "$unit" && die "already running; stop it first"
+  mkdir -p "$run"
+  # The image's file is a drop-in for the main daemon; a separate process needs
+  # its own core modules first.
+  {
+    printf '%s\n' 'context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }' \
+      'context.modules = [ { name = libpipewire-module-protocol-native } { name = libpipewire-module-client-node } { name = libpipewire-module-adapter } ]'
+    cat "$block"
+  } >"$run/aec.conf"
+  pactl get-default-source >"$run/previous-source"
+  systemd-run --user --quiet --unit="$unit" pipewire -c "$run/aec.conf"
+  for _ in $(seq 20); do
+    pactl list short sources | grep -q "$source_name" && break
+    sleep 0.5
+  done
+  pactl list short sources | grep -q "$source_name" || die "the source didn't appear; see journalctl --user -u $unit"
+  pactl set-default-source "$source_name"
+  echo "Running. Default input: $(pactl get-default-source) (was $(cat "$run/previous-source"))."
+  ;;
+status)
+  systemctl --user status "$unit" --no-pager -n 5 || true
+  pw-link -l | grep -A2 '^j616c_echo_cancel' || true
+  echo "Default input: $(pactl get-default-source)"
+  ;;
+stop)
+  if [[ -s $run/previous-source ]]; then
+    pactl set-default-source "$(cat "$run/previous-source")" || true
+  fi
+  systemctl --user stop "$unit" 2>/dev/null || true
+  rm -rf "$run"
+  echo "Stopped. Default input: $(pactl get-default-source)."
+  ;;
+*)
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+  ;;
+esac

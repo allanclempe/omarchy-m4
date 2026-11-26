@@ -1016,3 +1016,50 @@ initialized successfully", `/dev/kvm` present).
 - **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
   hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
   install, which won't carry it.
+
+### 9.56 Echo in calls: the speaker DSP defeats the app's canceller; PipeWire's removes 42 to 55 dB (OMS-44, 2026-11-26)
+
+- **Report:** in Microsoft Teams calls on `dev-machine-mac-2`, the other side heard themselves.
+  Allan's setup: the Teams for Linux app (`teams-for-linux-bin` 2.32.1, Electron, so Chromium's
+  WebRTC AEC3), the built-in speakers, loud volume.
+- **The stack:** PipeWire 1.6.11, WirePlumber 0.5.19, `aurora-audio` 4.1.aurora2-16. The default
+  sink is asahi-audio's `audio_effect.j616-convolver`, whose graph runs Bankstown (synthetic bass
+  harmonics), loudness compensation, a multiband compressor, a compressor and two limiters after the
+  app's render point. The mic is `mic.json`'s 3-mic mix boosted 8 × 8 (+36 dB), mapped by omarchy-mac
+  into the stereo `omarchy_asahi_mic`. PipeWire's `libpipewire-module-echo-cancel` and
+  `libspa-aec-webrtc` are installed; nothing loaded them.
+- **Measurement** (test tones and speech-shaped noise at −12 dBFS into the speaker sink, sink volume
+  0.68, recording the DSP mic `effect_output.j616-mic` and the sink's monitor; scripts not kept):
+  echo delay about 97 to 109 ms; the echo reaches the mic 14 to 16 dB below what was played
+  (−27 dBFS at the mic for −12 dBFS played), so at loud volume it is as loud as the user's voice; mic
+  peak −14 dBFS, no clipping; mic floor −66 dBFS. Coherence between the sink's input (what the app
+  plays) and the echo: 0.75 at 100 to 300 Hz, 0.87 at 300 Hz to 1 kHz, 0.90 at 1 to 3 kHz, 0.95 at 3 to
+  6 kHz. That caps any linear canceller fed the pre-DSP signal at about 6 dB in the bass and 9 to 13 dB
+  above, which is why the app's canceller leaks.
+- **Post-DSP reference:** the raw speaker node's monitor (`RawSpeakers:monitor_*`, 6 channels)
+  exists, but linking to it from a client gives "Operation not permitted": asahi-audio's hidden
+  parent is locked, not just unlisted. So the canceller uses the speaker sink's monitor.
+- **PipeWire's WebRTC canceller**, run as a separate `pipewire -c` process (nothing installed), 12 s of
+  speech-shaped noise played twice: as an AEC sink in front of the speaker sink, the echo fell from
+  about −27 to −78 dBFS, 44 and 46 dB on the two passes after about 3 s to converge. In monitor mode
+  (reference: the speaker sink's monitor; mic: `omarchy_asahi_mic`), 42 and 55 dB. Its noise
+  suppression also drops the floor by about 18 dB. No AOP errors during any run.
+- **Not yet checked:** double talk (the user's voice while the far end talks) and a real Teams call.
+  Allan tries it on 2026-11-27 with `tools/echo-cancel-trial start` (Teams' mic set to the system
+  default, or to "MacBook Microphone (echo cancelled)").
+- **In the build:** `tools/image/pipewire-j616c-echo-cancel.conf`, installed by the derivation as
+  `/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf`: monitor mode over the speaker sink,
+  capture from `omarchy_asahi_mic` with no fallback, gain control off, its source at
+  `priority.session` 2010 (above the DSP mic's 2005, below a plugged headset's 2100). On a fresh
+  install that makes it the default input, and omarchy-mac's mapper, which claims the default only
+  when it is empty or the DSP mic, leaves it. On this install the configured default is
+  `omarchy_asahi_mic`, so the source has to be chosen once. The derivation checks the speaker sink's
+  name and the module are still there. Not yet run.
+- **Left open:** Omarchy's bar counts any capture stream that omarchy-mac's
+  `/usr/share/omarchy-platform/audio.json` doesn't hide as an app using the mic, so the canceller's
+  two capture streams (`j616c_echo_cancel.capture`, `j616c_echo_cancel.reference`) keep the mic icon
+  lit. Only omarchy-mac can add them, so it needs a patch there or the canceller moves into omarchy-mac.
+  Allan decides after the trial.
+- **Found on the way (OMS-46):** at 14:20:36 the AOP firmware crashed (`apple_aop 510c10000.aop:
+  RTKit: co-processor has crashed`, then `Too many inflight calls on endpoint 34`), which killed the
+  speakers and mics until a reboot; restarting PipeWire didn't recover it. Allan rebooted at 16:33.

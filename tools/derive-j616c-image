@@ -56,6 +56,10 @@
 #     and reports trapno -1: SQL Server 2022 needs all three fixed. The PR's
 #     version sorts above the Debian build, so updates keep it, and take
 #     omarchy's own build once it publishes a higher one;
+#   - cancels the speakers' echo in the mics (OMS-44): installs
+#     tools/image/pipewire-j616c-echo-cancel.conf, PipeWire's WebRTC echo
+#     canceller over omarchy-mac's mic mapping, fed the J616 speaker sink's
+#     monitor, as the default input;
 #   - lets the image's own hooks rebuild the UKI, then builds the standard and
 #     the J616c confined Stage 2 with Aurora's update-m1n1;
 #   - stages esp/aurora/stage1-j616c.bin (aura's raw Stage 1, which the installer
@@ -327,6 +331,14 @@ PY
   # A commented-out rule would not start the daemon: match only a live one.
   grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
+  # Echo cancellation between the speakers and the mics (OMS-44). The drop-in names
+  # asahi-audio's speaker sink and omarchy-mac's mic mapping: check both still exist.
+  grep -q '"audio_effect.j616-convolver"' "$T/usr/share/asahi-audio/j616/graph.json" ||
+    fail "asahi-audio's J616 speaker sink is no longer audio_effect.j616-convolver (echo-cancel reference)"
+  [[ -e $T/usr/lib/pipewire-0.3/libpipewire-module-echo-cancel.so && -e $T/usr/lib/spa-0.2/aec/libspa-aec-webrtc.so ]] ||
+    fail "PipeWire's echo-cancel module or its WebRTC backend is missing"
+  install -D -m 0644 /tools/image/pipewire-j616c-echo-cancel.conf \
+    "$T/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf"
 
   log "installing Aurora's VA-API bridge for the video decoder"
   # Both packages ship v4l2_request_drv_video.so and declare no conflict, so pacman
