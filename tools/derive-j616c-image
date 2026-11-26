@@ -333,12 +333,17 @@ PY
     fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
   # Echo cancellation between the speakers and the mics (OMS-44). The drop-in names
   # asahi-audio's speaker sink and omarchy-mac's mic mapping: check both still exist.
-  grep -q '"audio_effect.j616-convolver"' "$T/usr/share/asahi-audio/j616/graph.json" ||
+  grep -Eq '"node\.name"[[:space:]]*:[[:space:]]*"audio_effect\.j616-convolver"' "$T/usr/share/asahi-audio/j616/graph.json" ||
     fail "asahi-audio's J616 speaker sink is no longer audio_effect.j616-convolver (echo-cancel reference)"
+  grep -Fq "MAPPING = 'omarchy_asahi_mic'" "$T/usr/bin/omarchy-audio-asahi-mic-map" 2>/dev/null ||
+    fail "omarchy-mac's mic mapping is no longer omarchy_asahi_mic (echo-cancel capture)"
   [[ -e $T/usr/lib/pipewire-0.3/libpipewire-module-echo-cancel.so && -e $T/usr/lib/spa-0.2/aec/libspa-aec-webrtc.so ]] ||
     fail "PipeWire's echo-cancel module or its WebRTC backend is missing"
   install -D -m 0644 /tools/image/pipewire-j616c-echo-cancel.conf \
     "$T/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf"
+  # PipeWire must read it: the merged context.modules carries its source.
+  in_chroot pw-config merge context.modules | grep -Fq j616c_echo_cancel.source ||
+    fail "PipeWire's merged config doesn't carry the echo canceller (50-j616c-echo-cancel.conf)"
 
   log "installing Aurora's VA-API bridge for the video decoder"
   # Both packages ship v4l2_request_drv_video.so and declare no conflict, so pacman

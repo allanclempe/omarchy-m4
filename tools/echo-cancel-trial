@@ -25,21 +25,30 @@ case ${1:-} in
 start)
   [[ -r $block ]] || die "missing $block"
   systemctl --user is-active --quiet "$unit" && die "already running; stop it first"
-  mkdir -p "$run"
-  # The image's file is a drop-in for the main daemon; a separate process needs
-  # its own core modules first.
-  {
-    printf '%s\n' 'context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }' \
-      'context.modules = [ { name = libpipewire-module-protocol-native } { name = libpipewire-module-client-node } { name = libpipewire-module-adapter } ]'
-    cat "$block"
-  } >"$run/aec.conf"
+  systemctl --user reset-failed "$unit" 2>/dev/null || true
+  mkdir -p "$run/aec.conf.d"
+  # The image's file is a drop-in for the main daemon. A separate process needs
+  # its own core modules, in the base file; PipeWire merges the drop-in's
+  # context.modules into them (two context.modules in one file would keep only
+  # the last).
+  printf '%s\n' 'context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }' \
+    'context.modules = [ { name = libpipewire-module-protocol-native } { name = libpipewire-module-client-node } { name = libpipewire-module-adapter } ]' \
+    >"$run/aec.conf"
+  cp "$block" "$run/aec.conf.d/50-j616c-echo-cancel.conf"
   pactl get-default-source >"$run/previous-source"
-  systemd-run --user --quiet --unit="$unit" pipewire -c "$run/aec.conf"
+  systemd-run --user --quiet --collect --unit="$unit" pipewire -c "$run/aec.conf"
+  found=
   for _ in $(seq 20); do
-    pactl list short sources | grep -q "$source_name" && break
+    sources=$(pactl list short sources) || true
+    if grep -Fq "$source_name" <<<"$sources"; then found=1; break; fi
     sleep 0.5
   done
-  pactl list short sources | grep -q "$source_name" || die "the source didn't appear; see journalctl --user -u $unit"
+  if [[ -z $found ]]; then
+    journalctl --user -u "$unit" --no-pager -n 20 || true
+    systemctl --user stop "$unit" 2>/dev/null || true
+    rm -rf "$run"
+    die "the source didn't appear (log above); stopped"
+  fi
   pactl set-default-source "$source_name"
   echo "Running. Default input: $(pactl get-default-source) (was $(cat "$run/previous-source"))."
   ;;
@@ -47,6 +56,8 @@ status)
   systemctl --user status "$unit" --no-pager -n 5 || true
   pw-link -l | grep -A2 '^j616c_echo_cancel' || true
   echo "Default input: $(pactl get-default-source)"
+  # start sets the default by hand; on a fresh install WirePlumber should pick
+  # the source by priority instead (check that on the acceptance run).
   ;;
 stop)
   if [[ -s $run/previous-source ]]; then
@@ -57,7 +68,7 @@ stop)
   echo "Stopped. Default input: $(pactl get-default-source)."
   ;;
 *)
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
   ;;
 esac

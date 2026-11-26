@@ -1040,8 +1040,9 @@ initialized successfully", `/dev/kvm` present).
   exists, but linking to it from a client gives "Operation not permitted": asahi-audio's hidden
   parent is locked, not just unlisted. So the canceller uses the speaker sink's monitor.
 - **PipeWire's WebRTC canceller**, run as a separate `pipewire -c` process (nothing installed), 12 s of
-  speech-shaped noise played twice: as an AEC sink in front of the speaker sink, the echo fell from
-  about −27 to −78 dBFS, 44 and 46 dB on the two passes after about 3 s to converge. In monitor mode
+  speech-shaped noise played twice, compared in half-second windows: as an AEC sink in front of the
+  speaker sink, the echo at the mic (−25 to −35 dBFS) came out at −70 to −87 dBFS once converged,
+  after about 3 s; mean reduction 44 and 46 dB on the two passes, convergence included. In monitor mode
   (reference: the speaker sink's monitor; mic: `omarchy_asahi_mic`), 42 and 55 dB. Its noise
   suppression also drops the floor by about 18 dB. No AOP errors during any run.
 - **Not yet checked:** double talk (the user's voice while the far end talks) and a real Teams call.
@@ -1051,10 +1052,11 @@ initialized successfully", `/dev/kvm` present).
   `/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf`: monitor mode over the speaker sink,
   capture from `omarchy_asahi_mic` with no fallback, gain control off, its source at
   `priority.session` 2010 (above the DSP mic's 2005, below a plugged headset's 2100). On a fresh
-  install that makes it the default input, and omarchy-mac's mapper, which claims the default only
-  when it is empty or the DSP mic, leaves it. On this install the configured default is
+  install that should make it the default input, and omarchy-mac's mapper, which claims the default
+  only when it is empty or the DSP mic, should leave it; the trial sets the default by hand, so the
+  acceptance run has to check this. On this install the configured default is
   `omarchy_asahi_mic`, so the source has to be chosen once. The derivation checks the speaker sink's
-  name and the module are still there. Not yet run.
+  and the mapping's names and the module are still there, and that PipeWire's merged config carries it. Not yet run.
 - **Left open:** Omarchy's bar counts any capture stream that omarchy-mac's
   `/usr/share/omarchy-platform/audio.json` doesn't hide as an app using the mic, so the canceller's
   two capture streams (`j616c_echo_cancel.capture`, `j616c_echo_cancel.reference`) keep the mic icon
