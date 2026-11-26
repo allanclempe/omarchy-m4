@@ -342,7 +342,9 @@ PY
   install -D -m 0644 /tools/image/pipewire-j616c-echo-cancel.conf \
     "$T/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf"
   # PipeWire must read it: the merged context.modules carries its source.
-  in_chroot pw-config merge context.modules | grep -Fq j616c_echo_cancel.source ||
+  local merged
+  merged=$(in_chroot pw-config merge context.modules) || fail "pw-config could not read PipeWire's configuration"
+  grep -Fq j616c_echo_cancel.source <<<"$merged" ||
     fail "PipeWire's merged config doesn't carry the echo canceller (50-j616c-echo-cancel.conf)"
 
   log "installing Aurora's VA-API bridge for the video decoder"
