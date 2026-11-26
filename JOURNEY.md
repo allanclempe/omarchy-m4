@@ -1016,3 +1016,85 @@ initialized successfully", `/dev/kvm` present).
 - **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
   hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
   install, which won't carry it.
+
+### 9.56 x86-64 containers: patch `1000` reworked after review (OMS-41, 2026-11-26)
+
+- **Review:** Marcelo requested changes on omacom/omarchy-pkgs#3505 at `c61ca8b`. On a 4 KiB-page
+  arm64 kernel, amd64 `node:22-slim` started 10/10 times on stock QEMU 11.1.3 and 0/10 with `1000`.
+  V8 asks for its code range with a hint that's already taken. `mmap_find_vma()` relies on
+  accepting whatever address the host returns, arm64 returns one near 2^48, and `1000`'s cap
+  rejected it. The search then retried once at `mmap_min_addr` and gave up with ENOMEM. The same
+  cause blocked larger maps behind a small one, stopped freed space being reused (64 GiB
+  map/unmap failed after 511 rounds; `mremap` growth failed at about 512 MiB), and leaked the
+  `PROT_NONE` reservation when the final `mmap` failed. Placed mappings carried `MAP_FIXED`, which
+  sends a writable shared file mapping not ending on a 16 KiB boundary to `mmap_frag()` (EINVAL).
+  `MAP_HUGETLB` holes weren't aligned, and in-place `mremap` growth could cross 2^47. He suggested
+  landing `1002` alone and bringing `1000` and `1001` back separately (done, below).
+- **`1000` rework:** with no `reserved_va` and a 64-bit guest of at most
+  47 bits, QEMU chooses the address itself. It searches its own page table for a hole below 2^47
+  with `page_find_range_empty()`, as `reserved_va` does, and claims the hole with
+  `MAP_FIXED_NOREPLACE`. If one of QEMU's own host mappings is in the way, it skips past it using
+  `/proc/self/maps`. The search runs from the hint (or `mmap_next_start`) to the top, then from
+  `task_unmapped_base` (3/4 of 2^47), then from the bottom: bounded, and every hole is reachable.
+  `target_mmap()` releases the hole and maps into it with `MAP_FIXED_NOREPLACE`, retrying if
+  another thread took it, so a failed mapping leaves nothing behind. `mmap_h_gt_g()` maps a placed
+  hole through its direct path (no `mmap_frag()`). `MAP_HUGETLB` holes follow the host's huge page
+  size. `mremap(MREMAP_MAYMOVE)` resizes in place first, and in-place growth stops at 2^47.
+  `tools/qemu-user/apply-oms41.py` makes the same change and now targets 11.1.3. Applied to a
+  pristine 11.1.3 tree it gives the same tree as the PR's three patches (`diff -r`).
+  `qemu-11.1-oms41.patch` is regenerated from it.
+- **Tests on `dev-machine-mac-2`:** static `qemu-x86_64` builds of stock 11.1.3, the PR's `c61ca8b`
+  build (installed), the new `1000` alone, and all three patches. Each ran `tools/qemu-user/mmaptest.c`
+  (Marcelo's cases plus the layout SQL Server needs) and `node -e` from `node:22-slim` 10 times,
+  under `userpages 4k` and plain 16 KiB pages:
+
+  | Build | mmaptest, 4 KiB pages | mmaptest, 16 KiB pages | node, 4 KiB pages |
+  | --- | --- | --- | --- |
+  | stock 11.1.3 | addresses above 2^47 (by design) | same | 10/10 |
+  | `c61ca8b` | 8 cases fail | 8 cases fail, including the shared file map | 0/10 |
+  | new `1000` | all pass but `hugetlb` | all pass | 10/10 |
+  | all three | all pass but `hugetlb` | all pass | 10/10 |
+
+  `hugetlb` returns EINVAL under `userpages 4k` on stock QEMU too: the 4 KiB view, not the patch.
+  Under plain 16 KiB pages, `node` dumps core on every build, stock included: an existing limit,
+  and the reason containerd runs under `userpages 4k`.
+  SQL Server 2022 (RTM-CU28) ran with the all-three build as the container's entrypoint (both
+  `sqlservr` processes ran under it, checked with `ps`). It was ready in 33 s and passed 20,000
+  inserts, a `CHECKPOINT` and `DBCC CHECKDB`.
+- **`1001` reworked too:** guest pointers are now checked against guest memory before the host
+  kernel sees them: the iocb array, each iocb, its buffers or iovec array (writable for reads,
+  readable for writes), and the event buffers. `io_submit` submits up to the first iocb that fails
+  and returns EFAULT if that is the first. A native kernel reports a bad buffer in the completion
+  event instead; QEMU can't make that event, so this one difference stays, and the commit says so.
+  Checking a buffer writable unprotects a page QEMU protected for translated code. A read that
+  still completes with EFAULT into valid buffers (the page was protected again in between) is
+  unprotected and redone with `preadv2()` in `io_getevents`. `io_event.res` errnos are translated
+  for the guest (mips64el, alpha; checked by reading only). `tools/qemu-user/aiotest.c` passes
+  natively on x86-64. On the Mac, `aioharness.sh` hands it an address in QEMU's own data segment:
+
+  | Case | stock | `1001` as reviewed | new `1001` (alone, and with all three, 4K and 16K pages) |
+  | --- | --- | --- | --- |
+  | `pread` | ENOSYS | pass | pass |
+  | `pread`/`preadv` into a page with translated code | ENOSYS | EFAULT | pass |
+  | error in an event, unmapped pointers, partial submit | ENOSYS | pass | pass |
+  | buffer and event array in QEMU's data | ENOSYS | written by the kernel | EFAULT |
+
+  The redo path itself is not forced by a test. SQL Server 2022 under all three new patches: both
+  `sqlservr` processes on the build, ready in 33 s, 20,000 inserts, `CHECKPOINT`, `DBCC CHECKDB` and
+  the error log all clean.
+- **Split, as review asked:** #3505 (head `caddc5c`) now carries only the source build and `1002`,
+  retitled "Build ARM's static QEMU from source, with the upstream trapno fix". `1000` is #3602
+  (`0c929fe`) and `1001` is #3603 (`43e4f8c`), each a commit on top of #3505's branch. Both edit the
+  same PKGBUILD lines, so whichever lands second needs a rebase. The earlier combined rework
+  (`94065c5`) was never pushed; it stays as the local branch `local/rework-1000-combined`.
+  `bin/build` builds #3505 alone (`qemu-user-static` sha256 `d158896e…61d7`).
+- **The image's input:** branch `oms-41/qemu-user-static-image` on the fork merges #3602 and #3603
+  (`10cb154`). Its `bin/build` packages are `qemu-user-static 1:11.1.3-1` sha256 `544e83b4…6fca`
+  and `qemu-user-static-binfmt` sha256 `693bd474…ab43`. The packaged binary passed `mmaptest` (all
+  cases bar `hugetlb` under 4K pages), `aiotest` (6/6) and `node` 10/10 under 4K pages. The
+  derivation's `QEMU_PR_COMMIT` and `QEMU_PKG_SHA256` now pin them, and the `QEMU_PKGS` directory
+  holds them (the `c61ca8b` packages kept in a subdirectory as the undo path). The derivation is not
+  yet run with them. Not installed on mac-2, which still runs the `c61ca8b` build from 9.55 and
+  can't start `node:22`.
+- **Left open:** review of #3505, #3602 and #3603; installing the new build on mac-2 (sudo, Allan's
+  call); a run on an ARM machine with 4 KiB kernel pages.
