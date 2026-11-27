@@ -7,6 +7,7 @@ Changes to other projects' repositories, kept here as plain `git diff` output so
 | `j616c-installer.patch` | omacom/omarchy-mac-installer | `a576543` (PR #212's head) | J616c developer admission, the Mach-O Stage 1 Recovery modes (`macho-unpadded`, `macho-ctxr`), the engine changes and the Wi-Fi `chflags` fix |
 | `omarchy-mac-boot-aurora.patch` | omacom/omarchy-mac-pkgs | `28abebee14de05c35a2caa8dd257d056d15a641e` (main, 2026-11-09, "Merge pull request #110") | Teaches omarchy-mac-boot's `omarchy-apple-silicon-boot-check` to verify Aurora's Stage 2 (OMS-16, JOURNEY 9.24). Also applies to main `76d8b72`; sent upstream as [omacom/omarchy-mac-pkgs#150](https://github.com/omacom/omarchy-mac-pkgs/pull/150) (9.36) |
 | `omarchy-lock-fingerprint-scanning.patch` | omacom/omarchy | `b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab` (quattro, 2026-11-19, "Keep colors in terminal windows an agent opens (#19507)") | The lock screen shows the fingerprint reader matching a finger: the icon pulses and the field says "Checking…" while fprintd reports a finger on the reader, the icon turns red for a finger it rejects, and a finger on the reader holds the idle blank (OMS-36, JOURNEY 9.48 to 9.50); sent upstream as [omacom/omarchy#19537](https://github.com/omacom/omarchy/pull/19537) |
+| `omarchy-mac-echo-cancel.patch` | omacom/omarchy-mac-pkgs | `0750b7415fd3e8059baaa379230dde9ff03c1d0b` (main, 2026-11-27, "Merge pull request #192") | Cancels the speakers' echo in the built-in microphones on every Mac with a mic array: a user unit running PipeWire's WebRTC canceller over the default output's monitor and the mic mapping, the mapper selecting its source, and the audio hints hiding its streams (OMS-44, JOURNEY 9.56). Not sent upstream yet |
 
 ## omarchy-mac-boot-aurora.patch
 
@@ -51,3 +52,19 @@ bash test/shell.d/lock-fingerprint-retry-test.sh
 To try it on an installed Omarchy without rebuilding, apply the patch's `shell/plugins/lock` part over the installed tree, `$OMARCHY_PATH` (`/usr/share/omarchy` from the `omarchy-dev` package, as on the Mac; `~/.local/share/omarchy` for a `omarchy dev link` checkout; `git apply` works outside a repository), and run `omarchy-restart-shell` from an unlocked session; JOURNEY 9.48 has the block for the Mac, with the check that the installed files are upstream's, the backup and the way back. The next package upgrade or `omarchy update` puts upstream's files back.
 
 To change it, apply it to a branch at the base commit, commit there, and regenerate it with `git diff b20d7876f5ec6a45d18b9e4383dc4b6d9e8492ab HEAD > patches/omarchy-lock-fingerprint-scanning.patch`.
+
+## omarchy-mac-echo-cancel.patch
+
+`omarchy-echo-cancel.service` (a user unit enabled for every user, run only where `/proc/asound/cards` lists an `AppleJNNNHPAI` or `AppleJ700AOP` card, `PartOf=pipewire.service`) runs `pipewire -c /usr/share/omarchy-mac/echo-cancel.conf`: PipeWire's WebRTC echo canceller in monitor mode, its reference the default output's monitor (`omarchy_echo_cancel.reference`), its input the mic mapping (`omarchy_echo_cancel.capture`, no fallback), its result `omarchy_echo_cancel.source` at `priority.session` 1. `omarchy-audio-asahi-mic-map` selects that source in place of the mapping, with the same signal and route checks, on a first mapping and once where the mapping is already the default (marker `asahi-mic-gain.echo-cancel` under `XDG_STATE_HOME/omarchy`). `audio.json` hides the two streams, and the mapping behind the cancelled source. Tests: `mic-test.sh`, `audio-hints-test.sh` and a new `echo-cancel-test.sh`; README and the manual's hardware table.
+
+It supersedes the J616c image's own drop-in (`tools/image/pipewire-j616c-echo-cancel.conf`) once omarchy-mac ships it: drop the drop-in from the derivation then.
+
+```
+git clone https://github.com/omacom/omarchy-mac-pkgs && cd omarchy-mac-pkgs
+git checkout 0750b7415fd3e8059baaa379230dde9ff03c1d0b
+git apply /path/to/omarchy-m4/patches/omarchy-mac-echo-cancel.patch
+bash omarchy-mac/test/all
+OMARCHY_TEST_RUNTIME=/path/to/omarchy bash test/integration/all   # omacom/omarchy at test/integration/runtime's pin
+```
+
+Both suites passed on 2026-11-27 (139 and 61 `ok`, runtime `2fca7fe0`). On `dev-machine-mac-2` the unit's condition matched the HPAI card and its configuration, run by hand for a few seconds, linked the reference to the default output's monitor and the capture to `omarchy_asahi_mic`. The mapper change and the packaged unit are not yet tested on hardware.

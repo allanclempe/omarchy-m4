@@ -39,6 +39,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Aurora's `aurora-touchid-rearm` installed and `-auth optional pam_aurora_touchid.so` added after the last auth line of `system-auth` and `omarchy-lock-password`, so the password re-arms Touch ID after a lockout, 2026-11-21 | not in the build yet; `omarchy-apply-lock` rewrites `omarchy-lock-password`, so its line needs a durable home (JOURNEY 9.49) | OMS-40 |
 | containerd run under `userpages 4k` (drop-in `containerd.service.d/50-user4k.conf`), so x86 container libraries map on the 16 KiB kernel, 2026-11-25 | derivation installs `tools/image/containerd-user4k.conf`; not yet run (JOURNEY 9.53) | OMS-41 |
 | Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25; replaced the same day by `qemu-user-static` and `-binfmt` `1:11.1.3-1` built from omacom/omarchy-pkgs#3505, override removed (JOURNEY 9.55) | derivation installs the PR's two packages, the pinned `QEMU_PKGS` input, and checks the package's own rule is the one in force; not yet run (JOURNEY 9.55). Drop the input once omarchy's repo publishes the build | OMS-41 |
+| Echo cancellation between the speakers and the mics (people in calls heard themselves), 2026-11-26 | derivation installs `tools/image/pipewire-j616c-echo-cancel.conf` as `/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf`; tried on the Mac only as a temporary process, not yet in a real call or a derivation run (JOURNEY 9.56). The bar's mic icon stays lit until omarchy-mac's `audio.json` hides its two capture streams | OMS-44 |
 
 ## Where things are
 
@@ -73,6 +74,9 @@ row below. A task whose fix lives only on the Mac isn't done.
   a finger is on the reader (OMS-36, JOURNEY 9.48 to 9.51), against omacom/omarchy `b20d787`; sent upstream
   as omacom/omarchy#19537. Not part of the image: the shell comes from Omarchy itself, so it
   reaches the Mac through upstream.
+- `patches/omarchy-mac-echo-cancel.patch` is the echo canceller for every Mac with a mic array (OMS-44,
+  JOURNEY 9.56), against omacom/omarchy-mac-pkgs `0750b74`; not sent upstream yet. Once omarchy-mac
+  ships it, the image's own drop-in goes.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
   name collisions `[aurora]` causes by being first. It also covers the kernel dependency
@@ -86,6 +90,8 @@ row below. A task whose fix lives only on the Mac isn't done.
   Drop the backport block when moving to qemu 11.2.
   The image no longer uses its binary: the same three fixes now ship as patches in
   omacom/omarchy-pkgs#3505's `qemu-user-static` (QEMU 11.1.3), which the derivation installs (JOURNEY 9.55).
+- `tools/echo-cancel-trial` runs the image's echo canceller (OMS-44) at the Mac as a temporary user
+  unit and makes it the default input; `stop` undoes it. Run as the desktop user, no sudo.
 - `tools/vm-timer-probe/` has the KVM guest-timer probes (OMS-42, JOURNEY 9.54): a module that checks
   `VM_TMR_FIQ_ENA_EL2` writes on every core (refuses to stay loaded) and a tracefs script for a
   hanging 2-vCPU guest. Both run at the Mac with sudo.

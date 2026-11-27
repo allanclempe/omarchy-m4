@@ -1016,3 +1016,83 @@ initialized successfully", `/dev/kvm` present).
 - **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
   hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
   install, which won't carry it.
+
+### 9.56 Echo in calls: the speaker DSP defeats the app's canceller; PipeWire's removes 42 to 55 dB (OMS-44, 2026-11-26)
+
+- **Report:** in Microsoft Teams calls on `dev-machine-mac-2`, the other side heard themselves.
+  Allan's setup: the Teams for Linux app (`teams-for-linux-bin` 2.32.1, Electron, so Chromium's
+  WebRTC AEC3), the built-in speakers, loud volume.
+- **The stack:** PipeWire 1.6.11, WirePlumber 0.5.19, `aurora-audio` 4.1.aurora2-16. The default
+  sink is asahi-audio's `audio_effect.j616-convolver`, whose graph runs Bankstown (synthetic bass
+  harmonics), loudness compensation, a multiband compressor, a compressor and two limiters after the
+  app's render point. The mic is `mic.json`'s 3-mic mix boosted 8 × 8 (+36 dB), mapped by omarchy-mac
+  into the stereo `omarchy_asahi_mic`. PipeWire's `libpipewire-module-echo-cancel` and
+  `libspa-aec-webrtc` are installed; nothing loaded them.
+- **Measurement** (test tones and speech-shaped noise at −12 dBFS into the speaker sink, sink volume
+  0.68, recording the DSP mic `effect_output.j616-mic` and the sink's monitor; scripts not kept):
+  echo delay about 97 to 109 ms; the echo reaches the mic 14 to 16 dB below what was played
+  (−27 dBFS at the mic for −12 dBFS played), so at loud volume it is as loud as the user's voice; mic
+  peak −14 dBFS, no clipping; mic floor −66 dBFS. Coherence between the sink's input (what the app
+  plays) and the echo: 0.75 at 100 to 300 Hz, 0.87 at 300 Hz to 1 kHz, 0.90 at 1 to 3 kHz, 0.95 at 3 to
+  6 kHz. That caps any linear canceller fed the pre-DSP signal at about 6 dB in the bass and 9 to 13 dB
+  above, which is why the app's canceller leaks.
+- **Post-DSP reference:** the raw speaker node's monitor (`RawSpeakers:monitor_*`, 6 channels)
+  exists, but linking to it from a client gives "Operation not permitted": asahi-audio's hidden
+  parent is locked, not just unlisted. So the canceller uses the speaker sink's monitor.
+- **PipeWire's WebRTC canceller**, run as a separate `pipewire -c` process (nothing installed), 12 s of
+  speech-shaped noise played twice, compared in half-second windows: as an AEC sink in front of the
+  speaker sink, the echo at the mic (−25 to −35 dBFS) came out at −70 to −87 dBFS once converged,
+  after about 3 s; mean reduction 44 and 46 dB on the two passes, convergence included. In monitor mode
+  (reference: the speaker sink's monitor; mic: `omarchy_asahi_mic`), 42 and 55 dB. Its noise
+  suppression also drops the floor by about 18 dB. No AOP errors during any run.
+- **Not yet checked:** double talk (the user's voice while the far end talks) and a real Teams call.
+  Allan tries it on 2026-11-27 with `tools/echo-cancel-trial start` (Teams' mic set to the system
+  default, or to "MacBook Microphone (echo cancelled)").
+- **In the build:** `tools/image/pipewire-j616c-echo-cancel.conf`, installed by the derivation as
+  `/etc/pipewire/pipewire.conf.d/50-j616c-echo-cancel.conf`: monitor mode over the speaker sink,
+  capture from `omarchy_asahi_mic` with no fallback, gain control off, its source at
+  `priority.session` 2010 (above the DSP mic's 2005, below a plugged headset's 2100). On a fresh
+  install that should make it the default input, and omarchy-mac's mapper, which claims the default
+  only when it is empty or the DSP mic, should leave it; the trial sets the default by hand, so the
+  acceptance run has to check this. On this install the configured default is
+  `omarchy_asahi_mic`, so the source has to be chosen once. The derivation checks the speaker sink's
+  and the mapping's names and the module are still there, and that PipeWire's merged config carries it. Not yet run.
+- **Left open:** Omarchy's bar counts any capture stream that omarchy-mac's
+  `/usr/share/omarchy-platform/audio.json` doesn't hide as an app using the mic, so the canceller's
+  two capture streams (`j616c_echo_cancel.capture`, `j616c_echo_cancel.reference`) keep the mic icon
+  lit. Only omarchy-mac can add them, so it needs a patch there or the canceller moves into omarchy-mac.
+  Allan decides after the trial.
+- **Found on the way (OMS-46):** at 14:20:36 the AOP firmware crashed (`apple_aop 510c10000.aop:
+  RTKit: co-processor has crashed`, then `Too many inflight calls on endpoint 34`), which killed the
+  speakers and mics until a reboot; restarting PipeWire didn't recover it. Allan rebooted at 16:33.
+- **Trial started, 2026-11-27 12:57:** `tools/echo-cancel-trial start` at `dev-machine-mac-2`; the
+  default input became `j616c_echo_cancel.source`. Its links showed the reference stream named
+  `echo-cancel-sink`: in monitor mode the module builds the reference from `sink.props`, not
+  `playback.props`, so the name and `target.object` given there were ignored, and it linked to the
+  speaker sink only because that is also the default output. The drop-in now sets them in
+  `sink.props`; after a restart the trial's nodes are `j616c_echo_cancel.capture` (from
+  `omarchy_asahi_mic`), `j616c_echo_cancel.reference` (from `audio_effect.j616-convolver`'s monitor)
+  and `j616c_echo_cancel.source`.
+- **First call, 2026-11-27:** Allan used Google Meet with the trial running and reported that the
+  mic sounded perfect. A Teams call (the app from the report) is still to come.
+- **For every Mac (2026-11-27):** `patches/omarchy-mac-echo-cancel.patch`, against omacom/omarchy-mac-pkgs
+  `0750b74`. The J616c drop-in can't go there as it is, since omarchy-mac serves every Mac: it names
+  the J616 sink, and its priority would make a silent source outrank a USB mic on a Mac mini. The
+  patch instead runs the canceller as a user unit (`omarchy-echo-cancel.service`, only where an HPAI
+  or AOP mic array card exists, restarting with PipeWire). Its reference is the default output's
+  monitor. Its source has priority 1, and the mic mapper selects it, on a first mapping and once
+  where the mapping is already the default. `audio.json` hides its streams, which also settles the
+  bar's mic icon. The package suite (139 `ok`) and the integration suite against runtime `2fca7fe0`
+  (61 `ok`) pass. On the Mac, the unit's card condition matched, and its configuration, run by hand,
+  linked to the default output's monitor and `omarchy_asahi_mic`. Pushing it to the fork and opening
+  the upstream pull request was refused by this session's permission check, so it waits for Allan.
+- **Parked, 2026-11-27:** Allan made a call without the canceller and it also sounded fine, so
+  OMS-44 is parked: the trial was stopped (default input back to `omarchy_asahi_mic`), PR #29 stays a
+  draft, and the task stays open in case the echo returns. Nothing from it is in an image yet. The
+  upstream patch was not sent. An unfinished review of it (Claude Opus; Gemini Neon stopped) found,
+  among others: the mapper would move the default to the cancelled source over a muted mapping, hiding
+  the user's mute behind it; a canceller absent for one pass leaves the install on the mapping for
+  good, because the marker can't tell the mapper's choice from the user's; and the unit's card
+  condition is broader than the mapper's `array()` (a Mac mini's `AppleJ274HPAI` card would get a silent
+  source). WirePlumber does keep a canceller source's own mute and volume across restarts (checked on
+  the trial). Fix these before sending the patch, if the work resumes.
