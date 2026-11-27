@@ -1075,3 +1075,14 @@ initialized successfully", `/dev/kvm` present).
   and `j616c_echo_cancel.source`.
 - **First call, 2026-11-27:** Allan used Google Meet with the trial running and reported that the
   mic sounded perfect. A Teams call (the app from the report) is still to come.
+- **For every Mac (2026-11-27):** `patches/omarchy-mac-echo-cancel.patch`, against omacom/omarchy-mac-pkgs
+  `0750b74`. The J616c drop-in can't go there as it is, since omarchy-mac serves every Mac: it names
+  the J616 sink, and its priority would make a silent source outrank a USB mic on a Mac mini. The
+  patch instead runs the canceller as a user unit (`omarchy-echo-cancel.service`, only where an HPAI
+  or AOP mic array card exists, restarting with PipeWire). Its reference is the default output's
+  monitor. Its source has priority 1, and the mic mapper selects it, on a first mapping and once
+  where the mapping is already the default. `audio.json` hides its streams, which also settles the
+  bar's mic icon. The package suite (139 `ok`) and the integration suite against runtime `2fca7fe0`
+  (61 `ok`) pass. On the Mac, the unit's card condition matched, and its configuration, run by hand,
+  linked to the default output's monitor and `omarchy_asahi_mic`. Pushing it to the fork and opening
+  the upstream pull request was refused by this session's permission check, so it waits for Allan.

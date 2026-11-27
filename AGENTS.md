@@ -74,6 +74,9 @@ row below. A task whose fix lives only on the Mac isn't done.
   a finger is on the reader (OMS-36, JOURNEY 9.48 to 9.51), against omacom/omarchy `b20d787`; sent upstream
   as omacom/omarchy#19537. Not part of the image: the shell comes from Omarchy itself, so it
   reaches the Mac through upstream.
+- `patches/omarchy-mac-echo-cancel.patch` is the echo canceller for every Mac with a mic array (OMS-44,
+  JOURNEY 9.56), against omacom/omarchy-mac-pkgs `0750b74`; not sent upstream yet. Once omarchy-mac
+  ships it, the image's own drop-in goes.
 - `docs/aurora-package-audit.md` sorts every `[aurora]` package for this Mac: already used, a candidate
   for a report gap (and which task), Omarchy's own, left out, not for this Mac, or opt-in, and lists the
   name collisions `[aurora]` causes by being first. It also covers the kernel dependency
