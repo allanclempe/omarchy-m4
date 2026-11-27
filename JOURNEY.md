@@ -1086,3 +1086,13 @@ initialized successfully", `/dev/kvm` present).
   (61 `ok`) pass. On the Mac, the unit's card condition matched, and its configuration, run by hand,
   linked to the default output's monitor and `omarchy_asahi_mic`. Pushing it to the fork and opening
   the upstream pull request was refused by this session's permission check, so it waits for Allan.
+- **Parked, 2026-11-27:** Allan made a call without the canceller and it also sounded fine, so
+  OMS-44 is parked: the trial was stopped (default input back to `omarchy_asahi_mic`), PR #29 stays a
+  draft, and the task stays open in case the echo returns. Nothing from it is in an image yet. The
+  upstream patch was not sent. An unfinished review of it (Claude Opus; Gemini Neon stopped) found,
+  among others: the mapper would move the default to the cancelled source over a muted mapping, hiding
+  the user's mute behind it; a canceller absent for one pass leaves the install on the mapping for
+  good, because the marker can't tell the mapper's choice from the user's; and the unit's card
+  condition is broader than the mapper's `array()` (a Mac mini's `AppleJ274HPAI` card would get a silent
+  source). WirePlumber does keep a canceller source's own mute and volume across restarts (checked on
+  the trial). Fix these before sending the patch, if the work resumes.
