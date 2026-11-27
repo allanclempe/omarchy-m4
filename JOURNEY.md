@@ -1162,3 +1162,14 @@ initialized successfully", `/dev/kvm` present).
   parts, including the new configuration check, are not yet built. The engine archive and
   `source-lock.json`'s `validation_artifact` must be rebuilt on the Mac. Unverified: whether a 27.x
   stub fits the macOS 26 stub size (6 GB) the installer gives it.
+
+### 9.58 aura v1.0.0b17 Stage 1 and Stage 2 built for the 27.2 image (OMS-30, 2026-11-27)
+- Built on the Mac in macOS 26.7.3 from aura `v1.0.0b17` (`5a244b5b`, cloned with submodules into
+  `build/aura-b17/aura`), with the toolchain under `toolchain/llvm` and the flags of
+  alarm-aurora's aura PKGBUILD. Logs: `build/aura-b17/stage1-build.log`, `stage2-build.log`.
+  - Stage 1: `RELEASE=1 CHAINLOADING=1 USE_CLANG=1 BUILTIN_LOGO=aurora`, `build/aura.bin` kept as
+    `out/aura-raw.bin`: 1,638,400 B, sha256 `93457a37…40be`.
+  - Stage 2: the same plus `ESP_STAGE2=1`, kept as `out/aura-stage2.bin`: 3,997,696 B, sha256
+    `aef08d29…a985`; it carries `chosen.asahi,m1n1-stage1-version=1.0.0b17`.
+- `tools/derive-j616c-image` pins both hashes. The derivation's header named Stage 1's flags
+  without `BUILTIN_LOGO=aurora`, which the PKGBUILD passes for both; corrected.

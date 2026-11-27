@@ -49,8 +49,8 @@
 #   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL RECOVERY_DIR STAGE1 STAGE2 PKGS OUTPUT_DIR
 # STAGE1 is aura's raw Stage 1 and STAGE2 its Stage 2, both built from aura
 # STAGE1_COMMIT with the aura PKGBUILD's flags (Stage 1: RELEASE=1 CHAINLOADING=1
-# USE_CLANG=1; Stage 2 adds ESP_STAGE2=1 BUILTIN_LOGO=aurora); their sha256 must
-# be STAGE1_SHA256 and STAGE2_SHA256, recorded here after the build.
+# USE_CLANG=1 BUILTIN_LOGO=aurora, build/aura.bin; Stage 2 adds ESP_STAGE2=1);
+# their sha256 must be STAGE1_SHA256 and STAGE2_SHA256.
 # PKGS is a directory holding the two packages omarchy-pkgs builds at
 # QEMU_PR_COMMIT (`bin/build --arch aarch64 --package qemu-user-static`, files
 # under build-output/edge/aarch64/) and Aurora's aurora-userpages; each must
@@ -86,11 +86,11 @@ declare -A EDGE_PINS=(
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
 DONGLE_FIRMWARE=(core/linux-firmware-realtek)
-# Stage 1 and Stage 2 from aura v1.0.0b17. Fill in both hashes from the build
-# before the first run; the build refuses to start without them.
+# Stage 1 and Stage 2 from aura v1.0.0b17, built on the Mac (JOURNEY 9.58):
+# aura-raw.bin 1,638,400 B and Stage 2 3,997,696 B.
 STAGE1_COMMIT=5a244b5bcbaf
-STAGE1_SHA256=
-STAGE2_SHA256=
+STAGE1_SHA256=93457a3710daf7c500de0e7e22c3842a85681c4e1aa7d736b9eb34701b1440be
+STAGE2_SHA256=aef08d291be788366fd4bb53790f0f00ddebcfe86c470f90d953c46957cfa985
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE1_COMMIT.bin
 # qemu-user-static from omacom/omarchy-pkgs#3505 (source build and 1002), #3602
 # (1000) and #3603 (1001), merged on allanclempe/omarchy-pkgs branch
