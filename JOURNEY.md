@@ -1233,3 +1233,11 @@ initialized successfully", `/dev/kvm` present).
   first, each partition by PARTUUID (stub container `96204E68…`, ESP `4B4FF638…`, Boot `65B9941D…`,
   Root `5E0C27BE…`), then `diskutil apfs deleteContainer` and `eraseVolume free none` on each. The
   disk now holds `disk0s1` (ISC), `disk0s2` (macOS), 274.9 GB free and `disk0s7` (Recovery).
+- **macOS 27.2 on the Mac** (2026-11-28): Software Update offered 27.2.1 (`26B131`), which aura#265
+  refuses, so 27.2 came from the full installer (`softwareupdate --fetch-full-installer
+  --full-installer-version 27.2`; its `SharedSupport.dmg` names `OSVersion 27.2`, `Build 26B123`),
+  upgraded in place. Before it, System Firmware already read `20457.41.3` (27.2's iBoot) under
+  macOS 26.7.3, with OS Loader `18000.161.10.702.4`; `install.log` has a failed install on
+  2026-11-25 at 21:52, which may have flashed it. After: macOS 27.2 (26B123), System Firmware and OS
+  Loader both `20457.41.3`. The free space (274.9 GB) is unchanged; diskutil renumbered the
+  Recovery container's partition from `disk0s7` to `disk0s3`.
