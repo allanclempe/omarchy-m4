@@ -1241,3 +1241,29 @@ initialized successfully", `/dev/kvm` present).
   2026-11-25 at 21:52, which may have flashed it. After: macOS 27.2 (26B123), System Firmware and OS
   Loader both `20457.41.3`. The free space (274.9 GB) is unchanged; diskutil renumbered the
   Recovery container's partition from `disk0s7` to `disk0s3`.
+
+### 9.59 On 27.2, kmutil wraps a raw Stage 1 as Mach-O, and Stage 2 refuses to start the OS (OMS-30, 2026-11-28)
+- **Install:** package 2.3.20 (`8a214c77…`) on macOS 27.2 (26B123). New stub, ESP and Linux
+  partitions (`disk0s3` to `s6`, volume group `506F22D4-D8D5-4865-8F8C-2315BBC2D53B`), stub OS
+  `26.2.123.0.0,0`. The Recovery app's log (`Aurora/Recovery/State/operation-2C50C120-…/installer.log`
+  on the stub) shows the `raw-ctxr` enrolment as designed: `bputil -nc -v <group>` (after it:
+  Permissive, `Kernel CTRR Status: Disabled`), then `kmutil configure-boot -c …/stage1 -v
+  /Volumes/Omarchy --raw --entry-point 2048 --lowest-virtual-address 0`, "kmutil: completed".
+- **First boot (photo):** aura `v1.0.0b17` Stage 2 finds the `apple,j616c` tree, U-Boot and the
+  kernel, starts all 14 CPUs, measures the tree and kernel, then: "CTXR exec: CTXR_D is armed at
+  [0x10005cfc000, 0x10005e0c000): secondaries are confined at EL2" / "the secondary CPUs can only run
+  code in a window, and there is none for the OS: this Stage 1 did not arm a large enough window.
+  Not starting the OS." It runs the proxy. The same refusal as 9.30.
+- **Policy afterwards** (`bputil -d`, from macOS): Permissive, custom kernel hash set (`coih`),
+  `Kernel CTRR Status: Disabled` (`sip2: 1`). So it is not CTRR.
+- **The cause, from kmutil's own output:** "found raw boot object, deriving Mach-O boot
+  properties... wrapping boot object payload...". kmutil 27.2 wraps a raw image in a Mach-O boot
+  object; iBoot then arms `CTXR_D` over the object alone (about 1 MiB here), as for any unpadded
+  Mach-O Stage 1 (aura `docs/macho-boot-object.md` at `v1.0.0b17`: "To boot an OS it has to be
+  padded… A Stage 2 from this tree refuses to start an OS under an unpadded Stage 1 on a confined
+  machine"). The raw path of 9.31 depended on 26.x kmutil enrolling the raw image as is.
+- **What this means:** `raw-ctxr` is a 26.6.2-only workaround. On 27.2 the J616c needs a padded
+  Mach-O Stage 1 (128 MiB window, `kmutil configure-boot --compress`), with Linux at EL2 in the
+  window (the kernel has `CONFIG_ARM64_CTXR_EXECMEM`): Aurora's M4 path and upstream's `macho` mode
+  (#238). On 26.6.2 with aura b13 the padded object looped silently on this Mac (9.29, 9.31); it
+  hasn't been tried with aura `v1.0.0b17` on 27.2 firmware.
