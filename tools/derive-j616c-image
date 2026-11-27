@@ -1,133 +1,108 @@
 #!/bin/bash
 # Derive a developer-only J616c (MacBook Pro 16-inch, M4 Max) Omarchy payload
-# from an edge payload built by omarchy-mac-installer's image-builder.
+# from an edge payload built by omarchy-mac-installer's image-builder, for a
+# stub on macOS 27.2 (26B123) firmware (OMS-30; docs/oms-30-image-plan.md).
 #
-# Local developer tooling, not a release producer. It:
-#   - adds Aurora Silicon's signed ALARM repository ([aurora], key
-#     A33623FB30665BEFAA0FFB6DE35EC749219B20F7) first in pacman.conf, and its
-#     keyring package. First boot builds the Mac's keyring from archlinuxarm,
-#     asahi-alarm and omarchy only, so a drop-in on omarchy-provision-owner adds
-#     aurora before owner setup (without it pacman waits on a hidden Y/n prompt);
-#   - replaces the boot chain with Aurora's: linux-aurora (with t6041-j616c.dtb),
-#     aura (raw and Mach-O Stage 1, monitor-free Stage 2 m1n1), uboot-aurora
-#     (T6041-capable) and Aurora's asahi-scripts (bootchain update-m1n1), plus
-#     Aurora's mesa-aurora and vulkan-aurora built for that kernel (the edge
-#     image's older Mesa cannot drive the J616c GPU under it), and Aurora's
-#     speakersafetyd profiles: speakersafetyd trims apple,j616c to apple/j616.conf,
-#     which only speakersafetyd-aurora-profiles ships; without it the daemon fails,
-#     the amps stay locked and there is no speaker sink (OMS-1). Also Aurora's
-#     aurora-audio: the edge image's build (4.1.aurora3-3) has no J616 speaker or
-#     mic graph, Aurora's (4.1.aurora2-16) does, though its pkgrel sorts lower;
-#   - swaps Omarchy's libva-v4l2_request-avd for Aurora's libva-v4l2-request-avd:
-#     the same AVD VA-API bridge, but aliased as aurora_drv_video.so, the name
-#     libva looks for under Aurora's kernel; without it VA-API found no driver and
-#     video decoded in software (OMS-4);
-#   - pins the exact [aurora] builds it was tested with (AURORA_PINS: kernel,
-#     aura, U-Boot, asahi-scripts, Mesa, audio, VA-API) and stops if the repo has moved on;
+# Local developer tooling, not a release producer. The platform is omacom's
+# edge stack, [omarchy] first, as the image-builder writes it: Aurora's own
+# repository is not used, since its kernel lacks the 27.2 support. It:
+#   - installs and pins the exact [omarchy] edge builds it was made with
+#     (EDGE_PINS) and stops if the repo has moved on: linux-aurora 7.3 from
+#     omacom/linux-aurora 3058cc5c, which carries aurora-silicon/linux#1954
+#     (T6041 on 27.2 firmware) and #2233 (the ISP's computed noise filter,
+#     OMS-45), both checked in its modules; the Mesa that kernel requires; the
+#     boot scripts (aurora-scripts, omarchy-mac-boot); Touch ID (omarchy-mac
+#     with the J616c's xART guard, libfprint-git); audio (aurora-audio with the
+#     J616 graphs and speaker profile, alsa-ucm-conf-aurora, speakersafetyd); the
+#     VA-API bridge with the aurora alias (OMS-4);
+#   - starts speakersafetyd for the J616 speaker card, which speakersafetyd's
+#     own rule doesn't list (tools/image/96-speakersafetyd-j616.rules, OMS-1);
 #   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
 #     split, so USB-C Ethernet dongles on RTL8153B (and Realtek USB Wi-Fi and
 #     Bluetooth) ran without their firmware (OMS-7);
-#   - uses a Stage 2 built from aura main with aaec599f (restarts the post-M4
-#     ANS that Stage 1 powers off; no aura release has it yet), installed at
-#     /usr/local/lib/aura and named in /etc/default/update-m1n1, so every later
-#     kernel, U-Boot or aura update rebuilds boot-ctxr.bin with it;
-#   - pins IgnorePkg = m1n1-aurora, which declares replaces=aura;
-#   - keeps updates safe without hand guards (OMS-13): the kernel, Mesa, U-Boot
-#     and aura update from [aurora]; every boot-chain change rebuilds Stage 2
-#     from the pinned aura Stage 2 and Aurora's trial boots it once (committed
-#     when Linux comes up; a trial that never gets there falls back after a
-#     reset); it makes sure no Stage 2 trial state ships; and it ships
-#     /etc/omarchy-mac-boot/owner-boot-chain, since Omarchy's boot check can't
-#     verify a Stage 2 that Aurora's update-m1n1 builds;
-#   - makes the trial guard count its 12 minutes from when the unlocked system
-#     starts, not from kernel start, so time at the disk password doesn't roll
-#     back a good trial (OMS-17);
+#   - lets x86-64 containers run (OMS-41): installs qemu-user-static and
+#     qemu-user-static-binfmt built from omacom/omarchy-pkgs#3505, #3602 and
+#     #3603 merged (QEMU 11.1.3 with three linux-user patches) over the image's
+#     Debian build, Aurora's aurora-userpages for the userpages command and its
+#     user4k=on GRUB drop-in, and runs containerd under userpages 4k
+#     (tools/image/containerd-user4k.conf), since x86 libraries built for 4 KiB
+#     pages don't map on the 16 KiB kernel. Those three packages come from the
+#     PKGS input, each pinned by sha256;
+#   - uses Stage 1 and Stage 2 built from aura v1.0.0b17 (STAGE1_COMMIT), which
+#     carry aura#265 (27.2 GPU and display hand-off on T6041) and the later M4
+#     27.2 fixes; edge's aura package predates #265. Stage 2 is installed at
+#     /usr/local/lib/aura and named by M1N1= in /etc/default/update-m1n1, so
+#     every later kernel or U-Boot update rebuilds boot.bin and, through
+#     omarchy-mac-boot's omarchy-mac-boot-ctxr hook, m1n1/boot-ctxr.bin with it.
+#     omarchy-mac-boot's boot check reads the same M1N1= and keeps verifying;
 #   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
 #     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
 #     which every Omarchy ESP shares (OMS-12), and /boot from the partition
 #     after it rather than the Boot UUID every install shares (OMS-15);
-#   - lets x86-64 containers run (OMS-41): installs qemu-user-static and
-#     qemu-user-static-binfmt built from omacom/omarchy-pkgs#3505, #3602 and
-#     #3603 merged (QEMU 11.1.3 with three linux-user patches; the QEMU_PKGS
-#     input, pinned by QEMU_PKG_SHA256) over the image's Debian build, and runs
-#     containerd under
-#     Aurora's userpages 4k (tools/image/containerd-user4k.conf), since x86
-#     libraries built for 4 KiB pages don't map on the 16 KiB kernel. The Debian
-#     qemu-user also hands x86-64 programs addresses above 2^47, has no Linux AIO
-#     and reports trapno -1: SQL Server 2022 needs all three fixed. The PR's
-#     version sorts above the Debian build, so updates keep it, and take
-#     omarchy's own build once it publishes a higher one;
-#   - lets the image's own hooks rebuild the UKI, then builds the standard and
-#     the J616c confined Stage 2 with Aurora's update-m1n1;
-#   - stages esp/aurora/stage1-j616c.bin (aura's raw Stage 1, which the installer
-#     enrolls raw as raw-ctxr, OMS-24) and esp/m1n1/boot-ctxr-j616c.bin;
+#   - lets the image's own hooks rebuild the UKI, then builds Stage 2 with the
+#     stock update-m1n1 and stages esp/aurora/stage1-j616c.bin (aura's raw
+#     Stage 1, which the installer enrolls raw as raw-ctxr, OMS-24) and
+#     esp/m1n1/boot-ctxr-j616c.bin;
 #   - re-seals @factory and packages the payload with its installer_data.json.
 #
-# Run on an aarch64 Linux host with
-# Docker and passwordless sudo:
-#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL AURORA_KEY RECOVERY_DIR STAGE2 QEMU_PKGS OUTPUT_DIR
-# STAGE2 is build/aura.bin from aura STAGE2_COMMIT built with the aura PKGBUILD's
-# Stage 2 flags (RELEASE=1 CHAINLOADING=1 ESP_STAGE2=1 USE_CLANG=1
-# BUILTIN_LOGO=aurora); its sha256 must be STAGE2_SHA256.
-# QEMU_PKGS is a directory holding the two packages omarchy-pkgs builds at
+# Run on an aarch64 Linux host with Docker and passwordless sudo:
+#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL RECOVERY_DIR STAGE1 STAGE2 PKGS OUTPUT_DIR
+# STAGE1 is aura's raw Stage 1 and STAGE2 its Stage 2, both built from aura
+# STAGE1_COMMIT with the aura PKGBUILD's flags (Stage 1: RELEASE=1 CHAINLOADING=1
+# USE_CLANG=1; Stage 2 adds ESP_STAGE2=1 BUILTIN_LOGO=aurora); their sha256 must
+# be STAGE1_SHA256 and STAGE2_SHA256, recorded here after the build.
+# PKGS is a directory holding the two packages omarchy-pkgs builds at
 # QEMU_PR_COMMIT (`bin/build --arch aarch64 --package qemu-user-static`, files
-# under build-output/edge/aarch64/); each must match QEMU_PKG_SHA256.
+# under build-output/edge/aarch64/) and Aurora's aurora-userpages; each must
+# match PKG_SHA256.
 # RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
-# the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app, which
-# predates that mode and would refuse this Mac's installation configuration.
+# the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app,
+# which doesn't know that mode.
 set -euo pipefail
 
-AURORA_FPR=A33623FB30665BEFAA0FFB6DE35EC749219B20F7
-AURORA_SERVER='https://aurorasilicon.org/alarm-aurora/testing/$arch'
-AURORA_BOOT=(aurora/linux-aurora aurora/linux-aurora-headers aurora/aurora-userpages
-  aurora/aura aurora/uboot-aurora aurora/asahi-scripts)
-J616C_COMPATIBLE='apple,j616c apple,t6041 apple,arm-platform'
-# Aurora's Mesa for its kernel; the -fex-guest and lavapipe variants only when the image has them.
-AURORA_MESA=(mesa-aurora vulkan-aurora)
-AURORA_MESA_OPTIONAL=(mesa-aurora-fex-guest vulkan-lavapipe-aurora)
-# speakersafetyd looks for apple/j616.conf on a J616c; only this package has it.
-# aurora-audio: the J616 speaker and mic DSP graphs (asahi-audio/j616).
-AURORA_AUDIO=(aurora/speakersafetyd-aurora-profiles aurora/aurora-audio)
+# The stub firmware the J616c installs: aurora-silicon/linux#1954 and aura#265
+# support 27.2 (26B123) on T6041 and refuse 27.2.1 (26B131).
+J616C_STUB_FW=27.2
+# The exact [omarchy] edge builds this image is made and tested with. The repo
+# keeps only its latest build, so a pin can't fetch an older one: it stops the
+# build when the repo has moved on, so a new kernel or Mesa never ships
+# untested. Bump these on purpose, and record why in JOURNEY.
+declare -A EDGE_PINS=(
+  [linux-aurora]=7.3.0.aurora1-1
+  [mesa-aurora]=1:26.3.0_devel.20261122.232644.e705eca833f-1
+  [vulkan-aurora]=1:26.3.0_devel.20261122.232644.e705eca833f-1
+  [aura]=1.0.0b13.r20261118-1
+  [uboot-aurora]=2026.07.aurora9-1
+  [aurora-scripts]=20261023-2
+  [omarchy-mac-boot]=20261123-1
+  [omarchy-mac]=0.2.7-2
+  [libfprint-git]=1:1.94.100.r10.g6f9479c-6
+  [aurora-audio]=4.1.aurora3-6
+  [alsa-ucm-conf-aurora]=10.aurora3-2
+  [speakersafetyd]=2.0.1-2
+  [libva-v4l2_request-avd]=1.3.r11.r169.gc653eaa-2
+)
 # Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
 DONGLE_FIRMWARE=(core/linux-firmware-realtek)
-# libva loads <DRM driver name>_drv_video.so, and Aurora's kernel names the GPU's
-# driver "aurora". Omarchy's libva-v4l2_request-avd aliases the AVD bridge only as
-# asahi_drv_video.so, so VA-API found no driver and mpv decoded in software (OMS-4).
-# Aurora's build is the same omacom/libva-v4l2_request driver with the aurora alias.
-VAAPI_OMARCHY=libva-v4l2_request-avd
-VAAPI_AURORA=libva-v4l2-request-avd
-# The exact [aurora] builds this image is made and tested with. Aurora's repo keeps
-# only its latest build, so a pin can't fetch an older one: it stops the build when
-# the repo has moved on, so a new kernel, Stage 1 or Mesa never ships untested.
-# Bump these on purpose, and record why in JOURNEY.
-declare -A AURORA_PINS=(
-  [linux-aurora]=7.3.0.aurora1-40
-  [linux-aurora-headers]=7.3.0.aurora1-40
-  [aura]=1.0.0b13.1-1
-  [uboot-aurora]=2026.07.aurora11-1
-  [asahi-scripts]=20261023-9
-  [mesa-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
-  [vulkan-aurora]=1:26.3.0_devel.202611150611.d4ad4a4dce6-1
-  [aurora-audio]=4.1.aurora2-16
-  [speakersafetyd-aurora-profiles]=1-2
-  [alsa-utils-aurora]=1.2.16-1
-  [libva-v4l2-request-avd]=1.3.r11-1
-)
-STAGE2_COMMIT=94d8e6e4
-STAGE2_SHA256=46fd25ed3562057ef1856c99da3e6ceab2e33c29c21800635a11f3468092d068
-STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE2_COMMIT.bin
+# Stage 1 and Stage 2 from aura v1.0.0b17. Fill in both hashes from the build
+# before the first run; the build refuses to start without them.
+STAGE1_COMMIT=5a244b5bcbaf
+STAGE1_SHA256=
+STAGE2_SHA256=
+STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE1_COMMIT.bin
 # qemu-user-static from omacom/omarchy-pkgs#3505 (source build and 1002), #3602
 # (1000) and #3603 (1001), merged on allanclempe/omarchy-pkgs branch
 # oms-41/qemu-user-static-image and tested on the Mac with SQL Server 2022 and
-# node:22 (OMS-41, JOURNEY 9.56). Drop the input once omarchy's repo publishes
-# all three.
+# node:22 (OMS-41, JOURNEY 9.56). Drop them once omarchy's repo publishes all
+# three. aurora-userpages is Aurora's build; it depends on glibc alone.
 QEMU_PR_COMMIT=10cb1547eabd
 QEMU_VERSION=1:11.1.3-1
-declare -A QEMU_PKG_SHA256=(
-  [qemu-user-static]=544e83b4586d99a56a5875b0de1e559750a14ab49d7056bc01a03daa94456fca
-  [qemu-user-static-binfmt]=693bd474721d3c1edc9b96e8677081c4081a932ee925cb3136c5884a8768ab43
+declare -A PKG_SHA256=(
+  [qemu-user-static-$QEMU_VERSION-aarch64.pkg.tar.zst]=544e83b4586d99a56a5875b0de1e559750a14ab49d7056bc01a03daa94456fca
+  [qemu-user-static-binfmt-$QEMU_VERSION-aarch64.pkg.tar.zst]=693bd474721d3c1edc9b96e8677081c4081a932ee925cb3136c5884a8768ab43
+  [aurora-userpages-7.3.0.aurora1-41-aarch64.pkg.tar.xz]=4188aeac66a586b210d97e5b35a2edf0ab250939d1221b59bef296db69cd5f68
 )
 QEMU_BINFMT=qemu-x86_64-static.conf
 
@@ -135,16 +110,18 @@ log() { printf '[%4ss] %s\n' "$SECONDS" "$*"; }
 fail() { printf 'derive-j616c-image: %s\n' "$*" >&2; exit 1; }
 
 host() {
-  local edge=$1 rootfs=$2 key=$3 recovery=$4 stage2=$5 qemu=$6 out=$7 image pkg file
-  [[ -d $edge && -f $rootfs && -f $key && -f $recovery/omarchy-recovery-app.json \
-    && -d "$recovery/Omarchy Installer.app" && -f $stage2 && -d $qemu ]] ||
-    fail "usage: $0 EDGE_OUT ROOTFS AURORA_KEY RECOVERY_DIR STAGE2 QEMU_PKGS OUT"
-  [[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$STAGE2_SHA256" ]] || fail "$stage2 is not the pinned aura $STAGE2_COMMIT Stage 2"
-  for pkg in "${!QEMU_PKG_SHA256[@]}"; do
-    file=$qemu/$pkg-$QEMU_VERSION-aarch64.pkg.tar.zst
-    [[ -f $file ]] || fail "$qemu has no $(basename "$file") (omarchy-pkgs at $QEMU_PR_COMMIT)"
-    [[ $(sha256sum "$file" | cut -d' ' -f1) == "${QEMU_PKG_SHA256[$pkg]}" ]] ||
-      fail "$file is not the pinned build from omarchy-pkgs $QEMU_PR_COMMIT"
+  local edge=$1 rootfs=$2 recovery=$3 stage1=$4 stage2=$5 pkgs=$6 out=$7 image file
+  [[ -d $edge && -f $rootfs && -f $recovery/omarchy-recovery-app.json \
+    && -d "$recovery/Omarchy Installer.app" && -f $stage1 && -f $stage2 && -d $pkgs ]] ||
+    fail "usage: $0 EDGE_OUT ROOTFS RECOVERY_DIR STAGE1 STAGE2 PKGS OUT"
+  [[ -n $STAGE1_SHA256 && -n $STAGE2_SHA256 ]] ||
+    fail "record the sha256 of Stage 1 and Stage 2 built from aura $STAGE1_COMMIT in STAGE1_SHA256 and STAGE2_SHA256 first"
+  [[ $(sha256sum "$stage1" | cut -d' ' -f1) == "$STAGE1_SHA256" ]] || fail "$stage1 is not the pinned aura $STAGE1_COMMIT Stage 1"
+  [[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$STAGE2_SHA256" ]] || fail "$stage2 is not the pinned aura $STAGE1_COMMIT Stage 2"
+  for file in "${!PKG_SHA256[@]}"; do
+    [[ -f $pkgs/$file ]] || fail "$pkgs has no $file"
+    [[ $(sha256sum "$pkgs/$file" | cut -d' ' -f1) == "${PKG_SHA256[$file]}" ]] ||
+      fail "$pkgs/$file is not the pinned build"
   done
   mkdir -p "$out"
   [[ -z $(ls -A "$out") ]] || fail "$out is not empty"
@@ -154,10 +131,10 @@ host() {
   fi
   sudo docker run --rm --privileged --platform linux/arm64 \
     -v "$(cd "$(dirname "$0")" && pwd):/tools:ro" -v "$(cd "$edge" && pwd):/edge:ro" \
-    -v "$(cd "$(dirname "$key")" && pwd)/$(basename "$key"):/aurora.asc:ro" \
     -v "$(cd "$recovery" && pwd):/recovery:ro" -v "$(cd "$out" && pwd):/out" -v /work \
+    -v "$(cd "$(dirname "$stage1")" && pwd)/$(basename "$stage1"):/stage1.bin:ro" \
     -v "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2"):/stage2.bin:ro" \
-    -v "$(cd "$qemu" && pwd):/qemu-pkgs:ro" \
+    -v "$(cd "$pkgs" && pwd):/pkgs:ro" \
     "$image" /bin/bash /tools/derive-j616c-image --in-container
 }
 
@@ -191,6 +168,19 @@ loop() {  # loop VAR FILE: attach FILE and name its device in VAR. Not in a
 
 in_chroot() { chroot "$T" /usr/bin/env -i PATH=/usr/bin:/usr/sbin HOME=/root LC_ALL=C "$@"; }
 
+# module_has RELEASE MODULE STRING: the kernel module (plain or compressed) contains STRING.
+module_has() {
+  local file
+  file=$(ls "$T/usr/lib/modules/$1/kernel/$2".ko* 2>/dev/null | head -1)
+  [[ -n $file ]] || return 1
+  case $file in
+    *.zst) zstd -dcq "$file" ;;
+    *.xz) xz -dc "$file" ;;
+    *.gz) gzip -dc "$file" ;;
+    *) cat "$file" ;;
+  esac | grep -aqF -- "$3"
+}
+
 container() {
   trap cleanup EXIT
   W=/work T=/work/target
@@ -198,7 +188,7 @@ container() {
   log "toolchain"
   pacman-key --init >/dev/null 2>&1
   pacman-key --populate archlinuxarm >/dev/null 2>&1
-  pacman -Sy --noconfirm --needed btrfs-progs dosfstools e2fsprogs libarchive gnupg python >/work/toolchain.log 2>&1 ||
+  pacman -Sy --noconfirm --needed btrfs-progs dosfstools e2fsprogs libarchive gnupg python zstd xz >/work/toolchain.log 2>&1 ||
     fail "could not install the toolchain"
 
   local zip data name
@@ -209,12 +199,6 @@ container() {
   mkdir -p "$W/payload"
   bsdtar -xf "$zip" -C "$W/payload"
   [[ -f $W/payload/root.img && -f $W/payload/boot.img && -d $W/payload/esp ]] || fail "unexpected payload layout"
-
-  log "checking Aurora's key"
-  install -d -m 0700 "$W/gpg"
-  gpg --homedir "$W/gpg" --batch --quiet --import /aurora.asc
-  gpg --homedir "$W/gpg" --batch --with-colons --fingerprint | grep -q "^fpr:::::::::$AURORA_FPR:" ||
-    fail "the Aurora key is not $AURORA_FPR"
 
   log "mounting the image"
   truncate -s 524288000 "$W/esp.img"
@@ -255,95 +239,61 @@ container() {
   fi
   cp -L /etc/resolv.conf "$T/etc/resolv.conf"
 
-  log "temporary keyring with Aurora's key"
+  log "temporary keyring"
   [[ ! -e $T/etc/pacman.d/gnupg ]] || fail "the image already has a pacman keyring"
   in_chroot pacman-key --init >"$W/keyring.log" 2>&1
   in_chroot pacman-key --populate >>"$W/keyring.log" 2>&1
-  cp /aurora.asc "$T/tmp/aurora.asc"
-  in_chroot pacman-key --add /tmp/aurora.asc >>"$W/keyring.log" 2>&1
-  in_chroot pacman-key --lsign-key "$AURORA_FPR" >>"$W/keyring.log" 2>&1
 
-  log "pacman.conf: [aurora] first, m1n1-aurora ignored"
-  python3 - "$T/etc/pacman.conf" "$AURORA_SERVER" <<'PY'
-import re, sys
-path, server = sys.argv[1], sys.argv[2]
-text = open(path).read()
-if "[aurora]" in text:
-    raise SystemExit("pacman.conf already has [aurora]")
-block = ("# Aurora Silicon's signed ALARM repository: the M4 Max (J616c) kernel,\n"
-         "# aura and U-Boot. First, so the boot chain keeps coming from it.\n"
-         f"[aurora]\nServer = {server}\n\n")
-first = re.search(r"^\[(?!options\])[^\]]+\]", text, re.M)
-text = text[:first.start()] + block + text[first.start():]
-pin = ("# m1n1-aurora declares replaces=aura; on a J616c it would swap aura's\n"
-       "# T6041 Stage 2 for one that cannot boot it.\nIgnorePkg = m1n1-aurora\n")
-text = re.sub(r"^\[options\]\n", "[options]\n" + pin, text, count=1, flags=re.M)
-open(path, "w").write(text)
-PY
+  log "pacman.conf: [omarchy] first, no [aurora]"
+  local first
+  first=$(grep -E '^\[[^]]+\]' "$T/etc/pacman.conf" | grep -vx '\[options\]' | head -1)
+  [[ $first == "[omarchy]" ]] || fail "pacman.conf's first repository is $first, not [omarchy]; build the edge payload with the image-builder that puts [omarchy] first (omarchy-mac-installer#224)"
+  ! grep -qx '\[aurora\]' "$T/etc/pacman.conf" || fail "pacman.conf has [aurora]; this image takes its platform from [omarchy] edge"
 
-  log "installing Aurora's boot chain"
+  log "installing the pinned edge builds"
   in_chroot pacman -Sy --noconfirm >"$W/pacman.log" 2>&1 || fail "pacman -Sy failed (pacman.log)"
-  in_chroot pacman -S --noconfirm aurora/aurora-keyring >>"$W/pacman.log" 2>&1 ||
-    fail "could not install aurora-keyring"
-  # Before installing anything else: the repo must still offer exactly the pinned builds.
-  local pkg have moved=()
-  for pkg in "${!AURORA_PINS[@]}"; do
-    have=$(in_chroot pacman -Si "aurora/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
-    [[ $have == "${AURORA_PINS[$pkg]}" ]] || moved+=("$pkg: pinned ${AURORA_PINS[$pkg]}, [aurora] has ${have:-nothing}")
+  # Before installing anything: the repo must still offer exactly the pinned builds.
+  local pkg have moved=() wanted=()
+  for pkg in "${!EDGE_PINS[@]}"; do
+    have=$(in_chroot pacman -Si "omarchy/$pkg" 2>/dev/null | sed -n 's/^Version *: //p')
+    [[ $have == "${EDGE_PINS[$pkg]}" ]] || moved+=("$pkg: pinned ${EDGE_PINS[$pkg]}, [omarchy] has ${have:-nothing}")
+    wanted+=("omarchy/$pkg")
   done
   ((${#moved[@]} == 0)) ||
-    fail "[aurora] no longer offers the pinned builds; review them, then bump AURORA_PINS: $(printf '%s; ' "${moved[@]}")"
-  in_chroot pacman -Rdd --noconfirm m1n1-aurora >>"$W/pacman.log" 2>&1 || fail "could not remove m1n1-aurora"
-  in_chroot pacman -S --noconfirm "${AURORA_BOOT[@]}" >>"$W/pacman.log" 2>&1 ||
-    fail "could not install the Aurora boot chain (pacman.log)"
+    fail "[omarchy] no longer offers the pinned builds; review them, then bump EDGE_PINS: $(printf '%s; ' "${moved[@]}")"
+  in_chroot pacman -S --noconfirm --needed "${wanted[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install the pinned edge builds (pacman.log)"
 
-  log "installing Aurora's Mesa"
-  local mesa=() p
-  for p in "${AURORA_MESA[@]}"; do mesa+=("aurora/$p"); done
-  for p in "${AURORA_MESA_OPTIONAL[@]}"; do
-    if in_chroot pacman -Qq | grep -qx "$p"; then mesa+=("aurora/$p"); fi
-  done
-  in_chroot pacman -S --noconfirm "${mesa[@]}" >>"$W/pacman.log" 2>&1 ||
-    fail "could not install Aurora's Mesa (pacman.log)"
-  for p in "${mesa[@]}"; do
-    [[ $(in_chroot pacman -Q "${p#aurora/}" | cut -d' ' -f2) == "$(in_chroot pacman -Si "$p" | sed -n 's/^Version *: //p')" ]] ||
-      fail "${p#aurora/} is not Aurora's build"
-  done
+  local kver
+  kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
+  [[ $kver == 7.3.* ]] || fail "unexpected kernel release $kver"
+  [[ $(ls "$T/usr/lib/modules") == "$kver" ]] || fail "more than one kernel is installed: $(ls "$T/usr/lib/modules")"
+  [[ -f $T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb ]] || fail "the kernel has no t6041-j616c.dtb"
+  # aurora-silicon/linux#1954 (the 27.2 ANE profile names its firmware build) and
+  # #2233 (the computed spatial noise filter): Aurora's 7.3.0.aurora1-41 has neither.
+  module_has "$kver" drivers/accel/ane/ane_t6021 26B123 ||
+    fail "the kernel's ANE driver has no 27.2 (26B123) profile: it predates aurora-silicon/linux#1954"
+  module_has "$kver" drivers/media/platform/apple/isp/apple-isp isp_setfile_snf_radial ||
+    fail "the kernel's ISP driver has no computed noise filter: it predates aurora-silicon/linux#2233"
+  log "kernel $kver, with linux#1954 and #2233"
 
-  log "installing Aurora's speakersafetyd profiles and aurora-audio"
-  # They need Aurora's alsa-utils-aurora, which conflicts with Arch's alsa-utils, and
-  # --noconfirm answers "no" to removing it. Swap it explicitly (OMS-14: this step had
-  # been done by hand on the Mac).
-  if in_chroot pacman -Qq alsa-utils 2>/dev/null | grep -qx alsa-utils; then
-    in_chroot pacman -Rdd --noconfirm alsa-utils >>"$W/pacman.log" 2>&1 || fail "could not remove Arch's alsa-utils"
-  fi
-  in_chroot pacman -S --noconfirm aurora/alsa-utils-aurora "${AURORA_AUDIO[@]}" >>"$W/pacman.log" 2>&1 ||
-    fail "could not install Aurora's speaker packages (pacman.log)"
-  in_chroot pacman -Qq alsa-utils-aurora >/dev/null 2>&1 || fail "alsa-utils-aurora is not installed"
-  # Anything that needed alsa-utils must still be satisfied (alsa-utils-aurora provides it).
-  in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "missing dependencies after the alsa-utils swap (pacman.log)"
+  log "checking the audio stack and starting speakersafetyd on the J616"
   grep -q '^\[Speaker/' "$T/usr/share/speakersafetyd/apple/j616.conf" 2>/dev/null ||
     fail "no speakersafetyd profile with speakers for J616 (apple/j616.conf)"
   for p in graph.json mic.json; do
     [[ -s $T/usr/share/asahi-audio/j616/$p ]] || fail "aurora-audio has no J616 $p (asahi-audio/j616)"
   done
-  # A commented-out rule would not start the daemon: match only a live one.
-  grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/96-speakersafetyd-aurora.rules" ||
-    fail "the speakersafetyd profiles don't start the daemon for the J616 speaker card"
-
-  log "installing Aurora's VA-API bridge for the video decoder"
-  # Both packages ship v4l2_request_drv_video.so and declare no conflict, so pacman
-  # would stop on the shared files: remove Omarchy's first (OMS-4).
-  if in_chroot pacman -Qq | grep -qx "$VAAPI_OMARCHY"; then
-    in_chroot pacman -Rdd --noconfirm "$VAAPI_OMARCHY" >>"$W/pacman.log" 2>&1 ||
-      fail "could not remove Omarchy's $VAAPI_OMARCHY"
+  install -D -m 0644 /tools/image/96-speakersafetyd-j616.rules "$T/etc/udev/rules.d/96-speakersafetyd-j616.rules"
+  # If speakersafetyd's own rule ever starts it for the J616, this file is redundant.
+  if grep -Eq '^KERNEL==.*ATTRS\{id\}=="AppleJ616".*SYSTEMD_WANTS' "$T/usr/lib/udev/rules.d/95-speakersafetyd.rules" 2>/dev/null; then
+    log "note: speakersafetyd's own rule now starts it for AppleJ616; 96-speakersafetyd-j616.rules can go"
   fi
-  in_chroot pacman -S --noconfirm "aurora/$VAAPI_AURORA" >>"$W/pacman.log" 2>&1 ||
-    fail "could not install Aurora's $VAAPI_AURORA (pacman.log)"
-  # libva must find the bridge under the name Aurora's kernel gives the GPU driver.
+
+  log "checking the VA-API bridge for the video decoder"
+  # libva loads <DRM driver name>_drv_video.so, and the kernel names the GPU's driver "aurora" (OMS-4).
   [[ $(readlink "$T/usr/lib/dri/aurora_drv_video.so") == v4l2_request_drv_video.so &&
      -f $T/usr/lib/dri/v4l2_request_drv_video.so ]] ||
-    fail "$VAAPI_AURORA does not install aurora_drv_video.so -> v4l2_request_drv_video.so"
+    fail "libva-v4l2_request-avd does not install aurora_drv_video.so -> v4l2_request_drv_video.so"
 
   log "installing Realtek firmware for USB dongles"
   in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
@@ -352,18 +302,20 @@ PY
   in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
     fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
-  log "x86-64 containers: qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT, containerd under userpages 4k"
-  [[ -x $T/usr/bin/userpages && -f $T/usr/lib/systemd/system/containerd.service ]] ||
-    fail "the image lacks aurora-userpages or containerd; recheck OMS-41"
+  log "x86-64 containers: qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT, aurora-userpages, containerd under userpages 4k"
+  [[ -f $T/usr/lib/systemd/system/containerd.service ]] || fail "the image lacks containerd; recheck OMS-41"
   in_chroot pacman -Qq qemu-user-static-binfmt >/dev/null 2>&1 ||
     fail "the image has no qemu-user-static-binfmt to replace; recheck OMS-41"
-  install -d "$T/tmp/qemu-pkgs"
-  cp /qemu-pkgs/*-"$QEMU_VERSION"-aarch64.pkg.tar.zst "$T/tmp/qemu-pkgs/"
-  in_chroot pacman -U --noconfirm /tmp/qemu-pkgs/qemu-user-static-"$QEMU_VERSION"-aarch64.pkg.tar.zst \
-    /tmp/qemu-pkgs/qemu-user-static-binfmt-"$QEMU_VERSION"-aarch64.pkg.tar.zst >>"$W/pacman.log" 2>&1 ||
-    fail "could not install qemu-user-static $QEMU_VERSION (pacman.log)"
-  rm -rf "$T/tmp/qemu-pkgs"
-  for pkg in "${!QEMU_PKG_SHA256[@]}"; do
+  install -d "$T/tmp/pkgs"
+  local file files=()
+  for file in "${!PKG_SHA256[@]}"; do
+    cp "/pkgs/$file" "$T/tmp/pkgs/"
+    files+=("/tmp/pkgs/$file")
+  done
+  in_chroot pacman -U --noconfirm "${files[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install the PKGS input (pacman.log)"
+  rm -rf "$T/tmp/pkgs"
+  for pkg in qemu-user-static qemu-user-static-binfmt; do
     [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg $QEMU_VERSION" ]] ||
       fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not $QEMU_VERSION"
   done
@@ -372,32 +324,25 @@ PY
   grep -Eq '^:qemu-x86_64:.*:/usr/bin/qemu-x86_64-static:[A-Z]*F[A-Z]*$' "$T/usr/lib/binfmt.d/$QEMU_BINFMT" ||
     fail "$QEMU_BINFMT does not name /usr/bin/qemu-x86_64-static with the F flag"
   [[ ! -e $T/etc/binfmt.d/$QEMU_BINFMT ]] || fail "/etc/binfmt.d/$QEMU_BINFMT would override the package's rule"
+  [[ -x $T/usr/bin/userpages ]] || fail "aurora-userpages installed no userpages command"
   install -D -m 0644 /tools/image/containerd-user4k.conf \
     "$T/etc/systemd/system/containerd.service.d/50-user4k.conf"
-  # userpages refuses 4k without user4k=on. The acceptance install had it in
-  # /etc/default/limine with no hand step, set outside this script; warn if it
-  # isn't visible in the image, since containers would then fail to start.
-  grep -rqs 'user4k=on' "$T/etc/default/limine" "$T/etc/limine-entry-tool.d" "$T/etc/kernel" ||
-    log "warning: user4k=on is not in the image's kernel command line defaults; containerd's userpages 4k needs it"
+  # userpages refuses 4k without user4k=on. It reaches the kernel command line
+  # from aurora-userpages' GRUB drop-in and from omarchy-mac-boot's setup, which
+  # adds it on linux-aurora; both feed Limine.
+  grep -qs 'user4k=on' "$T/etc/default/grub.d/50-aurora-user4k.cfg" ||
+    fail "aurora-userpages no longer ships the user4k=on GRUB drop-in"
+  grep -qs 'user4k=on' "$T/usr/lib/omarchy-mac/boot/setup/grub-console.sh" ||
+    fail "omarchy-mac-boot's setup no longer adds user4k=on; containerd's userpages 4k needs it"
 
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
-  in_chroot pacman -Q linux-aurora aura uboot-aurora asahi-scripts aurora-keyring "${mesa[@]#aurora/}" \
-    speakersafetyd "${AURORA_AUDIO[@]#aurora/}" "$VAAPI_AURORA" "${DONGLE_FIRMWARE[@]#core/}" \
-    qemu-user-static qemu-user-static-binfmt | tee "$W/versions.txt"
-  # pacman -Q also answers for a provider (aura provides m1n1-aurora): match names.
-  if in_chroot pacman -Qq | grep -qx m1n1-aurora; then fail "m1n1-aurora is still installed"; fi
+  in_chroot pacman -Q "${!EDGE_PINS[@]}" "${DONGLE_FIRMWARE[@]#core/}" \
+    qemu-user-static qemu-user-static-binfmt aurora-userpages | sort | tee "$W/versions.txt"
   # And what got installed is exactly what was pinned.
-  for pkg in "${!AURORA_PINS[@]}"; do
-    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${AURORA_PINS[$pkg]}" ]] ||
-      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the pinned ${AURORA_PINS[$pkg]}"
+  for pkg in "${!EDGE_PINS[@]}"; do
+    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${EDGE_PINS[$pkg]}" ]] ||
+      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the pinned ${EDGE_PINS[$pkg]}"
   done
-
-  local kver
-  kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
-  [[ $kver == 7.3.* ]] || fail "unexpected kernel release $kver"
-  [[ -f $T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb ]] || fail "the kernel has no t6041-j616c.dtb"
-  log "kernel $kver"
-  [[ $(ls "$T/usr/lib/modules") == "$kver" ]] || fail "more than one kernel is installed: $(ls "$T/usr/lib/modules")"
 
   log "checking the UKI carries the new kernel"
   local uki=$T/boot/efi/EFI/Linux/omarchy_linux-aurora.efi
@@ -408,96 +353,38 @@ data = open(sys.argv[1], "rb").read()
 raise SystemExit(0 if sys.argv[2].encode() in data else 1)
 PY
 
-  log "Stage 2 from aura $STAGE2_COMMIT, kept for every later update-m1n1"
+  log "Stage 2 from aura $STAGE1_COMMIT, kept for every later update-m1n1"
   install -D -m 0644 /stage2.bin "$T$STAGE2_PATH"
-  [[ -f $T/etc/default/update-m1n1 ]] || fail "the image has no /etc/default/update-m1n1"
-  grep -q '^M1N1=' "$T/etc/default/update-m1n1" && fail "/etc/default/update-m1n1 already sets M1N1"
-  printf '\n# J616c: aura releases up to 1.0.0b13.1 leave a post-M4 ANS powered off for\n# U-Boot (fixed in aura aaec599f). Remove once the aura package has that fix.\nM1N1=%s\n' \
-    "$STAGE2_PATH" >>"$T/etc/default/update-m1n1"
-  echo "aura Stage 2 $STAGE2_COMMIT $STAGE2_SHA256" >>"$W/versions.txt"
+  local defaults=$T/etc/default/update-m1n1
+  [[ -f $defaults ]] || fail "the image has no /etc/default/update-m1n1 (omarchy-mac-boot)"
+  ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?M1N1=' "$defaults" || fail "/etc/default/update-m1n1 already sets M1N1"
+  # omarchy-mac-boot-ctxr refuses to refresh boot-ctxr.bin when TARGET is set here.
+  ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?TARGET=' "$defaults" || fail "/etc/default/update-m1n1 sets TARGET"
+  ! grep -q '^[[:space:]]*M1N1_UPDATE_DISABLED' "$defaults" || fail "/etc/default/update-m1n1 disables Stage 2 rebuilds"
+  printf '\n# J616c on 27.2 firmware: Stage 2 from aura %s (v1.0.0b17), which has\n# aura#265; edge'"'"'s aura package predates it (omarchy-m4 OMS-30). Remove once\n# the aura package carries aura#265 and the M4 27.2 GPU hand-off.\nM1N1=%s\n' \
+    "$STAGE1_COMMIT" "$STAGE2_PATH" >>"$defaults"
+  [[ -f $T/usr/share/libalpm/hooks/95-m1n1-install.hook ]] || fail "update-m1n1's pacman hook is missing"
+  [[ -x $T/usr/share/libalpm/scripts/omarchy-mac-boot-ctxr ]] ||
+    fail "omarchy-mac-boot no longer ships omarchy-mac-boot-ctxr, which keeps boot-ctxr.bin current"
+  # Stock update-m1n1, not Aurora's bootchain wrapper: the ctxr hook defers to that one.
+  ! grep -Fq AURORA_BOOTCHAIN "$T/usr/bin/update-m1n1" || fail "update-m1n1 is Aurora's bootchain wrapper, not aurora-scripts'"
+  local ignored
+  ignored=$(in_chroot pacman-conf IgnorePkg | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
+  [[ -z $ignored ]] || fail "pacman ignores packages: $ignored"
+  # Omarchy's boot check reads M1N1= and verifies Stage 2 itself; this marker would switch that off.
+  [[ ! -e $T/etc/omarchy-mac-boot/owner-boot-chain ]] || fail "the image carries /etc/omarchy-mac-boot/owner-boot-chain"
+  echo "aura Stage 1 and Stage 2 $STAGE1_COMMIT $STAGE1_SHA256 $STAGE2_SHA256" >>"$W/versions.txt"
   echo "qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT (omacom/omarchy-pkgs#3505, #3602, #3603)" >>"$W/versions.txt"
 
-  log "updates: Stage 2 rebuilt from the pin and tried once (OMS-13)"
-  # The pacman hook must keep rebuilding Stage 2, and nothing may hold the kernel
-  # or Mesa back: those are the hand guards this image replaces.
-  ! grep -q '^[[:space:]]*M1N1_UPDATE_DISABLED' "$T/etc/default/update-m1n1" ||
-    fail "/etc/default/update-m1n1 disables Stage 2 rebuilds"
-  [[ -f $T/usr/share/libalpm/hooks/95-m1n1-install.hook ]] || fail "Aurora's Stage 2 pacman hook is missing"
-  # pacman's resolved configuration, Include= files and all.
-  local ignored groups hookdirs dir
-  hookdirs=$(in_chroot pacman-conf HookDir) || fail "pacman-conf could not read pacman's configuration"
-  for dir in /etc/pacman.d/hooks $hookdirs; do
-    [[ $dir == /usr/share/libalpm/hooks || $dir == /usr/share/libalpm/hooks/ ]] && continue
-    [[ ! -e $T$dir/95-m1n1-install.hook && ! -L $T$dir/95-m1n1-install.hook ]] ||
-      fail "$dir overrides Aurora's Stage 2 pacman hook"
-  done
-  ignored=$(in_chroot pacman-conf IgnorePkg | sort -u | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
-  [[ $ignored == "m1n1-aurora " ]] || fail "pacman's IgnorePkg is not exactly m1n1-aurora: ${ignored:-(none)}"
-  groups=$(in_chroot pacman-conf IgnoreGroup | tr '\n' ' ') || fail "pacman-conf could not read IgnoreGroup"
-  [[ -z $groups ]] || fail "pacman ignores package groups: $groups"
-  # Aurora's trial: the boot after a rebuild runs the candidate once; this commits
-  # it once Linux is up, and the guard returns an uncommitted one after 12 minutes
-  # (counted from unlock, below).
-  in_chroot systemctl enable aurora-stage2-commit.service aurora-stage2-guard.timer >>"$W/pacman.log" 2>&1 ||
-    fail "could not enable Aurora's Stage 2 trial units"
-  [[ $(in_chroot systemctl is-enabled aurora-stage2-commit.service aurora-stage2-guard.timer | tr '\n' ' ') == "enabled enabled " ]] ||
-    fail "Aurora's Stage 2 trial units are not enabled"
-  # The guard's 12 minutes count from kernel start, so a slow disk password can
-  # use them up before the commit service runs (OMS-17). The drop-in counts them
-  # from the timer's activation in the unlocked system instead. It replaces this
-  # exact trigger, so stop if Aurora's timer has changed.
-  local guard_timer=$T/usr/lib/systemd/system/aurora-stage2-guard.timer triggers
-  [[ -f $guard_timer ]] || fail "asahi-scripts no longer ships aurora-stage2-guard.timer; recheck its OMS-17 drop-in"
-  # Every trigger, OnCalendar= included: the drop-in's empty OnBootSec= resets them all.
-  [[ $(grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' "$guard_timer") == "OnBootSec=12min" ]] ||
-    fail "Aurora's aurora-stage2-guard.timer no longer triggers on OnBootSec=12min alone; recheck its OMS-17 drop-in"
-  install -D -m 0644 /tools/image/aurora-stage2-guard-from-unlock.conf \
-    "$T/usr/local/lib/systemd/system/aurora-stage2-guard.timer.d/aurora-stage2-guard-from-unlock.conf"
-  # What systemd will merge, in order: Aurora's trigger, then the drop-in's reset
-  # and its own, with nothing from another unit file or drop-in in between or after.
-  triggers=$(in_chroot systemd-analyze cat-config systemd/system/aurora-stage2-guard.timer |
-    grep -E '^[[:space:]]*On[A-Za-z]+[[:space:]]*=' | tr '\n' ' ') ||
-    fail "systemd-analyze could not read aurora-stage2-guard.timer"
-  [[ $triggers == "OnBootSec=12min OnBootSec= OnActiveSec=12min " ]] ||
-    fail "aurora-stage2-guard.timer's merged triggers aren't Aurora's plus the OMS-17 drop-in: $triggers"
-  install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
-aurora-silicon aura-$STAGE2_COMMIT
-Stage 2 from aura $STAGE2_COMMIT (pinned in /etc/default/update-m1n1), built by
-Aurora's update-m1n1 into m1n1/boot-ctxr.bin. Omarchy's boot check rebuilds Stage 2 the stock way and can't verify this one, so
-omarchy update warns instead of refusing (omarchy-mac-boot update-verify). Aurora's
-Stage 2 trial checks each rebuilt Stage 2 at the next boot instead. Remove this file
-and the M1N1= line once the boot check understands Aurora's chain and an aura release
-contains aaec599f (omarchy-m4 OMS-13).
-EOF
-
-  log "Stage 2: standard and J616c confined"
-  printf '%s\0' $J616C_COMPATIBLE >"$T/tmp/j616c-compatible"
-  [[ -f $T/usr/share/aura/monitor-free ]] || fail "aura ships no monitor-free marker"
-  in_chroot env TARGET=/boot/efi/m1n1/boot.bin AURORA_DEVICE_TREE_COMPATIBLE=/nonexistent \
-    /usr/bin/update-m1n1 >"$W/update-m1n1.log" 2>&1 || fail "update-m1n1 failed (update-m1n1.log)"
-  in_chroot env TARGET=/boot/efi/m1n1/boot-ctxr-j616c.bin AURORA_DEVICE_TREE_COMPATIBLE=/tmp/j616c-compatible \
-    /usr/bin/update-m1n1 >>"$W/update-m1n1.log" 2>&1 || fail "update-m1n1 for J616c failed (update-m1n1.log)"
+  log "Stage 2: boot.bin and the J616c's boot-ctxr.bin"
+  # As omarchy-mac-boot-ctxr builds boot-ctxr.bin on the Mac: update-m1n1 with its
+  # defaults (every device tree), into the path it is given.
+  in_chroot /usr/bin/update-m1n1 /boot/efi/m1n1/boot.bin >"$W/update-m1n1.log" 2>&1 ||
+    fail "update-m1n1 failed (update-m1n1.log)"
+  in_chroot /usr/bin/update-m1n1 /boot/efi/m1n1/boot-ctxr-j616c.bin >>"$W/update-m1n1.log" 2>&1 ||
+    fail "update-m1n1 for the J616c failed (update-m1n1.log)"
   [[ -s $T/boot/efi/m1n1/boot.bin && -s $T/boot/efi/m1n1/boot-ctxr-j616c.bin ]] || fail "no Stage 2 written"
-  rm -f "$T/boot/efi/m1n1/boot-ctxr.bin" "$T/boot/efi/m1n1/boot.bin.old"
-  # Defensive: the pacman hook can't arm a Stage 2 trial in this build (its
-  # device tree names no Apple board and no aura Stage 1), but should it ever,
-  # a fresh install must not commit a candidate built before the pin, or carry
-  # its receipt, displaced candidates or attempt records.
-  trial_state() {
-    (cd "$T" && find boot/efi -maxdepth 1 -name 'aura-try*' -print 2>/dev/null
-      find boot/efi/m1n1 \( -name '*.next' -o -name '*.next.json' -o -name '*.failed-*' \) -print 2>/dev/null
-      find var/lib/aurora-stage2/attempts -mindepth 1 -maxdepth 1 -print 2>/dev/null) || true
-  }
-  local stale
-  stale=$(trial_state)
-  if [[ -n $stale ]]; then
-    log "removing Stage 2 trial state left by the build: $(tr '\n' ' ' <<<"$stale")"
-    while IFS= read -r p; do
-      [[ -n $p && $p != /* && $p != *..* ]] || continue # never the image root or outside it
-      rm -rf -- "${T:?}/$p"
-    done <<<"$stale"
-  fi
-  [[ -z $(trial_state) ]] || fail "Stage 2 trial state remains in the image: $(trial_state | tr '\n' ' ')"
+  rm -f "$T/boot/efi/m1n1/boot-ctxr.bin" "$T/boot/efi/m1n1/"*.old
   python3 - "$T/boot/efi/m1n1/boot-ctxr-j616c.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
     "$T/usr/lib/asahi-boot/u-boot-nodtb.bin" <<'PY' || fail "the J616c Stage 2 lacks its tree or U-Boot"
 import gzip, sys
@@ -507,7 +394,7 @@ uboot = open(sys.argv[3], "rb").read()
 def contains(blob):
     if blob in stage2:
         return True
-    # update-m1n1 may gzip payloads; look inside every gzip member.
+    # update-m1n1 gzips U-Boot; look inside every gzip member.
     i = 0
     while (i := stage2.find(b"\x1f\x8b\x08", i)) >= 0:
         try:
@@ -520,7 +407,7 @@ def contains(blob):
 raise SystemExit(0 if contains(dtb) and contains(uboot) else 1)
 PY
   for p in boot.bin boot-ctxr-j616c.bin; do
-    cmp -s -n "$(stat -c %s /stage2.bin)" /stage2.bin "$T/boot/efi/m1n1/$p" || fail "m1n1/$p does not start with the aura $STAGE2_COMMIT Stage 2"
+    cmp -s -n "$(stat -c %s /stage2.bin)" /stage2.bin "$T/boot/efi/m1n1/$p" || fail "m1n1/$p does not start with the aura $STAGE1_COMMIT Stage 2"
   done
   if (($(stat -c %s "$T/boot/efi/m1n1/boot-ctxr-j616c.bin") > 16 * 1024 * 1024)); then
     fail "the confined Stage 2 exceeds aura's 16 MiB slot"
@@ -530,21 +417,7 @@ PY
   # The J616c enrolls this raw image after `bputil -nc` (the installer's raw-ctxr
   # mode, OMS-24). Its Mach-O boot object isn't staged: padded it reboots this
   # chip silently, unpadded aura's Stage 2 refuses to start the OS (JOURNEY 9.30-9.31).
-  install -D -m 0644 "$T/usr/share/aura/stage1/aura-raw.bin" "$T/boot/efi/aurora/stage1-j616c.bin"
-  # The builder's MacBook Neo contract (stage_board_boot_payloads): its raw
-  # Stage 1 comes from the package that ships Stage 2, and boot-j700.bin is the
-  # common bundle. m1n1-aurora is gone, so both now come from aura.
-  install -m 0644 "$T/usr/share/aura/stage1/aura-raw.bin" "$T/boot/efi/aurora/stage1-j700.bin"
-  install -m 0644 "$T/boot/efi/m1n1/boot.bin" "$T/boot/efi/m1n1/boot-j700.bin"
-
-  log "owner setup: trust Aurora's key in the Mac's own keyring"
-  install -D -m 0644 /dev/stdin "$T/etc/systemd/system/omarchy-provision-owner.service.d/30-aurora-keyring.conf" <<'EOF'
-# First boot builds this Mac's pacman keyring from archlinuxarm, asahi-alarm and
-# omarchy only. Add Aurora's (aurora-keyring) before owner setup, or pacman asks
-# to import its key on a prompt nobody sees and setup stalls.
-[Service]
-ExecStartPre=/usr/bin/pacman-key --populate aurora
-EOF
+  install -D -m 0644 /stage1.bin "$T/boot/efi/aurora/stage1-j616c.bin"
 
   log "mounting /boot/efi and /boot from the install the Mac boots"
   # fstab stays as the image builder writes it (mac-image-check pins the line);
@@ -618,11 +491,17 @@ EOF
   name=$(basename "$zip" | sed 's/-mac-edge-os-package\.zip$/-mac-edge-j616c-dev-os-package.zip/')
   [[ $name != "$(basename "$zip")" ]] || fail "unexpected payload name"
   (cd "$W/payload" && bsdtar --format zip -cf "/out/$name" esp boot.img root.img omarchy-volume.icns)
-  python3 - "$data" "/out/installer_data.json" "$name" <<'PY'
+  python3 - "$data" "/out/installer_data.json" "$name" "$J616C_STUB_FW" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 [target] = data["os_list"]
 target["package"] = sys.argv[3]
+# The payload offers the J616c's stub firmware; the installer picks per Mac.
+fw = target.get("supported_fw")
+if not isinstance(fw, list):
+    raise SystemExit("installer_data.json's os_list entry has no supported_fw list")
+if sys.argv[4] not in fw:
+    fw.append(sys.argv[4])
 json.dump(data, open(sys.argv[2], "w"), indent=2)
 open(sys.argv[2], "a").write("\n")
 PY

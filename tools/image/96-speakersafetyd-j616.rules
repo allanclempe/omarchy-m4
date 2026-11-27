@@ -1,0 +1,14 @@
+# Start speakersafetyd for the 16-inch M4 Max's speaker card (OMS-1, OMS-30).
+# speakersafetyd 2.0.1's own 95-speakersafetyd.rules lists no AppleJ616, so
+# without this the daemon never starts, the amps stay locked and there is no
+# speaker sink. Its profile, apple/j616.conf, comes from aurora-audio. The same
+# line as Aurora's speakersafetyd-aurora-profiles; drop this file once
+# speakersafetyd's own rule names AppleJ616. 95-speakersafetyd.rules already
+# keeps PipeWire off the card's sense PCM (ACP_IGNORE).
+SUBSYSTEM=="sound", DRIVERS=="snd-soc-macaudio", GOTO="omarchy_j616_speakersafetyd"
+GOTO="omarchy_j616_speakersafetyd_end"
+
+LABEL="omarchy_j616_speakersafetyd"
+KERNEL=="pcmC*D2c", ATTRS{id}=="AppleJ616", TAG+="systemd", ENV{SYSTEMD_WANTS}="speakersafetyd.service"
+
+LABEL="omarchy_j616_speakersafetyd_end"

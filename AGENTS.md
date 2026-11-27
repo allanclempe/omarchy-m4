@@ -50,16 +50,17 @@ row below. A task whose fix lives only on the Mac isn't done.
   radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
-- `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
-  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in, and the update policy:
-  Stage 2 rebuilt from the pin and tried by Aurora's trials). Its header has usage.
-  It pins the exact `[aurora]` builds (`AURORA_PINS`); its last run made the acceptance image (JOURNEY 9.34).
+- `tools/derive-j616c-image` turns an edge image into the J616c image. On the OMS-30 branch it
+  builds for a macOS 27.2 stub on omacom's edge stack (`[omarchy]` first, the exact builds pinned in
+  `EDGE_PINS`), with Stage 1 and 2 from aura `v1.0.0b17`; `docs/oms-30-image-plan.md` says what goes
+  in and why (JOURNEY 9.57). Its header has usage. The acceptance image (JOURNEY 9.34) came from the
+  earlier version on Aurora's stack (`AURORA_PINS`, Stage 2 from aura `94d8e6e4`, Aurora's trial).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
-  Recovery boot modes for aura's Stage 1 (`raw-ctxr`, which the J616c uses, and the Mach-O
-  `macho-unpadded` and padded `macho-ctxr`), the engine changes, camera tuning collection on every
-  Mac and the Wi-Fi `chflags` fix. Apply it to a
-  checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
-  back into this patch, so the repo stays the source.
+  `raw-ctxr` Recovery boot mode for aura's raw Stage 1 (upstream's own `macho` mode serves other
+  M4 Macs), the J616c's 27.2 (26B123) stub firmware and no other, and camera tuning collection on
+  every Mac. Apply it to a checkout of omacom/omarchy-mac-installer at `e0aa53fd` (main,
+  2026-11-22; JOURNEY 9.57). Commit installer changes back into this patch, so the repo stays the
+  source.
 - `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
   `tools/tests/` has their tests (plain Bash, run on Linux).
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and

@@ -89,11 +89,11 @@ Updates rebuild Stage 2, and Aurora's trial boot tries each rebuild once before 
 | --- | --- |
 | [`JOURNEY.md`](JOURNEY.md) | The running log: what was tried, what broke and why, with the evidence. Start at section 9. |
 | [`j616c-boot-fix.html`](j616c-boot-fix.html) | The write-up for the Omarchy and Aurora teams: root causes, test log, asks per team. |
-| [`tools/derive-j616c-image`](tools/derive-j616c-image) | Turns an Omarchy edge image into the J616c image: Aurora's boot chain, kernel, Mesa and audio at pinned builds, and the update policy. Usage is in its header. |
-| [`patches/j616c-installer.patch`](patches/j616c-installer.patch) | Installer changes: J616c admission, the `raw-ctxr` Stage 1 mode the J616c uses (and two Mach-O modes), camera tuning collection on every Mac, and a Wi-Fi collection fix. Applies to omacom/omarchy-mac-installer at `a576543`. |
+| [`tools/derive-j616c-image`](tools/derive-j616c-image) | Turns an Omarchy edge image into the J616c image for a macOS 27.2 stub: omacom's edge kernel, Mesa, boot scripts, Touch ID and audio at pinned builds, Stage 1 and 2 from aura `v1.0.0b17`, and the x86 container support. Usage is in its header; [`docs/oms-30-image-plan.md`](docs/oms-30-image-plan.md) says what goes in and why. |
+| [`patches/j616c-installer.patch`](patches/j616c-installer.patch) | Installer changes: J616c admission, the `raw-ctxr` Stage 1 mode the J616c uses, its 27.2 (26B123) stub firmware, and camera tuning collection on every Mac. Applies to omacom/omarchy-mac-installer at `e0aa53fd`. |
 | [`patches/omarchy-mac-boot-aurora.patch`](patches/omarchy-mac-boot-aurora.patch) | Teaches omarchy-mac-boot's boot check Aurora's Stage 2 (upstream as omacom/omarchy-mac-pkgs#150). [`patches/README.md`](patches/README.md) gives each patch's base and how to test it. |
 | [`docs/aurora-package-audit.md`](docs/aurora-package-audit.md) | Every `[aurora]` package sorted for this Mac: used, a candidate for a gap, left out, or not for this Mac. |
-| [`tools/image/`](tools/image) | Files the derivation installs into the image: a systemd generator that mounts `/boot/efi` and `/boot` from the install the Mac booted, and a drop-in that counts the Stage 2 trial guard from disk unlock. |
+| [`tools/image/`](tools/image) | Files the derivation installs into the image: a systemd generator that mounts `/boot/efi` and `/boot` from the install the Mac booted, the udev rule that starts `speakersafetyd` for the J616 speakers, and containerd's `userpages 4k` drop-in. |
 | [`tools/tests/`](tools/tests) | Tests for those files. Plain Bash; run them as a normal user on Linux. |
 | [`tools/aura-usb/`](tools/aura-usb) | Sends a Stage 2 to aura over a USB-C cable and records its console, without touching the Mac's disk. |
 | [`tools/wifi-reload-timing.sh`](tools/wifi-reload-timing.sh) | Times Wi-Fi's rejoin after a driver reload, with and without turning the radio off first. Run it at the Mac. |
@@ -104,8 +104,8 @@ Updates rebuild Stage 2, and Aurora's trial boot tries each rebuild once before 
 There is no ready-made image to download. The image is rebuilt from this repo:
 
 1. Build an Omarchy edge image with omarchy-mac-installer's image builder.
-2. Build the Stage 2 from aura `94d8e6e4`, then run `tools/derive-j616c-image` on an aarch64
-   Linux host with Docker. Its header lists the inputs.
+2. Build Stage 1 and Stage 2 from aura `v1.0.0b17`, record their sha256 in the derivation, then
+   run `tools/derive-j616c-image` on an aarch64 Linux host with Docker. Its header lists the inputs.
 3. Build the installer from `patches/j616c-installer.patch`. Its Recovery app needs macOS and
    Xcode. Set `OMARCHY_APP_VERSION` above the app already installed, or the package keeps the old
    app.

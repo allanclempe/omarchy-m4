@@ -1107,3 +1107,58 @@ initialized successfully", `/dev/kvm` present).
   failed units. Undo: `pacman -U` the `c61ca8b` packages in `~/build/oms-41/pkgs-c61ca8b/`
   (sha256 `6b31a898…dc23`, `41834906…df3b`), then restart `systemd-binfmt`.
 - **Left open:** review of #3505, #3602 and #3603; a run on an ARM machine with 4 KiB kernel pages.
+
+### 9.57 The 27.2 image moves to omacom's edge stack (OMS-30, 2026-11-27)
+- **Upstream state:** aura#265 (merge `7680e35a`) and aurora-silicon/linux#1954 (merge `7f01c9e1`)
+  merged on 2026-11-19, #2233 (merge `51b75cb5`) on 2026-11-20. Aurora's newest kernel,
+  `linux-aurora 7.3.0.aurora1-41` (the repo database read 2026-11-27), has neither #1954 nor #2233:
+  its `ane_t6021.ko` has no `26B123` string, and its `apple-isp.ko` has 136 `isp_` symbols, none of
+  them #2233's `isp_setfile_snf_radial`. omacom's edge `linux-aurora 7.3.0.aurora1-1` (omacom/linux-aurora
+  `3058cc5c`, built 2026-11-23) has both, and `t6041-j616c.dtb`, `user4k` and the CTXR execute
+  window. A correction to OMS-45's note that Aurora's `-41` is `9125b314`: whatever its commit, it
+  lacks #2233, which is what matters here.
+- **The stacks don't mix:** pacman on mac-2 refuses edge's kernel next to Aurora's `aura 1.0.0b14.1`
+  ("breaks dependency 'aurora-ctxr-execmem' required by aura"). Edge's `aura` and `omarchy-mac-boot`
+  need omacom's `aurora-scripts`. So the OMS-30 image takes its platform from `[omarchy]` edge, as
+  omarchy-mac-installer#224's image builder does.
+- **aura:** edge's `aura 1.0.0b13.r20261118` is built from omacom/m1n1 `703a0a92` (2026-11-18),
+  without #265's commits. `v1.0.0b17` (`5a244b5b`) has #265 and 205 commits past `b14.1`, among them
+  "kboot: gpu: hand the M4 GPU to Linux on the 27.2 firmware" and "kboot: M4 internal DCP on 27.2:
+  publish its firmware clocks and the display maps". Stage 1 and Stage 2 come from that build.
+- **27.2.1:** Apple has released 27.2.1 (26B131). aura#265's display hand-off refuses its DCP
+  firmware UUID (its test `wrong-uuid-26b131`), so the stub must be 27.2 (26B123). From the 27.2
+  IPSW's `BuildManifest.plist` and `iBoot.j616c.RELEASE.im4p`, read by range requests and checked
+  against 26.6.2 (which gives the patch's `mBoot-18000.161.10`): `mBoot-20457.41.3`.
+- **Edge packages checked against mac-2's working set:** `aurora-audio 4.1.aurora3-6`'s J616
+  `graph.json` and `mic.json` and the `j616.conf` speaker profile hash the same as on mac-2 (`2e23da89`,
+  `41282b54`, `a410bfd1`). `libva-v4l2_request-avd 1.3.r11.r169.gc653eaa-2` now ships
+  `aurora_drv_video.so`, so OMS-4's swap is no longer needed. speakersafetyd 2.0.1-2's
+  `95-speakersafetyd.rules` lists no `AppleJ616`; mac-2's daemon runs because Aurora's profiles
+  package adds that line, so the image now carries it (`tools/image/96-speakersafetyd-j616.rules`).
+  `user4k=on` on mac-2 came from omarchy-mac-boot's `grub-console.sh` (on `linux-aurora`) and
+  aurora-userpages' GRUB drop-in, not from this repo.
+- **Stage 2 updates on edge:** omarchy-mac-boot `20261123-1` ships `omarchy-mac-boot-ctxr`, a pacman
+  hook that rebuilds `m1n1/boot-ctxr.bin` with the stock `update-m1n1` after a kernel, U-Boot or
+  overlay change, held to 16 MiB, unless `update-m1n1` is Aurora's or `/etc/default/update-m1n1` sets
+  `TARGET`. The stock `update-m1n1` and the boot check both read `M1N1=`, so the pinned Stage 2
+  survives updates and stays verified without the `owner-boot-chain` marker. There is no Stage 2
+  trial on this stack.
+- **In the build:** `tools/derive-j616c-image` rewritten for the edge stack: `EDGE_PINS` in place of
+  `AURORA_PINS`, kernel checks for #1954 and #2233, no `[aurora]` repository or key, the speaker rule,
+  Stage 1 and 2 inputs from `v1.0.0b17` (hashes to record after the build), a `PKGS` input holding
+  the QEMU packages and `aurora-userpages`, `27.2` added to the payload's `supported_fw`. The OMS-17
+  guard drop-in and its test are removed with the trial. `docs/oms-30-image-plan.md` has the list
+  and the open questions. Not yet run.
+- **Installer patch rebased** onto omarchy-mac-installer `e0aa53fd` (main, 2026-11-22); `a576543`
+  is gone from GitHub (PR #212 was force-pushed), so it came from a local clone. Upstream #238 merged
+  a chip-based `macho` mode, so the patch's `macho-ctxr` and `macho-unpadded` modes are dropped;
+  `raw-ctxr` is re-added on upstream's design (`BOARD_CONFINED_RAW_STAGE1`, Stage 2 staged as
+  `raw/boot.bin`, the 16 MiB check, and a new check that the raw Stage 1's configuration names this
+  ESP and `boot-ctxr.bin`). The Wi-Fi `chflags` fix is dropped (upstream's `copy_contents` covers
+  it). The J616c leaves the 26.6.2 entry for a new `IPSW("27.2", "27.0", "mBoot-20457.41.3",
+  "26.2.123.0.0,0", ...)` row naming only `j616cap`, and its minimum becomes 27.2; tests assert no
+  27.2.1 (26B131) row lists it. Upstream tests that sent the J616c down the Mach-O path on 26.6.2 now
+  use `j614cap`. `test/all` and `image-builder/test/all` pass on Linux; the Swift and Recovery
+  parts, including the new configuration check, are not yet built. The engine archive and
+  `source-lock.json`'s `validation_artifact` must be rebuilt on the Mac. Unverified: whether a 27.x
+  stub fits the macOS 26 stub size (6 GB) the installer gives it.
