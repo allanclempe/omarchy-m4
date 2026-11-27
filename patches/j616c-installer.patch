@@ -1172,6 +1172,39 @@ index a9022ff..bdf85b1 100644
        ]
        for (bootMode, names, accepted) in cases {
          let system = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+diff --git a/image-builder/bin/mac-image-check b/image-builder/bin/mac-image-check
+index 0f07647..bc7b436 100755
+--- a/image-builder/bin/mac-image-check
++++ b/image-builder/bin/mac-image-check
+@@ -238,6 +238,8 @@ def check_plaintext_root(header: bytes, where: str) -> None:
+ MACHO_STAGE1 = "esp/aurora/stage1.macho"
+ CONFINED_STAGE2 = re.compile(r"esp/m1n1/boot-ctxr(?:-[jk][0-9]+[a-z]*)?\.bin")
+ CONFINED_STAGE2_MAX_BYTES = 16 << 20
++# Per-board confined Stage 2 loaded by a raw Stage 1 (the engine's raw-ctxr mode).
++RAW_CTXR_STAGE2 = {"esp/m1n1/boot-ctxr-j616c.bin": "esp/aurora/stage1-j616c.bin"}
+ 
+ 
+ def check_confined_boot_payloads(archive: zipfile.ZipFile, members: dict) -> None:
+@@ -247,6 +249,19 @@ def check_confined_boot_payloads(archive: zipfile.ZipFile, members: dict) -> Non
+     16 MiB slot aura keeps for it. Ported from aurora-installer 7be5339
+     (assemble-distribution-payload.py check_confined_stage2), MIT."""
+     confined = sorted(name for name in members if CONFINED_STAGE2.fullmatch(name))
++    # The J616c's raw-ctxr pair (its developer build): aura's raw Stage 1, filled by the
++    # engine with this ESP and m1n1/boot-ctxr.bin, loads the board's own confined
++    # Stage 2. No Mach-O Stage 1 comes with it.
++    for member in [name for name in confined if name in RAW_CTXR_STAGE2]:
++        stage1_name = RAW_CTXR_STAGE2[member]
++        require(stage1_name in members, f"{member} needs {stage1_name}, the raw Stage 1 that loads it")
++        stage1 = archive.read(stage1_name)
++        require(stage1.endswith(b"STACKBOT") and stage1.count(b"AURORA-S1-CFG01\0") == 1,
++                f"{stage1_name} is missing its configuration block")
++        size = members[member].file_size
++        require(0 < size <= CONFINED_STAGE2_MAX_BYTES,
++                f"{member} is {size} bytes, not 1 byte to the 16 MiB slot aura keeps for it")
++    confined = [name for name in confined if name not in RAW_CTXR_STAGE2]
+     if not confined and MACHO_STAGE1 not in members:
+         return
+     require(MACHO_STAGE1 in members, "boot-ctxr files need esp/aurora/stage1.macho, the Stage 1 that loads them")
 diff --git a/image-builder/test/test_engine_contract.py b/image-builder/test/test_engine_contract.py
 index 47d2b92..4145197 100644
 --- a/image-builder/test/test_engine_contract.py
@@ -1189,6 +1222,42 @@ index 47d2b92..4145197 100644
          sysinfo = SimpleNamespace(device_class="j815ap", chip_id=0x8142, **self.table.ON_26_5_1)
          device = SimpleNamespace(min_ver=self.minimums["j815ap"])
          _, avail = self.table.available_ipsws(self.table.IPSW_VERSIONS, self.chips, sysinfo, device,
+diff --git a/image-builder/test/test_mac_image_check.py b/image-builder/test/test_mac_image_check.py
+index ddeae9d..d6a0f7f 100755
+--- a/image-builder/test/test_mac_image_check.py
++++ b/image-builder/test/test_mac_image_check.py
+@@ -356,6 +356,31 @@ class ChannelBuildDirectoryTest(unittest.TestCase):
+             extra_segments=(("__TEXT_BOOT_EXEC", 0),))})
+         check.check_payload("edge", self.out / NAME, self.out / "installer_data.json")
+ 
++    def raw_ctxr_payload(self, **changes):
++        extra = {"esp/aurora/stage1-j616c.bin": fixtures.raw_stage1(),
++                 "esp/m1n1/boot-ctxr-j616c.bin": b"m1n1" * 64}
++        extra.update(changes)
++        fixtures.write_payload(self.out / NAME, check.BOOT_UUID, check.ROOT_UUID, recovery_app=self.recovery,
++                               extra={name: data for name, data in extra.items() if data is not None})
++
++    def test_the_j616c_raw_ctxr_pair_needs_no_macho_stage1(self):
++        self.build()
++        self.raw_ctxr_payload()
++        check.check_payload("edge", self.out / NAME, self.out / "installer_data.json")
++
++    def test_the_j616c_raw_ctxr_pair_is_refused_unless_well_formed(self):
++        self.build()
++        cases = {
++            "needs esp/aurora/stage1-j616c.bin": {"esp/aurora/stage1-j616c.bin": None},
++            "stage1-j616c.bin is missing its configuration block": {"esp/aurora/stage1-j616c.bin": b"raw"},
++            "16 MiB slot": {"esp/m1n1/boot-ctxr-j616c.bin": bytes((16 << 20) + 1)},
++        }
++        for pattern, change in cases.items():
++            with self.subTest(pattern):
++                self.raw_ctxr_payload(**change)
++                with self.assertRaisesRegex(check.CheckError, pattern):
++                    check.check_payload("edge", self.out / NAME, self.out / "installer_data.json")
++
+     def test_the_m4_boot_payloads_are_refused_unless_matched_and_well_formed(self):
+         self.build()
+         cases = {
 diff --git a/scripts/supported-models.json b/scripts/supported-models.json
 index a3302d7..b089d69 100644
 --- a/scripts/supported-models.json

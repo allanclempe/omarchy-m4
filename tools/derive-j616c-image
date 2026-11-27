@@ -60,9 +60,6 @@
 # which doesn't know that mode.
 set -euo pipefail
 
-# The stub firmware the J616c installs: aurora-silicon/linux#1954 and aura#265
-# support 27.2 (26B123) on T6041 and refuse 27.2.1 (26B131).
-J616C_STUB_FW=27.2
 # The exact [omarchy] edge builds this image is made and tested with. The repo
 # keeps only its latest build, so a pin can't fetch an older one: it stops the
 # build when the repo has moved on, so a new kernel or Mesa never ships
@@ -381,10 +378,18 @@ PY
   # defaults (every device tree), into the path it is given.
   in_chroot /usr/bin/update-m1n1 /boot/efi/m1n1/boot.bin >"$W/update-m1n1.log" 2>&1 ||
     fail "update-m1n1 failed (update-m1n1.log)"
-  in_chroot /usr/bin/update-m1n1 /boot/efi/m1n1/boot-ctxr-j616c.bin >>"$W/update-m1n1.log" 2>&1 ||
-    fail "update-m1n1 for the J616c failed (update-m1n1.log)"
-  [[ -s $T/boot/efi/m1n1/boot.bin && -s $T/boot/efi/m1n1/boot-ctxr-j616c.bin ]] || fail "no Stage 2 written"
-  rm -f "$T/boot/efi/m1n1/boot-ctxr.bin" "$T/boot/efi/m1n1/"*.old
+  [[ -s $T/boot/efi/m1n1/boot.bin ]] || fail "no Stage 2 written"
+  rm -f "$T/boot/efi/m1n1/"*.old
+  # The builder stages boot-ctxr.bin (other M4 Macs' Mach-O path) and boot-j700.bin
+  # (the MacBook Neo) as byte-identical copies of boot.bin, and mac-image-check payload
+  # holds them to that. The J616c's own boot-ctxr-j616c.bin is the same image.
+  local copy
+  for copy in boot-ctxr.bin boot-j700.bin; do
+    [[ -f $T/boot/efi/m1n1/$copy ]] || fail "the edge image has no m1n1/$copy"
+  done
+  for copy in boot-ctxr.bin boot-j700.bin boot-ctxr-j616c.bin; do
+    install -m 0644 "$T/boot/efi/m1n1/boot.bin" "$T/boot/efi/m1n1/$copy"
+  done
   python3 - "$T/boot/efi/m1n1/boot-ctxr-j616c.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
     "$T/usr/lib/asahi-boot/u-boot-nodtb.bin" <<'PY' || fail "the J616c Stage 2 lacks its tree or U-Boot"
 import gzip, sys
@@ -491,17 +496,14 @@ PY
   name=$(basename "$zip" | sed 's/-mac-edge-os-package\.zip$/-mac-edge-j616c-dev-os-package.zip/')
   [[ $name != "$(basename "$zip")" ]] || fail "unexpected payload name"
   (cd "$W/payload" && bsdtar --format zip -cf "/out/$name" esp boot.img root.img omarchy-volume.icns)
-  python3 - "$data" "/out/installer_data.json" "$name" "$J616C_STUB_FW" <<'PY'
+  # The metadata stays the builder's own, apart from the payload's name:
+  # mac-image-check holds it to that exactly, supported_fw included. The J616c's
+  # 27.2 stub comes from the developer catalog's installer_data-j616c.json.
+  python3 - "$data" "/out/installer_data.json" "$name" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 [target] = data["os_list"]
 target["package"] = sys.argv[3]
-# The payload offers the J616c's stub firmware; the installer picks per Mac.
-fw = target.get("supported_fw")
-if not isinstance(fw, list):
-    raise SystemExit("installer_data.json's os_list entry has no supported_fw list")
-if sys.argv[4] not in fw:
-    fw.append(sys.argv[4])
 json.dump(data, open(sys.argv[2], "w"), indent=2)
 open(sys.argv[2], "a").write("\n")
 PY

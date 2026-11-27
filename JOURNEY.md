@@ -1187,3 +1187,35 @@ initialized successfully", `/dev/kvm` present).
   `prepare-engine.py` reproduced it into `Engine/artifacts/`. The patch carries the new pin.
 - **Edge inputs** resolved in the Lima VM: `channel_set=omarchy-edge-4853c75f5f99`; its database
   lists every `EDGE_PINS` version.
+- **Edge payload** built in the VM from that record (`build-mac-image`, about 9 minutes; the Mac
+  slept afterwards, so long runs need `caffeinate -dims` held in a Terminal, as in 9.34):
+  `omarchy-2026.11.27-aarch64-apple-silicon-mac-edge-os-package.zip`, 3,696,347,639 bytes. It already
+  carries every `EDGE_PINS` build.
+- **Correction to 9.57: the payload's `supported_fw` stays as built.** The first derivation run
+  added `27.2` to the payload's `installer_data.json`, and `mac-image-check payload edge` refused
+  it ("is not the installer_data for"): the check compares the metadata with the builder's own,
+  firmware list included. The J616c's 27.2 stub comes from the developer catalog's per-model
+  `installer_data-j616c.json` (`supported_fw: ["27.2"]`), as the 26.6.2 one did for OMS-24 and
+  OMS-28. The derivation no longer touches the metadata beyond the payload's name.
+- **Derivation run** (first run, 211 s): `[omarchy]` first and no `[aurora]`; every pin already
+  installed (pacman: "is up to date -- skipping") apart from `libfprint-git`, a clean install with
+  no conflict; kernel `7.3.0-1-1-ARCH` with both markers; `update-m1n1` wrote `boot.bin` and
+  `boot-ctxr-j616c.bin` from the pinned Stage 2; no `.pacnew`; root free space 7.3 GB.
+- **Two more refusals from `mac-image-check payload edge`, both fixed:**
+  - "the J700 Stage 2 differs from the common bundle": the builder stages `m1n1/boot-j700.bin` as a
+    byte-identical copy of `m1n1/boot.bin`, and the derivation rebuilds `boot.bin` from the pin. The
+    old derivation re-copied it; the rewrite had dropped that step. Restored.
+  - Upstream's `check_confined_boot_payloads` (from #238) knows only the Mach-O path: any
+    `boot-ctxr*.bin` needs `esp/aurora/stage1.macho`, and a per-board copy is refused. The J616c's
+    `raw-ctxr` pair, `esp/aurora/stage1-j616c.bin` with `esp/m1n1/boot-ctxr-j616c.bin`, is what the
+    patched engine stages from. The patch now teaches the check that one pair (`RAW_CTXR_STAGE2`):
+    the raw Stage 1 must end in `STACKBOT` with one `AURORA-S1-CFG01` block (the `v1.0.0b17` build
+    has both), and the Stage 2 must fit 16 MiB. Two new tests; other per-board copies, such as
+    `boot-ctxr-j713.bin`, are still refused. `image-builder/test/all` and `test/all` pass. The
+    OMS-24 and OMS-28 builds passed only because their checker predates #238.
+  - "esp/aurora/stage1.macho needs esp/m1n1/boot-ctxr.bin": the edge payload carries upstream's
+    Mach-O Stage 1 for other M4 Macs with a shared `m1n1/boot-ctxr.bin`, and in it `boot.bin`,
+    `boot-ctxr.bin` and `boot-j700.bin` are one byte-identical image (14,187,519 bytes, every device
+    tree). The derivation deleted `boot-ctxr.bin`, a step carried over from the Aurora-stack
+    version. It now builds `boot.bin` once from the pin and copies it to `boot-ctxr.bin`,
+    `boot-j700.bin` and `boot-ctxr-j616c.bin`.

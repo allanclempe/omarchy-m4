@@ -42,8 +42,10 @@ takes the platform from `[omarchy]` edge and keeps our own pieces only where edg
 | ESP mount, USB Ethernet firmware, keyring | as now | OMS-12, OMS-7 | Unchanged |
 | App version | scripted, not passed by hand | OMS-14 | |
 
-Firmware admission: the derivation adds `27.2` to the payload's `supported_fw` (upstream's edge
-metadata lists `13.5`, `14.8.3`, `26.5.1`, `26.6.2`). `patches/j616c-installer.patch` is rebased
+Firmware admission: the payload's `installer_data.json` stays the builder's own (`13.5`, `14.8.3`,
+`26.5.1`, `26.6.2`), since `mac-image-check payload` holds it to exactly that. The J616c is offered
+27.2 by the developer catalog's per-model `installer_data-j616c.json`, whose `supported_fw` is
+`["27.2"]` alone. `patches/j616c-installer.patch` is rebased
 onto the installer's main `e0aa53fd` and offers the J616c only the 27.2 (26B123) stub (JOURNEY 9.57).
 Before building the installer: build and test its Swift and Recovery parts on the Mac, rebuild the
 engine archive, and check that a 27.x stub fits the 6 GB stub size.
