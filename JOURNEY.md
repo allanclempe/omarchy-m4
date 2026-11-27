@@ -1229,3 +1229,7 @@ initialized successfully", `/dev/kvm` present).
   `8a214c77ce0e30972b3f7086c04658e54706bc006a4f693523e938c58d59630c`. The catalog, app and package
   steps are `build/oms30/build-installer.sh` on the Mac (outside git: it names the developer
   catalog's signing key path), adapted from OMS-28's.
+- **The OMS-28 install removed** (2026-11-28, by Allan with `diskutil`, OMS-23): read-only checks
+  first, each partition by PARTUUID (stub container `96204E68…`, ESP `4B4FF638…`, Boot `65B9941D…`,
+  Root `5E0C27BE…`), then `diskutil apfs deleteContainer` and `eraseVolume free none` on each. The
+  disk now holds `disk0s1` (ISC), `disk0s2` (macOS), 274.9 GB free and `disk0s7` (Recovery).
