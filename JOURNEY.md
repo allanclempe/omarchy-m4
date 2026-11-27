@@ -1073,3 +1073,5 @@ initialized successfully", `/dev/kvm` present).
   `sink.props`; after a restart the trial's nodes are `j616c_echo_cancel.capture` (from
   `omarchy_asahi_mic`), `j616c_echo_cancel.reference` (from `audio_effect.j616-convolver`'s monitor)
   and `j616c_echo_cancel.source`.
+- **First call, 2026-11-27:** Allan used Google Meet with the trial running and reported that the
+  mic sounded perfect. A Teams call (the app from the report) is still to come.
