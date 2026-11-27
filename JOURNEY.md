@@ -1065,3 +1065,11 @@ initialized successfully", `/dev/kvm` present).
 - **Found on the way (OMS-46):** at 14:20:36 the AOP firmware crashed (`apple_aop 510c10000.aop:
   RTKit: co-processor has crashed`, then `Too many inflight calls on endpoint 34`), which killed the
   speakers and mics until a reboot; restarting PipeWire didn't recover it. Allan rebooted at 16:33.
+- **Trial started, 2026-11-27 12:57:** `tools/echo-cancel-trial start` at `dev-machine-mac-2`; the
+  default input became `j616c_echo_cancel.source`. Its links showed the reference stream named
+  `echo-cancel-sink`: in monitor mode the module builds the reference from `sink.props`, not
+  `playback.props`, so the name and `target.object` given there were ignored, and it linked to the
+  speaker sink only because that is also the default output. The drop-in now sets them in
+  `sink.props`; after a restart the trial's nodes are `j616c_echo_cancel.capture` (from
+  `omarchy_asahi_mic`), `j616c_echo_cancel.reference` (from `audio_effect.j616-convolver`'s monitor)
+  and `j616c_echo_cancel.source`.
