@@ -38,7 +38,7 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
 | Aurora's `aurora-touchid-rearm` installed and `-auth optional pam_aurora_touchid.so` added after the last auth line of `system-auth` and `omarchy-lock-password`, so the password re-arms Touch ID after a lockout, 2026-11-21 | not in the build yet; `omarchy-apply-lock` rewrites `omarchy-lock-password`, so its line needs a durable home (JOURNEY 9.49) | OMS-40 |
 | containerd run under `userpages 4k` (drop-in `containerd.service.d/50-user4k.conf`), so x86 container libraries map on the 16 KiB kernel, 2026-11-25 | derivation installs `tools/image/containerd-user4k.conf`; not yet run (JOURNEY 9.53) | OMS-41 |
-| Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25; replaced the same day by `qemu-user-static` and `-binfmt` `1:11.1.3-1` built from omacom/omarchy-pkgs#3505, override removed (JOURNEY 9.55) | derivation installs the PR's two packages, the pinned `QEMU_PKGS` input, and checks the package's own rule is the one in force; not yet run (JOURNEY 9.55). Drop the input once omarchy's repo publishes the build | OMS-41 |
+| Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25; replaced the same day by `qemu-user-static` and `-binfmt` `1:11.1.3-1` built from omacom/omarchy-pkgs#3505, override removed (JOURNEY 9.55) | derivation installs the two packages, the pinned `QEMU_PKGS` input, and checks the package's own rule is the one in force; not yet run (JOURNEY 9.55). Since 2026-11-26 the input is built from #3505 (source build, `1002`), #3602 (`1000`) and #3603 (`1001`) merged, after review; installed on the Mac the same day; `node:22` and SQL Server 2022 run through binfmt (JOURNEY 9.56). Drop the input once omarchy's repo publishes all three | OMS-41 |
 
 ## Where things are
 
@@ -80,12 +80,15 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - `tools/qemu-user/` is the patched qemu-user that runs x86-64 containers (OMS-41, JOURNEY 9.53):
-  `apply-oms41.py` changes a pristine qemu 11.1.2 tree (47-bit guest layout, Linux AIO passthrough,
+  `apply-oms41.py` changes a pristine qemu 11.1.3 tree (47-bit guest layout, Linux AIO passthrough,
   and the upstream `trapno` fix `586284af4c2c`), `build-qemu-x86_64` builds the static binary on an
-  aarch64 host with Docker, and `pferr.c` shows what a guest sees for a write to a `PROT_NONE` page.
+  aarch64 host with Docker, `pferr.c` shows what a guest sees for a write to a `PROT_NONE` page, and
+  `mmaptest.c` (a static x86-64 program) checks the guest layout cases from the PR's review (JOURNEY 9.56).
   Drop the backport block when moving to qemu 11.2.
-  The image no longer uses its binary: the same three fixes now ship as patches in
-  omacom/omarchy-pkgs#3505's `qemu-user-static` (QEMU 11.1.3), which the derivation installs (JOURNEY 9.55).
+  `aiotest.c` checks the AIO cases, and `aioharness.sh` hands it an address in QEMU's own memory.
+  The image no longer uses its binary: the same three fixes now ship as patches in omacom/omarchy-pkgs
+  `qemu-user-static` (QEMU 11.1.3): #3505 (source build, `1002`), #3602 (`1000`) and #3603 (`1001`),
+  merged for the derivation's input (JOURNEY 9.55, 9.56).
 - `tools/vm-timer-probe/` has the KVM guest-timer probes (OMS-42, JOURNEY 9.54): a module that checks
   `VM_TMR_FIQ_ENA_EL2` writes on every core (refuses to stay loaded) and a tracefs script for a
   hanging 2-vCPU guest. Both run at the Mac with sudo.
