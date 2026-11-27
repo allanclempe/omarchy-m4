@@ -1,5 +1,5 @@
 diff --git a/Engine/overlay/src/omarchy_asahi.py b/Engine/overlay/src/omarchy_asahi.py
-index 70ff1475..134d0386 100644
+index 70ff147..134d038 100644
 --- a/Engine/overlay/src/omarchy_asahi.py
 +++ b/Engine/overlay/src/omarchy_asahi.py
 @@ -450,6 +450,16 @@ BOARD_STAGE1 = {
@@ -215,7 +215,7 @@ index 70ff1475..134d0386 100644
          else:
              layout = {
 diff --git a/Engine/overlay/src/omarchy_isp.py b/Engine/overlay/src/omarchy_isp.py
-index 01efc022..272e8166 100644
+index 01efc02..272e816 100644
 --- a/Engine/overlay/src/omarchy_isp.py
 +++ b/Engine/overlay/src/omarchy_isp.py
 @@ -1,9 +1,12 @@
@@ -257,7 +257,7 @@ index 01efc022..272e8166 100644
          if previous is not None and tuple(previous) != tuple(entry):
              raise IspError(f"conflicting ISP registry entry {entry.magic:#x}")
 diff --git a/Engine/overlay/src/omarchy_recovery.py b/Engine/overlay/src/omarchy_recovery.py
-index 0ab5a9a8..862e2779 100644
+index 0ab5a9a..862e277 100644
 --- a/Engine/overlay/src/omarchy_recovery.py
 +++ b/Engine/overlay/src/omarchy_recovery.py
 @@ -29,9 +29,13 @@ STAGE2_PATH = "m1n1/boot.bin"
@@ -275,7 +275,7 @@ index 0ab5a9a8..862e2779 100644
  VENDOR_FIRMWARE = ("vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt")
  OPTIONAL_VENDOR_FIRMWARE = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
 diff --git a/Engine/overlay/tests/test_omarchy_asahi.py b/Engine/overlay/tests/test_omarchy_asahi.py
-index e46467c4..14c9dfa9 100644
+index e46467c..14c9dfa 100644
 --- a/Engine/overlay/tests/test_omarchy_asahi.py
 +++ b/Engine/overlay/tests/test_omarchy_asahi.py
 @@ -126,6 +126,7 @@ from omarchy_asahi import (  # noqa: E402
@@ -562,7 +562,7 @@ index e46467c4..14c9dfa9 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/Engine/overlay/tests/test_omarchy_firmware.py b/Engine/overlay/tests/test_omarchy_firmware.py
-index b0ddef57..4cbd684d 100644
+index b0ddef5..4cbd684 100644
 --- a/Engine/overlay/tests/test_omarchy_firmware.py
 +++ b/Engine/overlay/tests/test_omarchy_firmware.py
 @@ -77,6 +77,8 @@ PATCHED_DEVICES = patched_rows(r'^\+    "([jk][0-9]+[a-z]*ap)": +Device\("([0-9.
@@ -679,7 +679,7 @@ index b0ddef57..4cbd684d 100644
      """The J815 (M5 MacBook Air 15-inch, T8142): its own 26.5.1 entry for a Mac kept
      on 26.5.1 system firmware, and the 26.6.2 entry once its firmware allows it."""
 diff --git a/Engine/overlay/tests/test_omarchy_isp.py b/Engine/overlay/tests/test_omarchy_isp.py
-index 73ab2648..b3f2ac67 100644
+index 73ab264..b3f2ac6 100644
 --- a/Engine/overlay/tests/test_omarchy_isp.py
 +++ b/Engine/overlay/tests/test_omarchy_isp.py
 @@ -23,10 +23,12 @@ class IspTests(unittest.TestCase):
@@ -723,7 +723,7 @@ index 73ab2648..b3f2ac67 100644
          with tempfile.TemporaryDirectory() as tmp:
              directory = Path(tmp)
 diff --git a/Engine/overlay/tests/test_omarchy_recovery.py b/Engine/overlay/tests/test_omarchy_recovery.py
-index ec2d11f8..9a075f4a 100644
+index ec2d11f..9a075f4 100644
 --- a/Engine/overlay/tests/test_omarchy_recovery.py
 +++ b/Engine/overlay/tests/test_omarchy_recovery.py
 @@ -196,6 +196,25 @@ class RecoveryTests(unittest.TestCase):
@@ -753,7 +753,7 @@ index ec2d11f8..9a075f4a 100644
          with self.assertRaises(recovery.RecoveryError):
              recovery.stage(self.installer, ESP, str(self.esp), run=self.fake_run, boot_mode="macho")
 diff --git a/Engine/patches/0001-omarchy-engine-runtime.patch b/Engine/patches/0001-omarchy-engine-runtime.patch
-index 80d8a4ca..d7589748 100644
+index 80d8a4c..d758974 100644
 --- a/Engine/patches/0001-omarchy-engine-runtime.patch
 +++ b/Engine/patches/0001-omarchy-engine-runtime.patch
 @@ -35,7 +35,7 @@ index 21031fd..76c0935 100755
@@ -882,7 +882,7 @@ index 80d8a4ca..d7589748 100644
           p_warning("If you need to file a bug report, please attach the log file:")
           p_warning(f"  {os.getcwd()}/installer.log")
 diff --git a/Engine/source-lock.json b/Engine/source-lock.json
-index f783f8d9..d8af0651 100644
+index f783f8d..4d5a743 100644
 --- a/Engine/source-lock.json
 +++ b/Engine/source-lock.json
 @@ -141,7 +141,7 @@
@@ -966,15 +966,19 @@ index f783f8d9..d8af0651 100644
        },
        {
          "path": "overlay/src/omarchy_chip.py",
-@@ -502,7 +502,7 @@
+@@ -502,9 +502,9 @@
      }
    ],
    "validation_artifact": {
 -    "filename": "installer-v0.9.2-omarchy.20261122.42388cee2812.tar.gz",
+-    "size_bytes": 17915981,
+-    "sha256": "4c4439e057fe7f2cbc953e00040c6024722251f3c33ff3eeece9148b6680e294",
 +    "filename": "installer-v0.9.2-omarchy.20261127.8dd397e9708f.tar.gz",
-     "size_bytes": 17915981,
-     "sha256": "4c4439e057fe7f2cbc953e00040c6024722251f3c33ff3eeece9148b6680e294",
++    "size_bytes": 17917929,
++    "sha256": "161e3f45ded569906bf62e20d5d6d9e3984745192c730aa2568d291f31ffa3e8",
      "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
+     "signature": "absent",
+     "metadata_sha256": "2e6181ce6b6e17c11039e04bfadade8d10ae0e11889885ad8c9960b68f179a5d"
 @@ -531,7 +531,7 @@
            "upstream_base_sha256": "c8d4d2a80f3a88a9ba4d6d4024c0001062e35d15d72ae530681a0612e6525984",
            "upstream_sha256": "894fb8cd2ffc672bb96a14969ee9de2879d250c8c5990fee122ccf66d9b50024",
@@ -985,7 +989,7 @@ index f783f8d9..d8af0651 100644
        ]
      },
 diff --git a/Recovery/Sources/Account/RecoveryInstallData.swift b/Recovery/Sources/Account/RecoveryInstallData.swift
-index 524df95f..17d75c51 100644
+index 524df95..17d75c5 100644
 --- a/Recovery/Sources/Account/RecoveryInstallData.swift
 +++ b/Recovery/Sources/Account/RecoveryInstallData.swift
 @@ -130,7 +130,8 @@ public enum RecoveryInstallData {
@@ -1007,7 +1011,7 @@ index 524df95f..17d75c51 100644
      }
    }
 diff --git a/Recovery/Sources/BootSelection.swift b/Recovery/Sources/BootSelection.swift
-index 472d3309..6b9d4580 100644
+index 472d330..6b9d458 100644
 --- a/Recovery/Sources/BootSelection.swift
 +++ b/Recovery/Sources/BootSelection.swift
 @@ -1,8 +1,9 @@
@@ -1059,7 +1063,7 @@ index 472d3309..6b9d4580 100644
      case .macho:
        // LZFSE in Preboot, as the stock kernelcache is stored, so the padding
 diff --git a/Recovery/Sources/RecoveryActions.swift b/Recovery/Sources/RecoveryActions.swift
-index 97055a9d..3b7e54fa 100644
+index 97055a9..3b7e54f 100644
 --- a/Recovery/Sources/RecoveryActions.swift
 +++ b/Recovery/Sources/RecoveryActions.swift
 @@ -392,10 +392,11 @@ enum RecoveryActions {
@@ -1079,7 +1083,7 @@ index 97055a9d..3b7e54fa 100644
        try check(
          filled.espUUID.uppercased() == config.espUUID.uppercased()
 diff --git a/Recovery/Tests/BootSelectionCheck.swift b/Recovery/Tests/BootSelectionCheck.swift
-index 1923d9ec..a9a22616 100644
+index 1923d9e..a9a2261 100644
 --- a/Recovery/Tests/BootSelectionCheck.swift
 +++ b/Recovery/Tests/BootSelectionCheck.swift
 @@ -10,7 +10,7 @@ import Foundation
@@ -1117,7 +1121,7 @@ index 1923d9ec..a9a22616 100644
    }
  }
 diff --git a/Recovery/Tests/InstallConfigurationCheck.swift b/Recovery/Tests/InstallConfigurationCheck.swift
-index 96482075..ba9b6d5f 100644
+index 9648207..ba9b6d5 100644
 --- a/Recovery/Tests/InstallConfigurationCheck.swift
 +++ b/Recovery/Tests/InstallConfigurationCheck.swift
 @@ -17,8 +17,12 @@ import Foundation
@@ -1142,7 +1146,7 @@ index 96482075..ba9b6d5f 100644
    }
  }
 diff --git a/Sources/OmarchyInstallerUXCore/MacModelNames.swift b/Sources/OmarchyInstallerUXCore/MacModelNames.swift
-index 1637f33a..6af388a7 100644
+index 1637f33..6af388a 100644
 --- a/Sources/OmarchyInstallerUXCore/MacModelNames.swift
 +++ b/Sources/OmarchyInstallerUXCore/MacModelNames.swift
 @@ -88,6 +88,7 @@
@@ -1154,7 +1158,7 @@ index 1637f33a..6af388a7 100644
        "apple,j700": mac("MacBook Neo (A18 Pro, 2026)", "MacBook Neo", "A18 Pro"),
      ]
 diff --git a/Tests/OmarchyAppleInstallerTrustCoreTests/RecoveryAccountTests.swift b/Tests/OmarchyAppleInstallerTrustCoreTests/RecoveryAccountTests.swift
-index a9022ff8..bdf85b12 100644
+index a9022ff..bdf85b1 100644
 --- a/Tests/OmarchyAppleInstallerTrustCoreTests/RecoveryAccountTests.swift
 +++ b/Tests/OmarchyAppleInstallerTrustCoreTests/RecoveryAccountTests.swift
 @@ -144,6 +144,10 @@
@@ -1169,7 +1173,7 @@ index a9022ff8..bdf85b12 100644
        for (bootMode, names, accepted) in cases {
          let system = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 diff --git a/image-builder/test/test_engine_contract.py b/image-builder/test/test_engine_contract.py
-index 47d2b922..41451972 100644
+index 47d2b92..4145197 100644
 --- a/image-builder/test/test_engine_contract.py
 +++ b/image-builder/test/test_engine_contract.py
 @@ -169,9 +169,11 @@ class UnifiedFirmwareTest(unittest.TestCase):
@@ -1186,7 +1190,7 @@ index 47d2b922..41451972 100644
          device = SimpleNamespace(min_ver=self.minimums["j815ap"])
          _, avail = self.table.available_ipsws(self.table.IPSW_VERSIONS, self.chips, sysinfo, device,
 diff --git a/scripts/supported-models.json b/scripts/supported-models.json
-index a3302d70..b089d694 100644
+index a3302d7..b089d69 100644
 --- a/scripts/supported-models.json
 +++ b/scripts/supported-models.json
 @@ -42,6 +42,7 @@
@@ -1198,7 +1202,7 @@ index a3302d70..b089d694 100644
      "apple,j815": "MacBook Air 15-inch (M5, 2026): developer catalog only, for hardware bring-up through aura's Mach-O Stage 1 on 26.5.1 or 26.6.2 firmware; not qualified; display and Wi-Fi not expected to work. Moves to supported and untested (edge only) once edge images carry a monitor-free aura."
    },
 diff --git a/scripts/tests/test_make_unsigned_catalog.py b/scripts/tests/test_make_unsigned_catalog.py
-index 5cf0096d..6848fccc 100644
+index 5cf0096..6848fcc 100644
 --- a/scripts/tests/test_make_unsigned_catalog.py
 +++ b/scripts/tests/test_make_unsigned_catalog.py
 @@ -101,6 +101,19 @@ class CatalogGeneratorTests(unittest.TestCase):

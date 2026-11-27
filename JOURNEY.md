@@ -1173,3 +1173,17 @@ initialized successfully", `/dev/kvm` present).
     `aef08d29…a985`; it carries `chosen.asahi,m1n1-stage1-version=1.0.0b17`.
 - `tools/derive-j616c-image` pins both hashes. The derivation's header named Stage 1's flags
   without `BUILTIN_LOGO=aurora`, which the PKGBUILD passes for both; corrected.
+- **Installer on the Mac** (Xcode 27.2, Swift 6.4.2; clone of omarchy-mac-installer `e0aa53fd` with
+  the patch in `build/oms30/omarchy-mac-installer`): `swift test` (debug) 648 tests, 0 failures,
+  1 skipped, plus the app's 16; `Recovery/test-all.sh` 21 PASS, among them "raw-ctxr enrolls
+  --raw ... for m1n1/boot-ctxr.bin" and the per-install configuration with `raw-ctxr`. No check
+  exercises the new raw Stage 1 configuration check in `RecoveryActions`; it compiles. Recovery app
+  built (`build/oms30/recovery-app`, knows `raw-ctxr/aura-raw.bin`; manifest sha256
+  `c580897c…b55c`). Building it into `../recovery` from `Recovery/` lands in `Recovery/` itself on
+  macOS's case-insensitive disk; build to an absolute path.
+- **Engine** `v0.9.2-omarchy.20261127.8dd397e9708f`: two rebuilds with `prepare-engine.py`'s own
+  steps were byte-identical (17,917,929 bytes, sha256 `161e3f45…a3e8`, `archive_modes=passed
+  entries=1548`); pinned in `source-lock.json`, `engine_pin.py check` passes, and the unmodified
+  `prepare-engine.py` reproduced it into `Engine/artifacts/`. The patch carries the new pin.
+- **Edge inputs** resolved in the Lima VM: `channel_set=omarchy-edge-4853c75f5f99`; its database
+  lists every `EDGE_PINS` version.
