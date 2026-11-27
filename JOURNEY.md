@@ -1219,3 +1219,13 @@ initialized successfully", `/dev/kvm` present).
     tree). The derivation deleted `boot-ctxr.bin`, a step carried over from the Aurora-stack
     version. It now builds `boot.bin` once from the pin and copies it to `boot-ctxr.bin`,
     `boot-j700.bin` and `boot-ctxr-j616c.bin`.
+- **Built (2026-11-28, on the Mac's macOS side, outputs in `build/oms30/`):** derivation in 193 s,
+  payload `omarchy-2026.11.27-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`,
+  3,975,489,275 bytes, sha256 `6048bf28…d2a0`, passes `mac-image-check payload edge`. Developer
+  catalog: evidence `j616c-dev.20261128`, `downstream_revision` `e0aa53fd`, `latest_version`
+  2.3.20, 36 models, the J616c's `installer_data-j616c.json` with `supported_fw: ["27.2"]`, signed
+  and verified. App 2.3.20 with engine `v0.9.2-omarchy.20261127.8dd397e9708f`. Package
+  `build/oms30/Omarchy-J616c-Developer.pkg`, 4,003,108,961 bytes, sha256
+  `8a214c77ce0e30972b3f7086c04658e54706bc006a4f693523e938c58d59630c`. The catalog, app and package
+  steps are `build/oms30/build-installer.sh` on the Mac (outside git: it names the developer
+  catalog's signing key path), adapted from OMS-28's.
