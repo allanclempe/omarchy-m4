@@ -1399,3 +1399,24 @@ initialized successfully", `/dev/kvm` present).
   dropping the `owner-boot-chain` marker was wrong. With `/etc/omarchy-mac-boot/owner-boot-chain`
   (its directory did not exist yet) the update completed: "Skipping boot verification … The packaged
   check would fail: M1N1 … is not owned by aura". The derivation ships the marker again.
+
+### 9.63 The 27.2 install checked: the desktop works, the Neural Engine and video decoder do not (OMS-30, 2026-11-28)
+- **Reboot:** after `omarchy update` (9.62) and a check that `m1n1/boot-ctxr.bin` starts with the
+  pinned aura `v1.0.0b17` Stage 2 (`cmp`), the Mac rebooted at 16:36 into the same stack:
+  `7.3.0-1-1.1-ARCH`, `aquamarine 0.16.0-1.3`, `hyprland 0.57.2-7.1`, `mesa-aurora` 20261127. No
+  failed units.
+- **Working on macOS 27.2 (26B123) firmware:** GPU (32-core J616C image admitted, `renderD128`); 14
+  cores; speakers (`speakersafetyd` active through `96-speakersafetyd-j616.rules`; Allan: sound
+  plays); ambient light sensor (`aop-sensors-als` read 198.6 lux); camera (`apple-isp` with
+  `isp_2224_01XX.dat`, `/dev/video0`; Allan: works); Touch ID (SEP up, "interrupt-driven capture";
+  Allan: enrolment and `sudo` by finger work); x86-64 containers (Allan: `docker run --platform
+  linux/amd64 alpine uname -m` prints `x86_64`).
+- **Not working on 27.2:** the Neural Engine (`ane_t6021 … H16 preload matches none of 6 firmware
+  profiles, error -8` / `H16 stage program refused before RUN`) and hardware video decode
+  (`apple-ave 283100000.video-codec: error -EINVAL: unexpected firmware segment sizes`, probe fails,
+  OMS-4). Both follow the GPU's pattern: this Mac's 27.2 firmware is not among what the drivers
+  admit. For the upstream report with the GPU fingerprint.
+- **What makes this install differ from the build** (AGENTS.md's hand-fix table): the
+  hand-enrolled padded Mach-O Stage 1, the patched kernel, aquamarine and Hyprland with their
+  `IgnorePkg` holds, and the `owner-boot-chain` marker. Owner setup's `kmscon --no-drm` edit was
+  reverted after setup.
