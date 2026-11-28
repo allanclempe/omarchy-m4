@@ -1343,3 +1343,34 @@ initialized successfully", `/dev/kvm` present).
 - **Also from the debug shell, for later tasks:** `apple-ave … unexpected firmware segment sizes`
   (no hardware video decode on 27.2, OMS-4) and `ane_t6021 … H16 preload matches none of 6
   firmware profiles` (the Neural Engine refuses this Mac's 27.2 profile, the GPU's pattern).
+
+### 9.61 Hyprland needs the alpha-format fallback too, and then the desktop runs on 27.2 (OMS-30, 2026-11-28)
+- **After owner setup, a console again.** Setup finished (`useradd` for the owner at 15:10:39,
+  `omarchy-provision-owner` exited 0); SDDM autologged in and ran `uwsm start … Hyprland`, which
+  crash-looped (hundreds of `hyprlandCrashReport*.txt` in the owner's cache; the greeter's own
+  Hyprland too, then `sddm-greeter-qt6` aborted in `createPlatformIntegration`). The crash reports:
+  `ERR from aquamarine ]: GBM: Failed to allocate a GBM buffer: format XR24 isn't supported by primary
+  backend` / `Couldn't allocate a gbm buffer with size [3456, 2234] and format XR24` / `Swapchain:
+  Failed acquiring a buffer`. The same cause as kmscon's (9.60): the T6041 primary plane offers only
+  alpha formats on firmware 27.
+- **Prior work:** omacom/omarchy-pkgs#2739 (open, `aquamarine 0.16.0-1.2`, patch 0005 from
+  hyprwm/aquamarine#496, which hyprwm auto-closed) allocates the alpha variant when the scanout plane
+  lacks the opaque format, for the M5 Max. #2956 (open) proposes dropping it: the M5's driver was
+  fixed to offer XRGB8888 ("since the a3l driver fix"), and the fallback made Hyprland 0.57.2 show
+  frames two behind there. For T6041, linux#2492 chose alpha-only instead, the firmware ignoring the
+  opaque-X property, and kernel PR #1873 (alpha-only on T6050) was closed unmerged. Edge now
+  publishes its own `aquamarine 0.16.0-1.2` without 0005 (its library lacks the patch's
+  `not offered by the scanout plane` message).
+- **Built and installed by hand:** #2739's PKGBUILD (head `e285c152`) as `pkgrel=1.3`, built for
+  aarch64 under QEMU on dev-machine-01 in omarchy-pkgs' builder image (`bin/build` fails there:
+  `sudo` inside the emulated container has no effective uid 0, so the dependencies went in as root
+  and `makepkg` ran under `runuser`). `aquamarine-0.16.0-1.3-aarch64.pkg.tar.zst`, sha256
+  `35383b0b5af7a01973c8b70b8c60358bfb4474adc9cfc9e0aa554224b397ed60`, carrying the fallback message;
+  fetched over the LAN from the F9 debug shell and installed with `pacman -U`, then `systemctl restart
+  sddm`. **Hyprland started and the Omarchy desktop came up** on the internal panel at 3456x2234, with
+  Omarchy offering "Setup Fingerprint Reader".
+- **State of this install:** macOS 27.2 (26B123) system and stub; aura `v1.0.0b17` padded Mach-O
+  Stage 1 (hand-enrolled) and Stage 2; `linux-aurora 7.3.0.aurora1-1.1` (patched); `aquamarine
+  0.16.0-1.3` (patched); kmscon's `--no-drm` edit. Each is a row in AGENTS.md's hand-fix table. Still
+  to do on the Mac: drop `systemd.debug_shell` from the boot line (`limine-update`), restore the
+  kmscon file, then the checks.
