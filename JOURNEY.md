@@ -1374,3 +1374,28 @@ initialized successfully", `/dev/kvm` present).
   0.16.0-1.3` (patched); kmscon's `--no-drm` edit. Each is a row in AGENTS.md's hand-fix table. Still
   to do on the Mac: drop `systemd.debug_shell` from the boot line (`limine-update`), restore the
   kmscon file, then the checks.
+
+### 9.62 omarchy update refuses the pinned Stage 2; the owner-boot-chain marker comes back (OMS-30, 2026-11-28)
+- **Holds first:** an update would have replaced the patched `hyprland 0.57.2-7.1` with edge's
+  `-9`, whose `hypr-startup-hold.patch` calls `Aquamarine::IOutput::showsAdoptedPicture`, which our
+  aquamarine (#2739's base) lacks, and edge's next `linux-aurora` would drop the GPU fix. So the
+  Mac's `/etc/pacman.conf` gained `IgnorePkg = linux-aurora aquamarine hyprland hyprpm
+  omarchy-hyprland-titlebars` (Omarchy's template has no `IgnorePkg` line; the plugin's `-6` is
+  built for edge's Hyprland). `checkupdates` then listed 15 routine updates (Omarchy, `omarchy-mac
+  0.2.8`, `mesa-aurora`/`vulkan-aurora` 20261127, `avd-fw 0.2`, and others).
+- **The typing glitch and its fix:** with aquamarine's fallback, Hyprland 0.57.2's
+  `CMonitorState::ensureBufferPresent()` compared the AR24 buffer with the monitor's XR24 format on
+  every commit and swapped in the swapchain's next, stale buffer: typed text appeared, vanished and
+  reappeared (omarchy-pkgs#2956 measured the same on the M5).
+  `patches/hyprland-alpha-variant-buffer-present.patch` compares the formats with the alpha bit
+  ignored. Built natively on the Mac (14 cores, about two minutes) from omarchy-pkgs `167f408d`,
+  the installed `0.57.2-7`'s PKGBUILD, as `0.57.2-7.1` (`hyprland-0.57.2-7.1-aarch64.pkg.tar.xz`,
+  sha256 `39229656…c67b`); building from edge's `-9` failed on `showsAdoptedPicture`. Installed by
+  Allan; typing is normal.
+- **`omarchy update` then stopped:** "Apple Silicon boot check: M1N1
+  /usr/local/lib/aura/m1n1-5a244b5bcbaf.bin is not owned by aura". `omarchy-apple-silicon-boot-check`
+  (omarchy-mac-boot 20261123-1, line 778) requires the `M1N1=` file to be owned by the boot loader
+  package. **Correction to 9.57:** the check reads the pin but does not verify a pinned Stage 2, so
+  dropping the `owner-boot-chain` marker was wrong. With `/etc/omarchy-mac-boot/owner-boot-chain`
+  (its directory did not exist yet) the update completed: "Skipping boot verification … The packaged
+  check would fail: M1N1 … is not owned by aura". The derivation ships the marker again.

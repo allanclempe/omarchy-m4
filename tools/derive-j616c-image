@@ -34,7 +34,8 @@
 #     /usr/local/lib/aura and named by M1N1= in /etc/default/update-m1n1, so
 #     every later kernel or U-Boot update rebuilds boot.bin and, through
 #     omarchy-mac-boot's omarchy-mac-boot-ctxr hook, m1n1/boot-ctxr.bin with it.
-#     omarchy-mac-boot's boot check reads the same M1N1= and keeps verifying;
+#     omarchy-mac-boot's boot check accepts only a package-owned Stage 2, so the
+#     image ships /etc/omarchy-mac-boot/owner-boot-chain while the pin stands;
 #   - installs omarchy-esp-generator (tools/image), which mounts /boot/efi from
 #     the ESP aura names in the device tree rather than fstab's UUID=4F4D-5801,
 #     which every Omarchy ESP shares (OMS-12), and /boot from the partition
@@ -368,8 +369,16 @@ PY
   local ignored
   ignored=$(in_chroot pacman-conf IgnorePkg | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
   [[ -z $ignored ]] || fail "pacman ignores packages: $ignored"
-  # Omarchy's boot check reads M1N1= and verifies Stage 2 itself; this marker would switch that off.
-  [[ ! -e $T/etc/omarchy-mac-boot/owner-boot-chain ]] || fail "the image carries /etc/omarchy-mac-boot/owner-boot-chain"
+  # Omarchy's boot check accepts an M1N1= Stage 2 only when the boot loader package owns it
+  # (omarchy-apple-silicon-boot-check: "M1N1 … is not owned by aura"), so with the pin every
+  # omarchy update would stop. The marker leaves verification to the owner; update-verify
+  # still refreshes boot-ctxr.bin with it present (JOURNEY 9.62).
+  install -D -m 0644 /dev/stdin "$T/etc/omarchy-mac-boot/owner-boot-chain" <<EOF
+Stage 2 is aura $STAGE1_COMMIT (v1.0.0b17), pinned by M1N1= in /etc/default/update-m1n1
+(omarchy-m4 OMS-30): edge's aura package predates aura#265, and Omarchy's boot check accepts
+only a package-owned Stage 2. Remove this file and the M1N1= line once the aura package
+carries aura#265 and the M4 27.2 GPU hand-off.
+EOF
   echo "aura Stage 1 and Stage 2 $STAGE1_COMMIT $STAGE1_SHA256 $STAGE2_SHA256" >>"$W/versions.txt"
   echo "qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT (omacom/omarchy-pkgs#3505, #3602, #3603)" >>"$W/versions.txt"
 
