@@ -1267,3 +1267,18 @@ initialized successfully", `/dev/kvm` present).
   window (the kernel has `CONFIG_ARM64_CTXR_EXECMEM`): Aurora's M4 path and upstream's `macho` mode
   (#238). On 26.6.2 with aura b13 the padded object looped silently on this Mac (9.29, 9.31); it
   hasn't been tried with aura `v1.0.0b17` on 27.2 firmware.
+- **Fix tested by hand: a padded Mach-O Stage 1 boots** (2026-11-28). The installer's enrolled raw
+  image (`operation-2C50C120-…/stage1`: aura `v1.0.0b17` raw, its configuration block filled for this
+  ESP and `;m1n1/boot-ctxr.bin`, 59 bytes from the build) was wrapped and padded with aura's own
+  `tools/macho_boot_object.py --execute-window` (128 MiB window, 16 MiB slot, upstream's
+  `ExecuteWindow` sizes): 153,190,400 bytes (151,437,312 a hole), MD5 `13e78b27…`, sha256
+  `9e6dce03…06d1`; `kmutil inspect`: `kcbz 0`, `kcrz 153141248`, `kcwf 153141248`, the figures of
+  9.31's padding. Enrolled by Allan from One True Recovery with `go-oms30-macho.sh` (on the stub's
+  Data volume, `oms30/`; it checks the OS type, the volume and that Kernel CTRR is disabled, then runs
+  `kmutil configure-boot -c … --compress`; `--undo` re-enrolls the raw image). **The Mac booted past
+  Stage 2 into Omarchy's first boot** (disk encryption setup), where the raw object had been refused.
+  On 26.6.2 with aura b13 the padded object had looped silently (9.29, 9.31); on 27.2 with
+  `v1.0.0b17` it boots.
+- **What this means for the build:** the J616c leaves `raw-ctxr` for upstream's `macho` mode on
+  27.2, with aura `v1.0.0b17`'s Mach-O Stage 1. Not yet in the build: the installed Mac carries a
+  hand-enrolled boot object.
