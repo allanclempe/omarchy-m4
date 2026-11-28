@@ -1319,3 +1319,27 @@ initialized successfully", `/dev/kvm` present).
 - Also seen in the rescue boot: `snd-soc-macaudio sound: Speaker volumes unlocked`, so the new
   `96-speakersafetyd-j616.rules` starts speakersafetyd; and `[drm] format XR24 … not supported` /
   `No compatible format found` from apple-drm on the console framebuffer, harmless for fbcon.
+- **The patched kernel admits the GPU** (2026-11-28): `linux-aurora 7.3.0.aurora1-1.1` (sha256
+  `005928fe…b954`, `aurora.ko` carrying the new entry) fetched over the LAN in the rescue shell
+  (Wi-Fi by `iwctl`, DHCP from a runtime `/run/systemd/network` file, since rescue mode starts
+  neither) and installed with `pacman -U`; its hooks rebuilt the UKI, Stage 2 and `limine.conf`.
+  With `systemd.debug_shell` in place of the quiet options (same-size ESP write again, the new
+  `limine.conf` being 1,644 bytes), a root shell on tty9 during the normal boot showed:
+  `GPU firmware build: Apple GFX 26B123 for T6041 (normalized loaded image, 32-core J616C)`,
+  `GPU firmware: macOS 27.2 (26B123, iBoot mBoot-20457.41.3), 32 cores`, RTKit up,
+  `[drm] Initialized aurora 1.0.0 for 28a600000.gpu on minor 1`, and `renderD128`.
+- **Still black: owner setup draws nothing.** No unit failed; `omarchy-provision-owner.service` was
+  running, with `sddm` and `graphical.target` waiting behind it. It runs the setup under
+  `kmscon --vt=/dev/tty1 …` (Omarchy's `install/provisioning/kmscon.sh`, `omarchy_kmscon`).
+  apple-drm offers the T6041 primary plane only formats with alpha on firmware 27
+  (`drivers/gpu/drm/apple/plane.c`: `xrgb_is_alpha` → `dcp_overlay_formats`, "The firmware blends
+  the X byte as alpha and ignores the opaque-X property", from linux#2492), and logs
+  `format XR24 little-endian (0x34325258) not supported` / `No compatible format found`; the
+  kernel console falls back to AR24 (`plane-0 … format=AR24`). kmscon's DRM backend asks for
+  XRGB8888, so tty1 stays black. The same rule covers T8142 (M5) on firmware 27.
+- **Fix tested by hand:** `exec kmscon --no-drm \` in `omarchy_kmscon` (backup `.oms30-bak`), then
+  `systemctl restart omarchy-provision-owner`: the owner setup appeared on tty1. kmscon then draws
+  through `appledrmfb`, as omacom/omarchy#20512 (open) does for Snapdragon's `msmdrmfb`.
+- **Also from the debug shell, for later tasks:** `apple-ave … unexpected firmware segment sizes`
+  (no hardware video decode on 27.2, OMS-4) and `ane_t6021 … H16 preload matches none of 6
+  firmware profiles` (the Neural Engine refuses this Mac's 27.2 profile, the GPU's pattern).
