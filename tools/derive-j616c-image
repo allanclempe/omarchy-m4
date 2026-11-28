@@ -100,10 +100,11 @@ declare -A EDGE_PINS=(
 # the fixes; drop each hold with its package.
 declare -A PATCHED=(
   [linux-aurora]=7.3.0.aurora1-1.1
+  [linux-aurora-headers]=7.3.0.aurora1-1.1
   [aquamarine]=0.16.0-1.4
   [hyprland]=0.57.2-9.2
 )
-HOLDS="linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars"
+HOLDS="linux-aurora linux-aurora-headers aquamarine hyprland hyprpm omarchy-hyprland-titlebars"
 # Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
@@ -128,6 +129,9 @@ declare -A PKG_SHA256=(
   [aurora-userpages-7.3.0.aurora1-41-aarch64.pkg.tar.xz]=4188aeac66a586b210d97e5b35a2edf0ab250939d1221b59bef296db69cd5f68
   # JOURNEY 9.60: omarchy-pkgs' linux-aurora PKGBUILD with the GPU patch, pkgrel 1.1.
   [linux-aurora-7.3.0.aurora1-1.1-aarch64.pkg.tar.zst]=005928fe711a8f0d06ef97093a2c253ca4fbabe092194491a60aaccf1823b954
+  # Its headers, from the same build: edge's image ships linux-aurora-headers, which must
+  # match the kernel (DKMS), and edge's -1 would keep its old module directory.
+  [linux-aurora-headers-7.3.0.aurora1-1.1-aarch64.pkg.tar.zst]=f6495f242f49f0456905cc819372945f318a41a98eafeafa046643ed30e3b458
   # JOURNEY 9.64: built natively on the J616c from the edge recipes plus the patches.
   [aquamarine-0.16.0-1.4-aarch64.pkg.tar.xz]=5d52ab0ce1aa42e3210163885e2f32017e0c164a55cad6fe3d862db3d6dd237b
   [hyprland-0.57.2-9.2-aarch64.pkg.tar.xz]=bf3b315315da783e3f6fccab0e348ae7e593c4cf0a1a2501426a9ed504beab64
@@ -205,7 +209,7 @@ module_has() {
     *.xz) xz -dc "$file" ;;
     *.gz) gzip -dc "$file" ;;
     *) cat "$file" ;;
-  esac | grep -aqF -- "$3"
+  esac | grep -acF -- "$3" | grep -qv "^0$"
 }
 
 container() {
@@ -307,6 +311,17 @@ container() {
     [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${PATCHED[$pkg]}" ]] ||
       fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the patched ${PATCHED[$pkg]}"
   done
+  # The patched kernel's release (7.3.0-1-1.1-ARCH) differs from edge's, and the upgrade
+  # leaves edge's module directory behind holding only files no package owns (depmod's
+  # output). Remove such a directory; one a package still owns stops the build below.
+  local mdir owned
+  owned=$(in_chroot pacman -Qlq | sed -n 's|^/usr/lib/modules/\([^/]*\)/.*|\1|p' | sort -u)
+  for mdir in $(ls "$T/usr/lib/modules"); do
+    grep -qxF "$mdir" <<<"$owned" && continue
+    log "removing /usr/lib/modules/$mdir: no package owns a file in it"
+    (cd "$T/usr/lib/modules" && find "$mdir" | sort) >>"$W/stale-modules.txt"
+    rm -rf "${T:?}/usr/lib/modules/$mdir"
+  done
   # aquamarine's alpha-variant fallback (omarchy-pkgs#2739), and the API edge's Hyprland 9 calls.
   local aq
   aq=$(ls "$T"/usr/lib/libaquamarine.so.*.* 2>/dev/null | head -1)
@@ -324,7 +339,8 @@ container() {
   local kver
   kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
   [[ $kver == 7.3.* ]] || fail "unexpected kernel release $kver"
-  [[ $(ls "$T/usr/lib/modules") == "$kver" ]] || fail "more than one kernel is installed: $(ls "$T/usr/lib/modules")"
+  [[ $(ls "$T/usr/lib/modules") == "$kver" ]] ||
+    fail "more than one kernel is installed: $(ls "$T/usr/lib/modules" | tr '\n' ' '); owners: $(in_chroot pacman -Ql | grep ' /usr/lib/modules/[^/]*/.' | sed 's|^\([^ ]*\) /usr/lib/modules/\([^/]*\)/.*|\1 \2|' | sort -u | tr '\n' ';')"
   [[ -f $T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb ]] || fail "the kernel has no t6041-j616c.dtb"
   # aurora-silicon/linux#1954 (the 27.2 ANE profile names its firmware build) and
   # #2233 (the computed spatial noise filter): Aurora's 7.3.0.aurora1-41 has neither.
@@ -358,7 +374,7 @@ container() {
   in_chroot pacman -S --noconfirm "${DONGLE_FIRMWARE[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the Realtek dongle firmware (pacman.log)"
   # Arch Linux ARM ships it plain, x86 Arch zstd-compressed; the kernel loads either.
-  in_chroot pacman -Qlq linux-firmware-realtek | grep -Eq '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' ||
+  in_chroot pacman -Qlq linux-firmware-realtek | grep -Ec '/rtl_nic/rtl8153b-2\.fw(\.zst)?$' | grep -qv '^0$' ||
     fail "linux-firmware-realtek has no rtl_nic/rtl8153b-2.fw for RTL8153B USB Ethernet adapters"
 
   log "x86-64 containers: qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT, aurora-userpages, containerd under userpages 4k"
