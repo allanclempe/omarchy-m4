@@ -1542,3 +1542,31 @@ Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and 
   `j616c-dev.20261128`, so the folder held the 2.3.20 build's metadata and payload. Moved aside to
   `staging-old/j616c-dev.20261128-2.3.20`, with the app quit. `build-installer2.sh` now stamps
   each build's revision with the minute; untested whether the catalog accepts that form.
+
+### 9.68 First boot stops: edge dropped SDDM (omarchy#20404); rebuilt on the day-before payload (OMS-30, 2026-11-29)
+- **The 2.3.21 install, zero hand steps up to first boot:** the app, Recovery's own enrollment of
+  the Mach-O Stage 1 (the step that failed on every earlier 27.2 attempt), Stage 2, the kernel,
+  encryption and kmscon all came up. Then `omarchy-mac-first-boot` stopped: "Omarchy could not
+  finish first boot: could not enable the display manager". Its log:
+  `Failed to enable unit: Unit sddm.service does not exist`.
+- **Cause:** omacom/omarchy#20404 (merged 2026-11-28 08:55 UTC) replaced SDDM with greetd's login
+  screen and Plymouth with Omarchy's own boot splash, so channel `omarchy-edge-12db5036adbe` has no
+  SDDM. `omarchy-mac-first-boot` (omarchy-mac-boot `20261123-1`, still on `main`) runs
+  `systemctl enable sddm.service` in `stage_provisioning()`. Every Mac installed from current edge
+  stops there. No issue or PR on omarchy-mac-pkgs mentions it yet; Allan raises it with the M team.
+  The new greeter and splash run on sway (wlroots 0.20), which may hit the same missing XRGB8888
+  on T6041 firmware 27 as Hyprland did (9.61); untested.
+- **Rebuilt on the 2026.11.27 edge payload** (channel `omarchy-edge-4853c75f5f99`, 9.58), which
+  predates #20404. The derivation upgraded only the pins (`mesa-aurora`/`vulkan-aurora` 20261127,
+  `omarchy-mac 0.2.8-1`, `speakersafetyd 3.0.0-1`, titlebars `0.5.0-1`, `libfprint-git` with
+  `libgusb`); the pins depend on `omarchy` unversioned, so Omarchy, SDDM and Plymouth stay at
+  that payload's. That payload carries 9.58's Recovery app (manifest `c580897c…b55c`, which also
+  knows `raw-ctxr`; its Mach-O path is upstream's). Payload
+  `omarchy-2026.11.27-…-j616c-dev-os-package.zip`, 4,143,893,071 B, sha256 `53ead0fc…92ae`,
+  passes `mac-image-check payload edge`. Catalog `j616c-dev.202611290018` (the minute-stamped
+  revision is accepted); app 2.3.22; package `Omarchy-J616c-Developer.pkg`, 4,170,757,602 B, sha256
+  `f9a8d8455dcee11c41871ad5858a637ef28c51415ac0c17f9ac152c13dd3faed`. 2.3.21's package kept as
+  `Omarchy-J616c-Developer-2.3.21.pkg`.
+- **Expected at the first `omarchy update`:** it brings #20404, whose migration enables greetd
+  and rebuilds the boot image with the new splash. Omarchy snapshots before updating, and Limine
+  lists the snapshots, so it can be rolled back.
