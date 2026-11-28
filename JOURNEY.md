@@ -1497,3 +1497,7 @@ The same run shows hardware video decoding working on 27.2: mpv used VA-API thro
 The derivation now pins `hyprland 0.57.2-9.2` (package sha256 `bf3b3153…beab64`), and the `PKGS`
 input carries it in place of `-9.1`. The fix to #3854 (the new patch, its checksum, and its README
 note under its own heading) is prepared but not pushed.
+
+Later the same day: with Allan's go-ahead, #3854 was converted to a draft (the repository publishes
+a non-draft PR once CI is green, and the patch does nothing until #2739 lands), the fix was pushed
+as `106ab3c3`, and the description now says what the narrowed patch keeps and records the 9.2 test.
