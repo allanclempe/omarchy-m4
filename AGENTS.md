@@ -161,8 +161,10 @@ Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d0
   file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
   Never commit it, and don't quote it in public files.
 - No Claude Code or AI credit lines anywhere: not in files, code comments, commit messages
-  (no `Co-Authored-By` trailer) or PR descriptions. Aurora's contributing guide asks for AI
-  disclosure, so before sending anything to aurora-silicon, ask Allan how to handle it.
+  (no `Co-Authored-By` trailer) or PR descriptions. aurora-silicon forbids AI attribution too
+  (its pre-PR checklist, since 2026-11-21: human author and `Signed-off-by` only, checked in CI).
+  Its PRs target `main` from a `fix/` or `feat/` branch and follow its PR structure
+  (`What`/`Tested`/`Risk`/`Not yet`); see aurora-silicon/agent-guidelines.
 
 ## Tasks
 

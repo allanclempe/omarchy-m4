@@ -3,7 +3,6 @@
 **Base:** `integration/aurora` (tested on omacom/linux-aurora `3058cc5c`; the patch applies to
 aurora-silicon/linux `6b6b1e6ada93`, the last change to `hw/t6041.rs`).
 **Patch:** `patches/linux-t6041-26b123-32core.aurora-main.patch`.
-**AI disclosure:** Allan to decide before sending.
 
 ## Title
 

@@ -1,6 +1,5 @@
 # Draft issue: aurora-silicon/linux
 
-**AI disclosure:** Allan to decide before sending.
 
 ## Title
 
