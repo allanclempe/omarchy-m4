@@ -1536,3 +1536,9 @@ Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and 
   `build/oms30/Omarchy-J616c-Developer.pkg`, 4,120,529,298 B, sha256
   `21b0610dbc26d93c93351a38448dcf23034258188fc4b4b0c18e2e8180150001`. The 2.3.20 package of 9.58
   is kept as `Omarchy-J616c-Developer-2.3.20.pkg`.
+- **First install attempt stopped at staging:** `destinationConflict("installer_data-j616c.json")`.
+  The app stages into `~/Library/Application Support/org.omarchy.installer.developer/staging/<evidence
+  revision>/` and refuses a file there that isn't the catalog's. This build kept 9.58's
+  `j616c-dev.20261128`, so the folder held the 2.3.20 build's metadata and payload. Moved aside to
+  `staging-old/j616c-dev.20261128-2.3.20`, with the app quit. `build-installer2.sh` now stamps
+  each build's revision with the minute; untested whether the catalog accepts that form.
