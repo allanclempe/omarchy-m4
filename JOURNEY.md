@@ -1282,3 +1282,40 @@ initialized successfully", `/dev/kvm` present).
 - **What this means for the build:** the J616c leaves `raw-ctxr` for upstream's `macho` mode on
   27.2, with aura `v1.0.0b17`'s Mach-O Stage 1. Not yet in the build: the installed Mac carries a
   hand-enrolled boot object.
+
+### 9.60 The desktop stays black: the kernel refuses the 32-core J616c's 27.2 GPU firmware (OMS-30, 2026-11-28)
+- **Symptom:** after the disk encryption step of owner setup the panel stays black with the
+  backlight on; Caps Lock toggles, a text console (Ctrl+Option+fn+F7) shows a login prompt, and a
+  normal boot stops on the console after "Started Locale Service". The Limine menu (`timeout: 1`)
+  took no input from the built-in keyboard.
+- **Getting a shell:** a one-time `systemd.unit=rescue.target SYSTEMD_SULOGIN_FORCE=1` boot line, in
+  place of Omarchy's quiet options, written into the ESP's `limine.conf` from macOS with
+  `tools/esp-overwrite-same-size.py` (same 1,564 bytes, the difference padded into the first comment
+  line; Limine's config checksum is not enrolled, `++CONFIG_B2SUM_SIGNATURE++` all zeros). macOS 27.2
+  still cannot mount the FAT ESP, so it was read with `dd` and the tool's FAT reader. The install
+  unlocks its disk with a key file on Boot (`rd.luks.key=…:UUID=4f4d5801-424f-…-0001`), so no
+  password prompt appears.
+- **What the rescue shell showed:** the GPU node (`/proc/device-tree/gpu@288000000`, no `status`, so
+  enabled) reaches Linux, so aura `v1.0.0b17` (with aura#450's T6041 calibration hand-off) did not
+  switch it off. `aurora` is loaded, but `/sys/class/drm` has only the display (`card1`, eDP, DP,
+  HDMI), no render node. The driver logs, per probe:
+  `unsupported GPU firmware build: TEXT 0x64000 DATA 0xcc000 entropy 0x5d88c/0x5d96f sha256
+  c65e9d34de7fa3301a7e2244e55a96ba7950840c1f38db7c2fa5008e916e29dd`, then its admitted images
+  (`Apple GFX 26B123 for T6041 (normalized loaded image)`, the 25G83 ones, 25F84) and `GPU firmware
+  image not admitted: EINVAL` / `Unsupported GPU firmware image (reported macOS version
+  Some([27, 2, 0]))`. Hyprland then has no GPU to start on.
+- **Why:** `drivers/gpu/drm/asahi/hw/t6041.rs` (omacom/linux-aurora `3058cc5c`, and aurora-silicon/linux
+  main as of `6b6b1e6a`) admits the 26B123 image twice, with the 40-core and the 32-core
+  configuration ("a 32-core part runs `t6041_25g83::CONFIG` on both 25G83 and 26B123"), but lists only
+  one measured image, the 40-core J616C's (`cc4cb828…903b`). iBoot fills part of the loaded TEXT per
+  Mac, which is why 25G83 lists a separate 32-core J616C measurement; 26B123 has none. The measured
+  digest was the same on all 10 probes over two boots (the previous boot's journal and this one),
+  read as text from the logs saved to the ESP; it was misread off a photo first (`1f30` for `1f38`).
+- **Fix under test:** add the 32-core J616C's measurement to `BUILD_26B123`'s images
+  (`patches/linux-t6041-26b123-32core.patch`, on omacom/linux-aurora `3058cc5c`). Built as edge's
+  `linux-aurora 7.3.0.aurora1-1.1` (omarchy-pkgs' PKGBUILD with the patch in `source`, `pkgrel=1.1`,
+  so it sorts above edge's `-1` and below a future `-2`) with `bin/build` in the Lima VM. Not yet
+  installed. Upstream, this belongs in aurora-silicon/linux (AGENTS.md's routing table).
+- Also seen in the rescue boot: `snd-soc-macaudio sound: Speaker volumes unlocked`, so the new
+  `96-speakersafetyd-j616.rules` starts speakersafetyd; and `[drm] format XR24 … not supported` /
+  `No compatible format found` from apple-drm on the console framebuffer, harmless for fbcon.
