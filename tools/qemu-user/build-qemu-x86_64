@@ -11,7 +11,8 @@
 #
 # The changes (see apply-oms41.py):
 #   1. x86-64 guests on a 48-bit arm64 host get mappings inside their own 47
-#      bits, starting high as the default x86-64 layout does.
+#      bits, starting high as the default x86-64 layout does; QEMU finds the
+#      hole in its own page table (JOURNEY 9.56).
 #   2. Linux AIO passes through to the host kernel.
 #   3. sigcontext.trapno carries the real trap number (upstream 586284af4c2c,
 #      in qemu 11.2): SQL Server grows its thread stacks on that.
@@ -21,8 +22,8 @@
 # after a fresh test on the Mac (record it in JOURNEY).
 set -euo pipefail
 
-QEMU_VERSION=11.1.2
-QEMU_SHA256=731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016
+QEMU_VERSION=11.1.3
+QEMU_SHA256=5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22
 BUILDER=debian:trixie
 
 out=${1:?usage: build-qemu-x86_64 OUTPUT_FILE}

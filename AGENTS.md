@@ -5,10 +5,14 @@ brings Omarchy (Arch Linux ARM + Hyprland) to Apple silicon Macs. The goal is an
 stable Omarchy release for the M4 Max**: MacBook Pro 16-inch, `Mac16,5`, board J616c, chip T6041.
 Every M4 Mac is still refused by the public installer (omacom/omarchy-mac-installer).
 
-As of 2026-11-16 one J616c runs Omarchy installed from the OMS-24 build with **zero hand steps**
-(JOURNEY 9.35): aura's raw Stage 1 enrolled by the installer, U-Boot, Limine, Linux 7.3 on all 14
-cores, Aurora's GPU driver, Hyprland, Wi-Fi, the camera (its tuning loads, but the picture stays noisier than on macOS, JOURNEY 9.37) and the light sensor. The week of 2026-11-16 is a
-**soak test**: Allan uses the machine for real daily work, and we record how the OS behaves.
+As of 2026-11-29 the J616c runs Omarchy on its macOS 27.2 (26B123) stub, installed from the OMS-30
+build (app 2.3.22) with **zero hand steps** through install, first boot, a cold boot and the first
+`omarchy update` (JOURNEY 9.68, 9.69): Recovery enrolls aura `v1.0.0b17`'s Mach-O Stage 1 itself,
+Stage 2 from the same release, U-Boot, Limine, omacom's edge Linux 7.3 with the 32-core GPU image
+admitted (`1.1`), Aurora's GPU driver, Hyprland on aquamarine's alpha-variant fallback, speakers,
+encryption, and greetd's login screen after the update. The earlier acceptance install (OMS-24,
+2026-11-16, JOURNEY 9.35) ran on the 26.6.2 stub and Aurora's stack; the week of 2026-11-16 was its
+**soak test**.
 
 ## Done means a clean reinstall
 
@@ -36,9 +40,15 @@ row below. A task whose fix lives only on the Mac isn't done.
 | App version set above the installed app (the package otherwise keeps the old app) | `OMARCHY_APP_VERSION` passed by hand at build time; not in a script yet | OMS-14 |
 | Omarchy's `libva-v4l2_request-avd` swapped for Aurora's `libva-v4l2-request-avd` (libva looks for `aurora_drv_video.so`; only Aurora's has it), 2026-11-19 | derivation removes Omarchy's, installs Aurora's pinned and checks the alias; derivation run passed 2026-11-19, not yet in an installer package (JOURNEY 9.39) | OMS-4 |
 | Camera setfile `isp_2224_01XX.dat` | installer patch: the engine collects it on every Mac; installed and loading on the acceptance install (JOURNEY 9.35) | OMS-22 |
+| aura `v1.0.0b17`'s Stage 1 enrolled by hand from 1TR as a padded Mach-O object (`kmutil configure-boot --compress`, `go-oms30-macho.sh`), since kmutil 27.2 wraps the installer's `raw-ctxr` image as an unpadded Mach-O and Stage 2 refuses to start the OS, 2026-11-28 | installer patch: the J616c takes upstream's `macho` mode; derivation stages `v1.0.0b17`'s Mach-O Stage 1 as `esp/aurora/stage1.macho`; in the 2.3.22 acceptance install (JOURNEY 9.69) (JOURNEY 9.59, 9.65) | OMS-30 |
+| `linux-aurora 7.3.0.aurora1-1.1` installed by hand (`pacman -U`, rescue shell): edge's kernel plus `patches/linux-t6041-26b123-32core.patch`, admitting the 32-core J616c's 26B123 GPU firmware image; edge's `-1` refuses it and the GPU never starts, 2026-11-28 | derivation installs it from the `PKGS` input, pinned, held in `IgnorePkg`, and checks the image entry in `aurora.ko`; in the 2.3.22 acceptance install (JOURNEY 9.69). Upstream: aurora-silicon/linux#3496 (JOURNEY 9.60, 9.65) | OMS-30 |
+| `kmscon --no-drm` in Omarchy's `omarchy_kmscon` (`install/provisioning/kmscon.sh`, backup `.oms30-bak`), so owner setup shows: on firmware 27 the T6041 primary plane offers only formats with alpha and kmscon's DRM backend asks for XRGB8888, 2026-11-28 | derivation adds `--no-drm` to the image's `kmscon.sh`; in the 2.3.22 acceptance install (JOURNEY 9.69). Upstream: an `appledrmfb` case next to omacom/omarchy#20512's, or a kernel fix (JOURNEY 9.60, 9.65) | OMS-30 |
+| `aquamarine 0.16.0-1.4` built on the Mac and installed by hand: edge's `-1.2` plus omarchy-pkgs#2739's patch 0005 (allocate the alpha variant when the scanout plane lacks XRGB8888); without it Hyprland crash-loops on `format XR24 isn't supported by primary backend`. Replaced `-1.3` (#2739's own base), 2026-11-28 | derivation installs it from `PKGS`, pinned and held, and checks the fallback and `showsAdoptedPicture`; in the 2.3.22 acceptance install (JOURNEY 9.69). Upstream: #2739, or a kernel fix that offers XRGB8888 on T6041 firmware 27 (JOURNEY 9.61, 9.64, 9.65) | OMS-30 |
+| `hyprland 0.57.2-9.2` built on the Mac and installed by hand (replacing `-9.1`, 9.66): edge's `-9` plus `patches/hyprland-alpha-variant-buffer-present.patch`, so `ensureBufferPresent` keeps the frame just rendered when aquamarine's fallback gives one of the monitor's own swapchain buffers in the alpha variant (without it, typed text flickers back and forth); with edge's `omarchy-hyprland-titlebars 0.4.0-6`, and `IgnorePkg = linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars` so `omarchy update` keeps the patched packages, 2026-11-28 | derivation installs it from `PKGS`, pins edge's titlebars `0.4.0-6` and writes the `IgnorePkg` holds; in the 2.3.22 acceptance install (JOURNEY 9.69). Upstream: omacom/omarchy-pkgs#3854 (JOURNEY 9.62, 9.64, 9.65, 9.66) | OMS-30 |
+| `/etc/omarchy-mac-boot/owner-boot-chain` created by hand, so `omarchy update` passes with the pinned Stage 2 (the boot check accepts only a package-owned `M1N1=`), 2026-11-28 | derivation ships it again (JOURNEY 9.62); in the 2.3.22 acceptance install (JOURNEY 9.69) | OMS-30 |
 | Aurora's `aurora-touchid-rearm` installed and `-auth optional pam_aurora_touchid.so` added after the last auth line of `system-auth` and `omarchy-lock-password`, so the password re-arms Touch ID after a lockout, 2026-11-21 | not in the build yet; `omarchy-apply-lock` rewrites `omarchy-lock-password`, so its line needs a durable home (JOURNEY 9.49) | OMS-40 |
-| containerd run under `userpages 4k` (drop-in `containerd.service.d/50-user4k.conf`), so x86 container libraries map on the 16 KiB kernel, 2026-11-25 | derivation installs `tools/image/containerd-user4k.conf`; not yet run (JOURNEY 9.53) | OMS-41 |
-| Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25; replaced the same day by `qemu-user-static` and `-binfmt` `1:11.1.3-1` built from omacom/omarchy-pkgs#3505, override removed (JOURNEY 9.55) | derivation installs the PR's two packages, the pinned `QEMU_PKGS` input, and checks the package's own rule is the one in force; not yet run (JOURNEY 9.55). Drop the input once omarchy's repo publishes the build | OMS-41 |
+| containerd run under `userpages 4k` (drop-in `containerd.service.d/50-user4k.conf`), so x86 container libraries map on the 16 KiB kernel, 2026-11-25 | derivation installs `tools/image/containerd-user4k.conf`; in the 2.3.22 acceptance install, where the drop-in and the binfmt rule are in force; an x86 container not yet run there (JOURNEY 9.53) | OMS-41 |
+| Patched static `qemu-x86_64` (47-bit layout, Linux AIO, real `trapno`) installed as `/usr/local/bin/qemu-x86_64-oms41`, named by an `/etc/binfmt.d/qemu-x86_64-static.conf` override, so SQL Server 2022 containers start, 2026-11-25; replaced the same day by `qemu-user-static` and `-binfmt` `1:11.1.3-1` built from omacom/omarchy-pkgs#3505, override removed (JOURNEY 9.55) | derivation installs the two packages, the pinned `QEMU_PKGS` input, and checks the package's own rule is the one in force; in the 2.3.22 acceptance install, where the drop-in and the binfmt rule are in force; an x86 container not yet run there (JOURNEY 9.55). Since 2026-11-26 the input is built from #3505 (source build, `1002`), #3602 (`1000`) and #3603 (`1001`) merged, after review; installed on the Mac the same day; `node:22` and SQL Server 2022 run through binfmt (JOURNEY 9.56). Drop the input once omarchy's repo publishes all three | OMS-41 |
 
 ## Where things are
 
@@ -50,16 +60,17 @@ row below. A task whose fix lives only on the Mac isn't done.
   radio off first, and reports whether the unload race hit (JOURNEY 9.26). Run it at the Mac with sudo.
 - `tools/esp-overwrite-same-size.py` replaces a same-size file on an unmounted FAT ESP in place.
   macOS 26.7.3 on this Mac can't mount any FAT volume, so this is how Stage 2 got onto the ESP.
-- `tools/derive-j616c-image` turns an edge image into the J616c image (Aurora's kernel, aura, U-Boot
-  and Mesa, the pinned aura `94d8e6e4` Stage 2, the Aurora keyring drop-in, and the update policy:
-  Stage 2 rebuilt from the pin and tried by Aurora's trials). Its header has usage.
-  It pins the exact `[aurora]` builds (`AURORA_PINS`); its last run made the acceptance image (JOURNEY 9.34).
+- `tools/derive-j616c-image` turns an edge image into the J616c image. On the OMS-30 branch it
+  builds for a macOS 27.2 stub on omacom's edge stack (`[omarchy]` first, the exact builds pinned in
+  `EDGE_PINS`), with Stage 1 and 2 from aura `v1.0.0b17`; `docs/oms-30-image-plan.md` says what goes
+  in and why (JOURNEY 9.57). Its header has usage. The acceptance image (JOURNEY 9.34) came from the
+  earlier version on Aurora's stack (`AURORA_PINS`, Stage 2 from aura `94d8e6e4`, Aurora's trial).
 - `patches/j616c-installer.patch` is the installer work: J616c developer admission, the
-  Recovery boot modes for aura's Stage 1 (`raw-ctxr`, which the J616c uses, and the Mach-O
-  `macho-unpadded` and padded `macho-ctxr`), the engine changes, camera tuning collection on every
-  Mac and the Wi-Fi `chflags` fix. Apply it to a
-  checkout of omacom/omarchy-mac-installer at `a576543` (PR #212's head). Commit installer changes
-  back into this patch, so the repo stays the source.
+  `raw-ctxr` Recovery boot mode for aura's raw Stage 1 (upstream's own `macho` mode serves other
+  M4 Macs), the J616c's 27.2 (26B123) stub firmware and no other, and camera tuning collection on
+  every Mac. Apply it to a checkout of omacom/omarchy-mac-installer at `e0aa53fd` (main,
+  2026-11-22; JOURNEY 9.57). Commit installer changes back into this patch, so the repo stays the
+  source.
 - `tools/image/` holds files the derivation installs into the image, such as `omarchy-esp-generator`;
   `tools/tests/` has their tests (plain Bash, run on Linux).
 - `LICENSE` is MIT for this repo's own work. The patches in `patches/` change other projects and
@@ -80,12 +91,15 @@ row below. A task whose fix lives only on the Mac isn't done.
 - `tools/aura-usb/` sends a Stage 2 to aura over the USB-C cable and captures its console. Its
   README has setup, steps and the one thing this path can't test.
 - `tools/qemu-user/` is the patched qemu-user that runs x86-64 containers (OMS-41, JOURNEY 9.53):
-  `apply-oms41.py` changes a pristine qemu 11.1.2 tree (47-bit guest layout, Linux AIO passthrough,
+  `apply-oms41.py` changes a pristine qemu 11.1.3 tree (47-bit guest layout, Linux AIO passthrough,
   and the upstream `trapno` fix `586284af4c2c`), `build-qemu-x86_64` builds the static binary on an
-  aarch64 host with Docker, and `pferr.c` shows what a guest sees for a write to a `PROT_NONE` page.
+  aarch64 host with Docker, `pferr.c` shows what a guest sees for a write to a `PROT_NONE` page, and
+  `mmaptest.c` (a static x86-64 program) checks the guest layout cases from the PR's review (JOURNEY 9.56).
   Drop the backport block when moving to qemu 11.2.
-  The image no longer uses its binary: the same three fixes now ship as patches in
-  omacom/omarchy-pkgs#3505's `qemu-user-static` (QEMU 11.1.3), which the derivation installs (JOURNEY 9.55).
+  `aiotest.c` checks the AIO cases, and `aioharness.sh` hands it an address in QEMU's own memory.
+  The image no longer uses its binary: the same three fixes now ship as patches in omacom/omarchy-pkgs
+  `qemu-user-static` (QEMU 11.1.3): #3505 (source build, `1002`), #3602 (`1000`) and #3603 (`1001`),
+  merged for the derivation's input (JOURNEY 9.55, 9.56).
 - `tools/vm-timer-probe/` has the KVM guest-timer probes (OMS-42, JOURNEY 9.54): a module that checks
   `VM_TMR_FIQ_ENA_EL2` writes on every core (refuses to stay loaded) and a tracefs script for a
   hanging 2-vCPU guest. Both run at the Mac with sudo.
@@ -101,24 +115,26 @@ row below. A task whose fix lives only on the Mac isn't done.
 | Machine | Reach it | Role |
 | --- | --- | --- |
 | The M4 Max, macOS | `allanclempe@allans-macbook-pro` over SSH | Builds the engine, app and installer package (Xcode), and runs the Lima build VM `omarchy-builder` for the image |
-| The M4 Max, Omarchy | `clempe@dev-machine-mac-2` over Tailscale SSH (the name changes with each fresh install; find the online `dev-machine-mac-<n>` in `tailscale status`) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
+| The M4 Max, Omarchy | `clempe@clempe-apple-macbookpro-1` over Tailscale SSH since the 2026-11-29 install (the name changes with each fresh install; find the online one in `tailscale status`) | The system under test. No passwordless sudo; the ESP is root-only (`umask=0077`) |
 | dev-machine-01 | local | Linux host on the other end of the USB-C cable for `tools/aura-usb/` |
 
 The Mac is in one OS at a time, so only one of its two rows answers at once.
 
-## The installed Mac (acceptance install, 2026-11-16)
+## The installed Mac (acceptance install, 2026-11-29)
 
-Installed from `build/oms24/Omarchy-J616c-Developer.pkg` (app 2.3.18) with no hand step
-(JOURNEY 9.35). The installer enrolled **aura's raw Stage 1** in `raw-ctxr` mode (`bputil -nc`,
-`kmutil --raw`), loading the confined Stage 2 `m1n1/boot-ctxr.bin`. The image's own update policy
-applies: Stage 2 rebuilt from the pinned aura `94d8e6e4` (`M1N1=` in `/etc/default/update-m1n1`),
-tried once by Aurora's trial, `IgnorePkg = m1n1-aurora` only, and
-`/etc/omarchy-mac-boot/owner-boot-chain`. No hand guards. The pin is unnecessary: aura `1.0.0b13.1`
-carries the ANS fix (9.31, OMS-25).
+Installed from `build/oms30/Omarchy-J616c-Developer.pkg` (app 2.3.22, payload from edge channel
+`omarchy-edge-4853c75f5f99`, before omarchy#20404) with no hand step (JOURNEY 9.68, 9.69), on the
+macOS 27.2 (26B123) stub. Recovery enrolled aura `v1.0.0b17`'s Mach-O Stage 1 in upstream's `macho`
+mode (padded, `kmutil --compress`). Stage 2 comes from the pinned `v1.0.0b17` build
+(`/usr/local/lib/aura/m1n1-5a244b5bcbaf.bin`, `M1N1=` in `/etc/default/update-m1n1`, stock
+update-m1n1), with `/etc/omarchy-mac-boot/owner-boot-chain`. `IgnorePkg = linux-aurora
+linux-aurora-headers aquamarine hyprland hyprpm omarchy-hyprland-titlebars` keeps the patched
+builds. The first `omarchy update` moved the login screen from SDDM to greetd (omarchy#20404).
 
-Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d04a`; Boot
-`nvme0n1p5`, PARTUUID `9d4a6c2a-2925-4563-ad03-c63c37147581`; camera setfile
-`isp_2224_01XX.dat` sha256 `dce21e48ccd35f54…`. Every Omarchy ESP has FAT serial `4F4D-5801`.
+Known-good values: ESP `nvme0n1p4`, PARTUUID `e137146e-a21b-4886-9c40-b3b147beb20a`; Boot
+`nvme0n1p5`, PARTUUID `86be6da2-3349-4860-8f08-4a140735c657`; root LUKS `nvme0n1p6`, PARTUUID
+`562477b6-8933-4dd3-8347-c491da74f024`; camera setfile `isp_2224_01XX.dat` sha256
+`dce21e48ccd35f54…`. Every Omarchy ESP has FAT serial `4F4D-5801`.
 
 ## Working rules
 
@@ -134,14 +150,27 @@ Known-good values: ESP `nvme0n1p4`, PARTUUID `b2e659a5-fd54-454e-a7bf-75a3fa15d0
   Reading them off a photo produced a wrong PARTUUID once (JOURNEY 9.14).
 - Commands Allan types on the Mac go in one block, read-only checks before writes, with the
   expected output stated.
-- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead.
+- Nothing goes upstream (omacom, aurora-silicon) without Allan's go-ahead. When it does, send
+  each change to the project that owns it:
+
+  | Change | Goes to |
+  | --- | --- |
+  | Kernel: drivers, device trees (`t6041-j616c.dts`), kernel config | a PR on aurora-silicon/linux, never omacom/linux-aurora |
+  | aura (Stage 1 and 2), Mesa, U-Boot, `[aurora]` packaging (alarm-aurora) | the aurora-silicon repo for it |
+  | The installer: admission, boot modes, engine, ESP creation | omacom/omarchy-mac-installer |
+  | Omarchy Mac packages, such as omarchy-mac-boot's boot check | omacom/omarchy-mac-pkgs |
+
+  Before opening one, check that no open PR carries kernel work into an omacom repo; move any
+  such PR to aurora-silicon/linux.
 - Questions only the M team, Aurora or others can answer go in `docs/questions-for-the-team.md`,
   with enough context to ask them cold. Move a question to **Answered** when it's settled. That
   file sums up private team discussion, so it stays on this machine: `.gitignore` excludes it.
   Never commit it, and don't quote it in public files.
 - No Claude Code or AI credit lines anywhere: not in files, code comments, commit messages
-  (no `Co-Authored-By` trailer) or PR descriptions. Aurora's contributing guide asks for AI
-  disclosure, so before sending anything to aurora-silicon, ask Allan how to handle it.
+  (no `Co-Authored-By` trailer) or PR descriptions. aurora-silicon forbids AI attribution too
+  (its pre-PR checklist, since 2026-11-21: human author and `Signed-off-by` only, checked in CI).
+  Its PRs target `main` from a `fix/` or `feat/` branch and follow its PR structure
+  (`What`/`Tested`/`Risk`/`Not yet`); see aurora-silicon/agent-guidelines.
 
 ## Tasks
 

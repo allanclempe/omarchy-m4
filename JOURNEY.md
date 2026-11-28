@@ -1016,3 +1016,591 @@ initialized successfully", `/dev/kvm` present).
 - **Left open:** mac-2's `/etc/docker/daemon.json` also has `"containerd-snapshotter": false` added by
   hand, not recorded in 9.53 and not in the PR. Whether containers need it is checked on the next
   install, which won't carry it.
+
+### 9.56 x86-64 containers: patch `1000` reworked after review (OMS-41, 2026-11-26)
+
+- **Review:** Marcelo requested changes on omacom/omarchy-pkgs#3505 at `c61ca8b`. On a 4 KiB-page
+  arm64 kernel, amd64 `node:22-slim` started 10/10 times on stock QEMU 11.1.3 and 0/10 with `1000`.
+  V8 asks for its code range with a hint that's already taken. `mmap_find_vma()` relies on
+  accepting whatever address the host returns, arm64 returns one near 2^48, and `1000`'s cap
+  rejected it. The search then retried once at `mmap_min_addr` and gave up with ENOMEM. The same
+  cause blocked larger maps behind a small one, stopped freed space being reused (64 GiB
+  map/unmap failed after 511 rounds; `mremap` growth failed at about 512 MiB), and leaked the
+  `PROT_NONE` reservation when the final `mmap` failed. Placed mappings carried `MAP_FIXED`, which
+  sends a writable shared file mapping not ending on a 16 KiB boundary to `mmap_frag()` (EINVAL).
+  `MAP_HUGETLB` holes weren't aligned, and in-place `mremap` growth could cross 2^47. He suggested
+  landing `1002` alone and bringing `1000` and `1001` back separately (done, below).
+- **`1000` rework:** with no `reserved_va` and a 64-bit guest of at most
+  47 bits, QEMU chooses the address itself. It searches its own page table for a hole below 2^47
+  with `page_find_range_empty()`, as `reserved_va` does, and claims the hole with
+  `MAP_FIXED_NOREPLACE`. If one of QEMU's own host mappings is in the way, it skips past it using
+  `/proc/self/maps`. The search runs from the hint (or `mmap_next_start`) to the top, then from
+  `task_unmapped_base` (3/4 of 2^47), then from the bottom: bounded, and every hole is reachable.
+  `target_mmap()` releases the hole and maps into it with `MAP_FIXED_NOREPLACE`, retrying if
+  another thread took it, so a failed mapping leaves nothing behind. `mmap_h_gt_g()` maps a placed
+  hole through its direct path (no `mmap_frag()`). `MAP_HUGETLB` holes follow the host's huge page
+  size. `mremap(MREMAP_MAYMOVE)` resizes in place first, and in-place growth stops at 2^47.
+  `tools/qemu-user/apply-oms41.py` makes the same change and now targets 11.1.3. Applied to a
+  pristine 11.1.3 tree it gives the same tree as the PR's three patches (`diff -r`).
+  `qemu-11.1-oms41.patch` is regenerated from it.
+- **Tests on `dev-machine-mac-2`:** static `qemu-x86_64` builds of stock 11.1.3, the PR's `c61ca8b`
+  build (installed), the new `1000` alone, and all three patches. Each ran `tools/qemu-user/mmaptest.c`
+  (Marcelo's cases plus the layout SQL Server needs) and `node -e` from `node:22-slim` 10 times,
+  under `userpages 4k` and plain 16 KiB pages:
+
+  | Build | mmaptest, 4 KiB pages | mmaptest, 16 KiB pages | node, 4 KiB pages |
+  | --- | --- | --- | --- |
+  | stock 11.1.3 | addresses above 2^47 (by design) | same | 10/10 |
+  | `c61ca8b` | 8 cases fail | 8 cases fail, including the shared file map | 0/10 |
+  | new `1000` | all pass but `hugetlb` | all pass | 10/10 |
+  | all three | all pass but `hugetlb` | all pass | 10/10 |
+
+  `hugetlb` returns EINVAL under `userpages 4k` on stock QEMU too: the 4 KiB view, not the patch.
+  Under plain 16 KiB pages, `node` dumps core on every build, stock included: an existing limit,
+  and the reason containerd runs under `userpages 4k`.
+  SQL Server 2022 (RTM-CU28) ran with the all-three build as the container's entrypoint (both
+  `sqlservr` processes ran under it, checked with `ps`). It was ready in 33 s and passed 20,000
+  inserts, a `CHECKPOINT` and `DBCC CHECKDB`.
+- **`1001` reworked too:** guest pointers are now checked against guest memory before the host
+  kernel sees them: the iocb array, each iocb, its buffers or iovec array (writable for reads,
+  readable for writes), and the event buffers. `io_submit` submits up to the first iocb that fails
+  and returns EFAULT if that is the first. A native kernel reports a bad buffer in the completion
+  event instead; QEMU can't make that event, so this one difference stays, and the commit says so.
+  Checking a buffer writable unprotects a page QEMU protected for translated code. A read that
+  still completes with EFAULT into valid buffers (the page was protected again in between) is
+  unprotected and redone with `preadv2()` in `io_getevents`. `io_event.res` errnos are translated
+  for the guest (mips64el, alpha; checked by reading only). `tools/qemu-user/aiotest.c` passes
+  natively on x86-64. On the Mac, `aioharness.sh` hands it an address in QEMU's own data segment:
+
+  | Case | stock | `1001` as reviewed | new `1001` (alone, and with all three, 4K and 16K pages) |
+  | --- | --- | --- | --- |
+  | `pread` | ENOSYS | pass | pass |
+  | `pread`/`preadv` into a page with translated code | ENOSYS | EFAULT | pass |
+  | error in an event, unmapped pointers, partial submit | ENOSYS | pass | pass |
+  | buffer and event array in QEMU's data | ENOSYS | written by the kernel | EFAULT |
+
+  The redo path itself is not forced by a test. SQL Server 2022 under all three new patches: both
+  `sqlservr` processes on the build, ready in 33 s, 20,000 inserts, `CHECKPOINT`, `DBCC CHECKDB` and
+  the error log all clean.
+- **Split, as review asked:** #3505 (head `caddc5c`) now carries only the source build and `1002`,
+  retitled "Build ARM's static QEMU from source, with the upstream trapno fix". `1000` is #3602
+  (`0c929fe`) and `1001` is #3603 (`43e4f8c`), each a commit on top of #3505's branch. Both edit the
+  same PKGBUILD lines, so whichever lands second needs a rebase. The earlier combined rework
+  (`94065c5`) was never pushed; it stays as the local branch `local/rework-1000-combined`.
+  `bin/build` builds #3505 alone (`qemu-user-static` sha256 `d158896e…61d7`).
+- **The image's input:** branch `oms-41/qemu-user-static-image` on the fork merges #3602 and #3603
+  (`10cb154`). Its `bin/build` packages are `qemu-user-static 1:11.1.3-1` sha256 `544e83b4…6fca`
+  and `qemu-user-static-binfmt` sha256 `693bd474…ab43`. The packaged binary passed `mmaptest` (all
+  cases bar `hugetlb` under 4K pages), `aiotest` (6/6) and `node` 10/10 under 4K pages. The
+  derivation's `QEMU_PR_COMMIT` and `QEMU_PKG_SHA256` now pin them, and the `QEMU_PKGS` directory
+  holds them (the `c61ca8b` packages kept in a subdirectory as the undo path). The derivation is not
+  yet run with them.
+- **Installed on mac-2:** Allan installed the `10cb154` packages with `pacman -U` at 17:06 AEST
+  (pacman.log: "reinstalled", same version) and restarted `systemd-binfmt`.
+  `/usr/bin/qemu-x86_64-static` now hashes `e6d9b051…8f0e`, and the rule is `enabled`, interpreter
+  `/usr/bin/qemu-x86_64-static`, `flags: PF`. Through binfmt: `docker run` of amd64 `node:22-slim`
+  printed `hi` 5/5. A plain `docker run` of SQL Server 2022 with its own entrypoint was ready in 30 s,
+  with both `sqlservr` processes under the installed emulator, and passed 20,000 inserts,
+  `CHECKPOINT` and `DBCC CHECKDB` with no severe errors in its log. With the image's entrypoint,
+  `sa`'s password is set some seconds after "ready for client connections", so a login straight
+  after that line fails (error 18456); wait for "Password policy update was successful". No
+  failed units. Undo: `pacman -U` the `c61ca8b` packages in `~/build/oms-41/pkgs-c61ca8b/`
+  (sha256 `6b31a898…dc23`, `41834906…df3b`), then restart `systemd-binfmt`.
+- **Left open:** review of #3505, #3602 and #3603; a run on an ARM machine with 4 KiB kernel pages.
+
+### 9.57 The 27.2 image moves to omacom's edge stack (OMS-30, 2026-11-27)
+- **Upstream state:** aura#265 (merge `7680e35a`) and aurora-silicon/linux#1954 (merge `7f01c9e1`)
+  merged on 2026-11-19, #2233 (merge `51b75cb5`) on 2026-11-20. Aurora's newest kernel,
+  `linux-aurora 7.3.0.aurora1-41` (the repo database read 2026-11-27), has neither #1954 nor #2233:
+  its `ane_t6021.ko` has no `26B123` string, and its `apple-isp.ko` has 136 `isp_` symbols, none of
+  them #2233's `isp_setfile_snf_radial`. omacom's edge `linux-aurora 7.3.0.aurora1-1` (omacom/linux-aurora
+  `3058cc5c`, built 2026-11-23) has both, and `t6041-j616c.dtb`, `user4k` and the CTXR execute
+  window. A correction to OMS-45's note that Aurora's `-41` is `9125b314`: whatever its commit, it
+  lacks #2233, which is what matters here.
+- **The stacks don't mix:** pacman on mac-2 refuses edge's kernel next to Aurora's `aura 1.0.0b14.1`
+  ("breaks dependency 'aurora-ctxr-execmem' required by aura"). Edge's `aura` and `omarchy-mac-boot`
+  need omacom's `aurora-scripts`. So the OMS-30 image takes its platform from `[omarchy]` edge, as
+  omarchy-mac-installer#224's image builder does.
+- **aura:** edge's `aura 1.0.0b13.r20261118` is built from omacom/m1n1 `703a0a92` (2026-11-18),
+  without #265's commits. `v1.0.0b17` (`5a244b5b`) has #265 and 205 commits past `b14.1`, among them
+  "kboot: gpu: hand the M4 GPU to Linux on the 27.2 firmware" and "kboot: M4 internal DCP on 27.2:
+  publish its firmware clocks and the display maps". Stage 1 and Stage 2 come from that build.
+- **27.2.1:** Apple has released 27.2.1 (26B131). aura#265's display hand-off refuses its DCP
+  firmware UUID (its test `wrong-uuid-26b131`), so the stub must be 27.2 (26B123). From the 27.2
+  IPSW's `BuildManifest.plist` and `iBoot.j616c.RELEASE.im4p`, read by range requests and checked
+  against 26.6.2 (which gives the patch's `mBoot-18000.161.10`): `mBoot-20457.41.3`.
+- **Edge packages checked against mac-2's working set:** `aurora-audio 4.1.aurora3-6`'s J616
+  `graph.json` and `mic.json` and the `j616.conf` speaker profile hash the same as on mac-2 (`2e23da89`,
+  `41282b54`, `a410bfd1`). `libva-v4l2_request-avd 1.3.r11.r169.gc653eaa-2` now ships
+  `aurora_drv_video.so`, so OMS-4's swap is no longer needed. speakersafetyd 2.0.1-2's
+  `95-speakersafetyd.rules` lists no `AppleJ616`; mac-2's daemon runs because Aurora's profiles
+  package adds that line, so the image now carries it (`tools/image/96-speakersafetyd-j616.rules`).
+  `user4k=on` on mac-2 came from omarchy-mac-boot's `grub-console.sh` (on `linux-aurora`) and
+  aurora-userpages' GRUB drop-in, not from this repo.
+- **Stage 2 updates on edge:** omarchy-mac-boot `20261123-1` ships `omarchy-mac-boot-ctxr`, a pacman
+  hook that rebuilds `m1n1/boot-ctxr.bin` with the stock `update-m1n1` after a kernel, U-Boot or
+  overlay change, held to 16 MiB, unless `update-m1n1` is Aurora's or `/etc/default/update-m1n1` sets
+  `TARGET`. The stock `update-m1n1` and the boot check both read `M1N1=`, so the pinned Stage 2
+  survives updates and stays verified without the `owner-boot-chain` marker. There is no Stage 2
+  trial on this stack.
+- **In the build:** `tools/derive-j616c-image` rewritten for the edge stack: `EDGE_PINS` in place of
+  `AURORA_PINS`, kernel checks for #1954 and #2233, no `[aurora]` repository or key, the speaker rule,
+  Stage 1 and 2 inputs from `v1.0.0b17` (hashes to record after the build), a `PKGS` input holding
+  the QEMU packages and `aurora-userpages`, `27.2` added to the payload's `supported_fw`. The OMS-17
+  guard drop-in and its test are removed with the trial. `docs/oms-30-image-plan.md` has the list
+  and the open questions. Not yet run.
+- **Installer patch rebased** onto omarchy-mac-installer `e0aa53fd` (main, 2026-11-22); `a576543`
+  is gone from GitHub (PR #212 was force-pushed), so it came from a local clone. Upstream #238 merged
+  a chip-based `macho` mode, so the patch's `macho-ctxr` and `macho-unpadded` modes are dropped;
+  `raw-ctxr` is re-added on upstream's design (`BOARD_CONFINED_RAW_STAGE1`, Stage 2 staged as
+  `raw/boot.bin`, the 16 MiB check, and a new check that the raw Stage 1's configuration names this
+  ESP and `boot-ctxr.bin`). The Wi-Fi `chflags` fix is dropped (upstream's `copy_contents` covers
+  it). The J616c leaves the 26.6.2 entry for a new `IPSW("27.2", "27.0", "mBoot-20457.41.3",
+  "26.2.123.0.0,0", ...)` row naming only `j616cap`, and its minimum becomes 27.2; tests assert no
+  27.2.1 (26B131) row lists it. Upstream tests that sent the J616c down the Mach-O path on 26.6.2 now
+  use `j614cap`. `test/all` and `image-builder/test/all` pass on Linux; the Swift and Recovery
+  parts, including the new configuration check, are not yet built. The engine archive and
+  `source-lock.json`'s `validation_artifact` must be rebuilt on the Mac. Unverified: whether a 27.x
+  stub fits the macOS 26 stub size (6 GB) the installer gives it.
+
+### 9.58 aura v1.0.0b17 Stage 1 and Stage 2 built for the 27.2 image (OMS-30, 2026-11-27)
+- Built on the Mac in macOS 26.7.3 from aura `v1.0.0b17` (`5a244b5b`, cloned with submodules into
+  `build/aura-b17/aura`), with the toolchain under `toolchain/llvm` and the flags of
+  alarm-aurora's aura PKGBUILD. Logs: `build/aura-b17/stage1-build.log`, `stage2-build.log`.
+  - Stage 1: `RELEASE=1 CHAINLOADING=1 USE_CLANG=1 BUILTIN_LOGO=aurora`, `build/aura.bin` kept as
+    `out/aura-raw.bin`: 1,638,400 B, sha256 `93457a37…40be`.
+  - Stage 2: the same plus `ESP_STAGE2=1`, kept as `out/aura-stage2.bin`: 3,997,696 B, sha256
+    `aef08d29…a985`; it carries `chosen.asahi,m1n1-stage1-version=1.0.0b17`.
+- `tools/derive-j616c-image` pins both hashes. The derivation's header named Stage 1's flags
+  without `BUILTIN_LOGO=aurora`, which the PKGBUILD passes for both; corrected.
+- **Installer on the Mac** (Xcode 27.2, Swift 6.4.2; clone of omarchy-mac-installer `e0aa53fd` with
+  the patch in `build/oms30/omarchy-mac-installer`): `swift test` (debug) 648 tests, 0 failures,
+  1 skipped, plus the app's 16; `Recovery/test-all.sh` 21 PASS, among them "raw-ctxr enrolls
+  --raw ... for m1n1/boot-ctxr.bin" and the per-install configuration with `raw-ctxr`. No check
+  exercises the new raw Stage 1 configuration check in `RecoveryActions`; it compiles. Recovery app
+  built (`build/oms30/recovery-app`, knows `raw-ctxr/aura-raw.bin`; manifest sha256
+  `c580897c…b55c`). Building it into `../recovery` from `Recovery/` lands in `Recovery/` itself on
+  macOS's case-insensitive disk; build to an absolute path.
+- **Engine** `v0.9.2-omarchy.20261127.8dd397e9708f`: two rebuilds with `prepare-engine.py`'s own
+  steps were byte-identical (17,917,929 bytes, sha256 `161e3f45…a3e8`, `archive_modes=passed
+  entries=1548`); pinned in `source-lock.json`, `engine_pin.py check` passes, and the unmodified
+  `prepare-engine.py` reproduced it into `Engine/artifacts/`. The patch carries the new pin.
+- **Edge inputs** resolved in the Lima VM: `channel_set=omarchy-edge-4853c75f5f99`; its database
+  lists every `EDGE_PINS` version.
+- **Edge payload** built in the VM from that record (`build-mac-image`, about 9 minutes; the Mac
+  slept afterwards, so long runs need `caffeinate -dims` held in a Terminal, as in 9.34):
+  `omarchy-2026.11.27-aarch64-apple-silicon-mac-edge-os-package.zip`, 3,696,347,639 bytes. It already
+  carries every `EDGE_PINS` build.
+- **Correction to 9.57: the payload's `supported_fw` stays as built.** The first derivation run
+  added `27.2` to the payload's `installer_data.json`, and `mac-image-check payload edge` refused
+  it ("is not the installer_data for"): the check compares the metadata with the builder's own,
+  firmware list included. The J616c's 27.2 stub comes from the developer catalog's per-model
+  `installer_data-j616c.json` (`supported_fw: ["27.2"]`), as the 26.6.2 one did for OMS-24 and
+  OMS-28. The derivation no longer touches the metadata beyond the payload's name.
+- **Derivation run** (first run, 211 s): `[omarchy]` first and no `[aurora]`; every pin already
+  installed (pacman: "is up to date -- skipping") apart from `libfprint-git`, a clean install with
+  no conflict; kernel `7.3.0-1-1-ARCH` with both markers; `update-m1n1` wrote `boot.bin` and
+  `boot-ctxr-j616c.bin` from the pinned Stage 2; no `.pacnew`; root free space 7.3 GB.
+- **Two more refusals from `mac-image-check payload edge`, both fixed:**
+  - "the J700 Stage 2 differs from the common bundle": the builder stages `m1n1/boot-j700.bin` as a
+    byte-identical copy of `m1n1/boot.bin`, and the derivation rebuilds `boot.bin` from the pin. The
+    old derivation re-copied it; the rewrite had dropped that step. Restored.
+  - Upstream's `check_confined_boot_payloads` (from #238) knows only the Mach-O path: any
+    `boot-ctxr*.bin` needs `esp/aurora/stage1.macho`, and a per-board copy is refused. The J616c's
+    `raw-ctxr` pair, `esp/aurora/stage1-j616c.bin` with `esp/m1n1/boot-ctxr-j616c.bin`, is what the
+    patched engine stages from. The patch now teaches the check that one pair (`RAW_CTXR_STAGE2`):
+    the raw Stage 1 must end in `STACKBOT` with one `AURORA-S1-CFG01` block (the `v1.0.0b17` build
+    has both), and the Stage 2 must fit 16 MiB. Two new tests; other per-board copies, such as
+    `boot-ctxr-j713.bin`, are still refused. `image-builder/test/all` and `test/all` pass. The
+    OMS-24 and OMS-28 builds passed only because their checker predates #238.
+  - "esp/aurora/stage1.macho needs esp/m1n1/boot-ctxr.bin": the edge payload carries upstream's
+    Mach-O Stage 1 for other M4 Macs with a shared `m1n1/boot-ctxr.bin`, and in it `boot.bin`,
+    `boot-ctxr.bin` and `boot-j700.bin` are one byte-identical image (14,187,519 bytes, every device
+    tree). The derivation deleted `boot-ctxr.bin`, a step carried over from the Aurora-stack
+    version. It now builds `boot.bin` once from the pin and copies it to `boot-ctxr.bin`,
+    `boot-j700.bin` and `boot-ctxr-j616c.bin`.
+- **Built (2026-11-28, on the Mac's macOS side, outputs in `build/oms30/`):** derivation in 193 s,
+  payload `omarchy-2026.11.27-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`,
+  3,975,489,275 bytes, sha256 `6048bf28…d2a0`, passes `mac-image-check payload edge`. Developer
+  catalog: evidence `j616c-dev.20261128`, `downstream_revision` `e0aa53fd`, `latest_version`
+  2.3.20, 36 models, the J616c's `installer_data-j616c.json` with `supported_fw: ["27.2"]`, signed
+  and verified. App 2.3.20 with engine `v0.9.2-omarchy.20261127.8dd397e9708f`. Package
+  `build/oms30/Omarchy-J616c-Developer.pkg`, 4,003,108,961 bytes, sha256
+  `8a214c77ce0e30972b3f7086c04658e54706bc006a4f693523e938c58d59630c`. The catalog, app and package
+  steps are `build/oms30/build-installer.sh` on the Mac (outside git: it names the developer
+  catalog's signing key path), adapted from OMS-28's.
+- **The OMS-28 install removed** (2026-11-28, by Allan with `diskutil`, OMS-23): read-only checks
+  first, each partition by PARTUUID (stub container `96204E68…`, ESP `4B4FF638…`, Boot `65B9941D…`,
+  Root `5E0C27BE…`), then `diskutil apfs deleteContainer` and `eraseVolume free none` on each. The
+  disk now holds `disk0s1` (ISC), `disk0s2` (macOS), 274.9 GB free and `disk0s7` (Recovery).
+- **macOS 27.2 on the Mac** (2026-11-28): Software Update offered 27.2.1 (`26B131`), which aura#265
+  refuses, so 27.2 came from the full installer (`softwareupdate --fetch-full-installer
+  --full-installer-version 27.2`; its `SharedSupport.dmg` names `OSVersion 27.2`, `Build 26B123`),
+  upgraded in place. Before it, System Firmware already read `20457.41.3` (27.2's iBoot) under
+  macOS 26.7.3, with OS Loader `18000.161.10.702.4`; `install.log` has a failed install on
+  2026-11-25 at 21:52, which may have flashed it. After: macOS 27.2 (26B123), System Firmware and OS
+  Loader both `20457.41.3`. The free space (274.9 GB) is unchanged; diskutil renumbered the
+  Recovery container's partition from `disk0s7` to `disk0s3`.
+
+### 9.59 On 27.2, kmutil wraps a raw Stage 1 as Mach-O, and Stage 2 refuses to start the OS (OMS-30, 2026-11-28)
+- **Install:** package 2.3.20 (`8a214c77…`) on macOS 27.2 (26B123). New stub, ESP and Linux
+  partitions (`disk0s3` to `s6`, volume group `506F22D4-D8D5-4865-8F8C-2315BBC2D53B`), stub OS
+  `26.2.123.0.0,0`. The Recovery app's log (`Aurora/Recovery/State/operation-2C50C120-…/installer.log`
+  on the stub) shows the `raw-ctxr` enrolment as designed: `bputil -nc -v <group>` (after it:
+  Permissive, `Kernel CTRR Status: Disabled`), then `kmutil configure-boot -c …/stage1 -v
+  /Volumes/Omarchy --raw --entry-point 2048 --lowest-virtual-address 0`, "kmutil: completed".
+- **First boot (photo):** aura `v1.0.0b17` Stage 2 finds the `apple,j616c` tree, U-Boot and the
+  kernel, starts all 14 CPUs, measures the tree and kernel, then: "CTXR exec: CTXR_D is armed at
+  [0x10005cfc000, 0x10005e0c000): secondaries are confined at EL2" / "the secondary CPUs can only run
+  code in a window, and there is none for the OS: this Stage 1 did not arm a large enough window.
+  Not starting the OS." It runs the proxy. The same refusal as 9.30.
+- **Policy afterwards** (`bputil -d`, from macOS): Permissive, custom kernel hash set (`coih`),
+  `Kernel CTRR Status: Disabled` (`sip2: 1`). So it is not CTRR.
+- **The cause, from kmutil's own output:** "found raw boot object, deriving Mach-O boot
+  properties... wrapping boot object payload...". kmutil 27.2 wraps a raw image in a Mach-O boot
+  object; iBoot then arms `CTXR_D` over the object alone (about 1 MiB here), as for any unpadded
+  Mach-O Stage 1 (aura `docs/macho-boot-object.md` at `v1.0.0b17`: "To boot an OS it has to be
+  padded… A Stage 2 from this tree refuses to start an OS under an unpadded Stage 1 on a confined
+  machine"). The raw path of 9.31 depended on 26.x kmutil enrolling the raw image as is.
+- **What this means:** `raw-ctxr` is a 26.6.2-only workaround. On 27.2 the J616c needs a padded
+  Mach-O Stage 1 (128 MiB window, `kmutil configure-boot --compress`), with Linux at EL2 in the
+  window (the kernel has `CONFIG_ARM64_CTXR_EXECMEM`): Aurora's M4 path and upstream's `macho` mode
+  (#238). On 26.6.2 with aura b13 the padded object looped silently on this Mac (9.29, 9.31); it
+  hasn't been tried with aura `v1.0.0b17` on 27.2 firmware.
+- **Fix tested by hand: a padded Mach-O Stage 1 boots** (2026-11-28). The installer's enrolled raw
+  image (`operation-2C50C120-…/stage1`: aura `v1.0.0b17` raw, its configuration block filled for this
+  ESP and `;m1n1/boot-ctxr.bin`, 59 bytes from the build) was wrapped and padded with aura's own
+  `tools/macho_boot_object.py --execute-window` (128 MiB window, 16 MiB slot, upstream's
+  `ExecuteWindow` sizes): 153,190,400 bytes (151,437,312 a hole), MD5 `13e78b27…`, sha256
+  `9e6dce03…06d1`; `kmutil inspect`: `kcbz 0`, `kcrz 153141248`, `kcwf 153141248`, the figures of
+  9.31's padding. Enrolled by Allan from One True Recovery with `go-oms30-macho.sh` (on the stub's
+  Data volume, `oms30/`; it checks the OS type, the volume and that Kernel CTRR is disabled, then runs
+  `kmutil configure-boot -c … --compress`; `--undo` re-enrolls the raw image). **The Mac booted past
+  Stage 2 into Omarchy's first boot** (disk encryption setup), where the raw object had been refused.
+  On 26.6.2 with aura b13 the padded object had looped silently (9.29, 9.31); on 27.2 with
+  `v1.0.0b17` it boots.
+- **What this means for the build:** the J616c leaves `raw-ctxr` for upstream's `macho` mode on
+  27.2, with aura `v1.0.0b17`'s Mach-O Stage 1. Not yet in the build: the installed Mac carries a
+  hand-enrolled boot object.
+
+### 9.60 The desktop stays black: the kernel refuses the 32-core J616c's 27.2 GPU firmware (OMS-30, 2026-11-28)
+- **Symptom:** after the disk encryption step of owner setup the panel stays black with the
+  backlight on; Caps Lock toggles, a text console (Ctrl+Option+fn+F7) shows a login prompt, and a
+  normal boot stops on the console after "Started Locale Service". The Limine menu (`timeout: 1`)
+  took no input from the built-in keyboard.
+- **Getting a shell:** a one-time `systemd.unit=rescue.target SYSTEMD_SULOGIN_FORCE=1` boot line, in
+  place of Omarchy's quiet options, written into the ESP's `limine.conf` from macOS with
+  `tools/esp-overwrite-same-size.py` (same 1,564 bytes, the difference padded into the first comment
+  line; Limine's config checksum is not enrolled, `++CONFIG_B2SUM_SIGNATURE++` all zeros). macOS 27.2
+  still cannot mount the FAT ESP, so it was read with `dd` and the tool's FAT reader. The install
+  unlocks its disk with a key file on Boot (`rd.luks.key=…:UUID=4f4d5801-424f-…-0001`), so no
+  password prompt appears.
+- **What the rescue shell showed:** the GPU node (`/proc/device-tree/gpu@288000000`, no `status`, so
+  enabled) reaches Linux, so aura `v1.0.0b17` (with aura#450's T6041 calibration hand-off) did not
+  switch it off. `aurora` is loaded, but `/sys/class/drm` has only the display (`card1`, eDP, DP,
+  HDMI), no render node. The driver logs, per probe:
+  `unsupported GPU firmware build: TEXT 0x64000 DATA 0xcc000 entropy 0x5d88c/0x5d96f sha256
+  c65e9d34de7fa3301a7e2244e55a96ba7950840c1f38db7c2fa5008e916e29dd`, then its admitted images
+  (`Apple GFX 26B123 for T6041 (normalized loaded image)`, the 25G83 ones, 25F84) and `GPU firmware
+  image not admitted: EINVAL` / `Unsupported GPU firmware image (reported macOS version
+  Some([27, 2, 0]))`. Hyprland then has no GPU to start on.
+- **Why:** `drivers/gpu/drm/asahi/hw/t6041.rs` (omacom/linux-aurora `3058cc5c`, and aurora-silicon/linux
+  main as of `6b6b1e6a`) admits the 26B123 image twice, with the 40-core and the 32-core
+  configuration ("a 32-core part runs `t6041_25g83::CONFIG` on both 25G83 and 26B123"), but lists only
+  one measured image, the 40-core J616C's (`cc4cb828…903b`). iBoot fills part of the loaded TEXT per
+  Mac, which is why 25G83 lists a separate 32-core J616C measurement; 26B123 has none. The measured
+  digest was the same on all 10 probes over two boots (the previous boot's journal and this one),
+  read as text from the logs saved to the ESP; it was misread off a photo first (`1f30` for `1f38`).
+- **Fix under test:** add the 32-core J616C's measurement to `BUILD_26B123`'s images
+  (`patches/linux-t6041-26b123-32core.patch`, on omacom/linux-aurora `3058cc5c`). Built as edge's
+  `linux-aurora 7.3.0.aurora1-1.1` (omarchy-pkgs' PKGBUILD with the patch in `source`, `pkgrel=1.1`,
+  so it sorts above edge's `-1` and below a future `-2`) with `bin/build` in the Lima VM. Not yet
+  installed. Upstream, this belongs in aurora-silicon/linux (AGENTS.md's routing table).
+- Also seen in the rescue boot: `snd-soc-macaudio sound: Speaker volumes unlocked`, so the new
+  `96-speakersafetyd-j616.rules` starts speakersafetyd; and `[drm] format XR24 … not supported` /
+  `No compatible format found` from apple-drm on the console framebuffer, harmless for fbcon.
+- **The patched kernel admits the GPU** (2026-11-28): `linux-aurora 7.3.0.aurora1-1.1` (sha256
+  `005928fe…b954`, `aurora.ko` carrying the new entry) fetched over the LAN in the rescue shell
+  (Wi-Fi by `iwctl`, DHCP from a runtime `/run/systemd/network` file, since rescue mode starts
+  neither) and installed with `pacman -U`; its hooks rebuilt the UKI, Stage 2 and `limine.conf`.
+  With `systemd.debug_shell` in place of the quiet options (same-size ESP write again, the new
+  `limine.conf` being 1,644 bytes), a root shell on tty9 during the normal boot showed:
+  `GPU firmware build: Apple GFX 26B123 for T6041 (normalized loaded image, 32-core J616C)`,
+  `GPU firmware: macOS 27.2 (26B123, iBoot mBoot-20457.41.3), 32 cores`, RTKit up,
+  `[drm] Initialized aurora 1.0.0 for 28a600000.gpu on minor 1`, and `renderD128`.
+- **Still black: owner setup draws nothing.** No unit failed; `omarchy-provision-owner.service` was
+  running, with `sddm` and `graphical.target` waiting behind it. It runs the setup under
+  `kmscon --vt=/dev/tty1 …` (Omarchy's `install/provisioning/kmscon.sh`, `omarchy_kmscon`).
+  apple-drm offers the T6041 primary plane only formats with alpha on firmware 27
+  (`drivers/gpu/drm/apple/plane.c`: `xrgb_is_alpha` → `dcp_overlay_formats`, "The firmware blends
+  the X byte as alpha and ignores the opaque-X property", from linux#2492), and logs
+  `format XR24 little-endian (0x34325258) not supported` / `No compatible format found`; the
+  kernel console falls back to AR24 (`plane-0 … format=AR24`). kmscon's DRM backend asks for
+  XRGB8888, so tty1 stays black. The same rule covers T8142 (M5) on firmware 27.
+- **Fix tested by hand:** `exec kmscon --no-drm \` in `omarchy_kmscon` (backup `.oms30-bak`), then
+  `systemctl restart omarchy-provision-owner`: the owner setup appeared on tty1. kmscon then draws
+  through `appledrmfb`, as omacom/omarchy#20512 (open) does for Snapdragon's `msmdrmfb`.
+- **Also from the debug shell, for later tasks:** `apple-ave … unexpected firmware segment sizes`
+  (no hardware video decode on 27.2, OMS-4) and `ane_t6021 … H16 preload matches none of 6
+  firmware profiles` (the Neural Engine refuses this Mac's 27.2 profile, the GPU's pattern).
+
+### 9.61 Hyprland needs the alpha-format fallback too, and then the desktop runs on 27.2 (OMS-30, 2026-11-28)
+- **After owner setup, a console again.** Setup finished (`useradd` for the owner at 15:10:39,
+  `omarchy-provision-owner` exited 0); SDDM autologged in and ran `uwsm start … Hyprland`, which
+  crash-looped (hundreds of `hyprlandCrashReport*.txt` in the owner's cache; the greeter's own
+  Hyprland too, then `sddm-greeter-qt6` aborted in `createPlatformIntegration`). The crash reports:
+  `ERR from aquamarine ]: GBM: Failed to allocate a GBM buffer: format XR24 isn't supported by primary
+  backend` / `Couldn't allocate a gbm buffer with size [3456, 2234] and format XR24` / `Swapchain:
+  Failed acquiring a buffer`. The same cause as kmscon's (9.60): the T6041 primary plane offers only
+  alpha formats on firmware 27.
+- **Prior work:** omacom/omarchy-pkgs#2739 (open, `aquamarine 0.16.0-1.2`, patch 0005 from
+  hyprwm/aquamarine#496, which hyprwm auto-closed) allocates the alpha variant when the scanout plane
+  lacks the opaque format, for the M5 Max. #2956 (open) proposes dropping it: the M5's driver was
+  fixed to offer XRGB8888 ("since the a3l driver fix"), and the fallback made Hyprland 0.57.2 show
+  frames two behind there. For T6041, linux#2492 chose alpha-only instead, the firmware ignoring the
+  opaque-X property, and kernel PR #1873 (alpha-only on T6050) was closed unmerged. Edge now
+  publishes its own `aquamarine 0.16.0-1.2` without 0005 (its library lacks the patch's
+  `not offered by the scanout plane` message).
+- **Built and installed by hand:** #2739's PKGBUILD (head `e285c152`) as `pkgrel=1.3`, built for
+  aarch64 under QEMU on dev-machine-01 in omarchy-pkgs' builder image (`bin/build` fails there:
+  `sudo` inside the emulated container has no effective uid 0, so the dependencies went in as root
+  and `makepkg` ran under `runuser`). `aquamarine-0.16.0-1.3-aarch64.pkg.tar.zst`, sha256
+  `35383b0b5af7a01973c8b70b8c60358bfb4474adc9cfc9e0aa554224b397ed60`, carrying the fallback message;
+  fetched over the LAN from the F9 debug shell and installed with `pacman -U`, then `systemctl restart
+  sddm`. **Hyprland started and the Omarchy desktop came up** on the internal panel at 3456x2234, with
+  Omarchy offering "Setup Fingerprint Reader".
+- **State of this install:** macOS 27.2 (26B123) system and stub; aura `v1.0.0b17` padded Mach-O
+  Stage 1 (hand-enrolled) and Stage 2; `linux-aurora 7.3.0.aurora1-1.1` (patched); `aquamarine
+  0.16.0-1.3` (patched); kmscon's `--no-drm` edit. Each is a row in AGENTS.md's hand-fix table. Still
+  to do on the Mac: drop `systemd.debug_shell` from the boot line (`limine-update`), restore the
+  kmscon file, then the checks.
+
+### 9.62 omarchy update refuses the pinned Stage 2; the owner-boot-chain marker comes back (OMS-30, 2026-11-28)
+- **Holds first:** an update would have replaced the patched `hyprland 0.57.2-7.1` with edge's
+  `-9`, whose `hypr-startup-hold.patch` calls `Aquamarine::IOutput::showsAdoptedPicture`, which our
+  aquamarine (#2739's base) lacks, and edge's next `linux-aurora` would drop the GPU fix. So the
+  Mac's `/etc/pacman.conf` gained `IgnorePkg = linux-aurora aquamarine hyprland hyprpm
+  omarchy-hyprland-titlebars` (Omarchy's template has no `IgnorePkg` line; the plugin's `-6` is
+  built for edge's Hyprland). `checkupdates` then listed 15 routine updates (Omarchy, `omarchy-mac
+  0.2.8`, `mesa-aurora`/`vulkan-aurora` 20261127, `avd-fw 0.2`, and others).
+- **The typing glitch and its fix:** with aquamarine's fallback, Hyprland 0.57.2's
+  `CMonitorState::ensureBufferPresent()` compared the AR24 buffer with the monitor's XR24 format on
+  every commit and swapped in the swapchain's next, stale buffer: typed text appeared, vanished and
+  reappeared (omarchy-pkgs#2956 measured the same on the M5).
+  `patches/hyprland-alpha-variant-buffer-present.patch` compares the formats with the alpha bit
+  ignored. Built natively on the Mac (14 cores, about two minutes) from omarchy-pkgs `167f408d`,
+  the installed `0.57.2-7`'s PKGBUILD, as `0.57.2-7.1` (`hyprland-0.57.2-7.1-aarch64.pkg.tar.xz`,
+  sha256 `39229656…c67b`); building from edge's `-9` failed on `showsAdoptedPicture`. Installed by
+  Allan; typing is normal.
+- **`omarchy update` then stopped:** "Apple Silicon boot check: M1N1
+  /usr/local/lib/aura/m1n1-5a244b5bcbaf.bin is not owned by aura". `omarchy-apple-silicon-boot-check`
+  (omarchy-mac-boot 20261123-1, line 778) requires the `M1N1=` file to be owned by the boot loader
+  package. **Correction to 9.57:** the check reads the pin but does not verify a pinned Stage 2, so
+  dropping the `owner-boot-chain` marker was wrong. With `/etc/omarchy-mac-boot/owner-boot-chain`
+  (its directory did not exist yet) the update completed: "Skipping boot verification … The packaged
+  check would fail: M1N1 … is not owned by aura". The derivation ships the marker again.
+
+### 9.63 The 27.2 install checked: the desktop works, the Neural Engine and video decoder do not (OMS-30, 2026-11-28)
+- **Reboot:** after `omarchy update` (9.62) and a check that `m1n1/boot-ctxr.bin` starts with the
+  pinned aura `v1.0.0b17` Stage 2 (`cmp`), the Mac rebooted at 16:36 into the same stack:
+  `7.3.0-1-1.1-ARCH`, `aquamarine 0.16.0-1.3`, `hyprland 0.57.2-7.1`, `mesa-aurora` 20261127. No
+  failed units.
+- **Working on macOS 27.2 (26B123) firmware:** GPU (32-core J616C image admitted, `renderD128`); 14
+  cores; speakers (`speakersafetyd` active through `96-speakersafetyd-j616.rules`; Allan: sound
+  plays); ambient light sensor (`aop-sensors-als` read 198.6 lux); camera (`apple-isp` with
+  `isp_2224_01XX.dat`, `/dev/video0`; Allan: works); Touch ID (SEP up, "interrupt-driven capture";
+  Allan: enrolment and `sudo` by finger work); x86-64 containers (Allan: `docker run --platform
+  linux/amd64 alpine uname -m` prints `x86_64`).
+- **Not working on 27.2:** the Neural Engine (`ane_t6021 … H16 preload matches none of 6 firmware
+  profiles, error -8` / `H16 stage program refused before RUN`) and hardware video decode
+  (`apple-ave 283100000.video-codec: error -EINVAL: unexpected firmware segment sizes`, probe fails,
+  OMS-4). Both follow the GPU's pattern: this Mac's 27.2 firmware is not among what the drivers
+  admit. For the upstream report with the GPU fingerprint.
+- **What makes this install differ from the build** (AGENTS.md's hand-fix table): the
+  hand-enrolled padded Mach-O Stage 1, the patched kernel, aquamarine and Hyprland with their
+  `IgnorePkg` holds, and the `owner-boot-chain` marker. Owner setup's `kmscon --no-drm` edit was
+  reverted after setup.
+
+### 9.64 The display fix rebuilt on current edge, and sent upstream (OMS-30, 2026-11-28)
+- **Upstream:** the GPU patch went to aurora-silicon/linux as a draft PR,
+  aurora-silicon/linux#3496 (branch `fix/t6041-26b123-32core` on the `allanclempe/linux` fork, one
+  commit on `main` `00fbe806`, the regenerated `patches/linux-t6041-26b123-32core.aurora-main.patch`).
+  It's a draft because Aurora's pre-PR checklist wants a run at the PR head, and ours is on omacom's
+  `3058cc5c`. Aurora's checklist forbids AI attribution (since 2026-11-21), so the PR carries
+  Allan's `Signed-off-by` only. The other drafts in `docs/upstream/oms-30/` went to Allan's J616c
+  Basecamp thread as one report.
+- **Rebuilt on current edge,** since edge's Hyprland moved to `-9`, which needs aquamarine's
+  `showsAdoptedPicture` (edge's `0.16.0-1.2`): `aquamarine 0.16.0-1.4` (edge's `-1.2` plus #2739's
+  `0005`, applied last with `--fuzz=0`; the library carries both the fallback message and
+  `showsAdoptedPicture`) and `hyprland 0.57.2-9.1` (edge's `-9` plus
+  `patches/hyprland-alpha-variant-buffer-present.patch`), built natively on the Mac;
+  `omarchy-hyprland-titlebars` moved to edge's `0.4.0-6`, which was built for `-9`. Hashes:
+  aquamarine `5d52ab0c…237b`, hyprland `e4740d67…6592`.
+- **Checked after a reboot (22:11):** desktop normal, typing normal, 0 failed units, 0 Hyprland crash
+  reports since boot. Hyprland's log has the fallback (`GBM: XR24 not offered by the scanout plane,
+  using AR24`) and no `ensureBufferPresent: no buffer or mismatched format`, which fired on every
+  commit before the Hyprland patch.
+- **Sent:** omacom/omarchy-pkgs#3854, "hyprland 0.57.2-10: keep the rendered frame when the scanout
+  buffer is the alpha variant" (the patch, its `prepare()` line with a comment, a README paragraph,
+  `pkgrel` 10), from the `allanclempe/omarchy-pkgs` fork.
+
+### 9.65 The build for a zero-hand-step 27.2 reinstall (OMS-30, 2026-11-28)
+- **Installer patch: the J616c takes upstream's Mach-O path.** Upstream's engine picks the Mach-O
+  Stage 1 (`esp/aurora/stage1.macho`, padded by Recovery, enrolled with `kmutil --compress`) by chip,
+  for every execute-window chip, unless the board has a `BOARD_STAGE1` entry; there is no firmware
+  gate on that path. The patch's `j616cap` `BoardStage1` entry and its `raw-ctxr` routing
+  (`BOARD_CONFINED_RAW_STAGE1`, `confined_raw_stage1()`, the Recovery staging row, the Recovery
+  app's `rawCtxr` mode, and 9.58's `mac-image-check` exception) are gone; those files are upstream's
+  again, so the Recovery app is unchanged. Kept: the J616c's admission, the 27.2-only firmware entry
+  (`IPSW("27.2", …)` naming only `j616cap`, its minimum 27.2) and the camera tuning collection. The
+  patch went from 21 files to 11 (+322/-40). `test/all` (77, 491, 327, 36; upstream's own tests that
+  send `j616cap` down the Mach-O path pass again) and `image-builder/test/all` pass. Engine renamed
+  `v0.9.2-omarchy.20261128.dd74a03c9b7d`; its archive size and digest are the previous build's
+  until it is rebuilt on macOS.
+- **Derivation:**
+  - inputs are now `EDGE_OUT ROOTFS STAGE1 STAGE2 PKGS OUT`: no Recovery input, since the edge
+    payload is built from the patched tree;
+  - `STAGE1` is aura `v1.0.0b17`'s Mach-O object, wrapped unpadded from `aura-raw.bin` with aura's
+    `tools/macho_boot_object.py`, replacing edge's `esp/aurora/stage1.macho`; its sha256 is recorded
+    after wrapping;
+  - Stage 2 goes to `boot.bin`, `boot-ctxr.bin` and `boot-j700.bin` only;
+  - `PKGS` adds the three patched builds (`linux-aurora 7.3.0.aurora1-1.1`, `aquamarine
+    0.16.0-1.4`, `hyprland 0.57.2-9.1`), installed right after the edge pins and checked:
+    `aurora.ko` admits the 32-core 26B123 image; `libaquamarine` has the fallback and
+    `showsAdoptedPicture`;
+  - `IgnorePkg = linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars`;
+  - `kmscon --no-drm` in the image's `kmscon.sh` (exactly one `exec kmscon \` line, checked; tested
+    on a copy of the Mac's file);
+  - `EDGE_PINS` moved to edge's current builds: `mesa-aurora`/`vulkan-aurora` 20261127,
+    `omarchy-mac 0.2.8-1`, `speakersafetyd 3.0.0-1` (a major version; speakers to be checked on the
+    reinstall), `omarchy-hyprland-titlebars 0.4.0-6`.
+
+  Syntax and shellcheck as before. Not yet run.
+
+### 9.66 The Hyprland fix narrowed to the monitor's own buffers, and retested (OMS-30, 2026-11-28)
+A review of omacom/omarchy-pkgs#3854 (two reviewers, Claude Opus and Gemini Neon) found that the
+9.62 patch accepted any buffer whose format differed from the monitor's only by alpha, a client's
+direct-scanout ARGB8888 dmabuf included. On a plane that does offer XRGB8888, when `trySetFormat` or
+`handleDSleave` resets the monitor's format while a client's buffer is still in the output state,
+Hyprland would keep the client's buffer where it used to attach one from its swapchain, so "nothing
+changes where the plane offers the opaque format" was not quite true. The patch now relaxes the
+comparison only for buffers in the monitor's own swapchain (aquamarine's `CSwapchain::contains`,
+present in v0.16.0); every other buffer must match exactly, as before.
+
+`hyprland 0.57.2-9.2` (edge's `-9` plus the new patch, sha256 `2386c87e…cddcab0`) was built on the
+Mac and installed over `-9.1`. After a reboot, with `-9.2` running: typing in a terminal and a
+browser field on the internal panel shows no flicker, a 30 s 1080p60 test clip played full screen in
+mpv to the end, Hyprland's log has no `mismatched format` line, and there are no core dumps.
+The same run shows hardware video decoding working on 27.2: mpv used VA-API through
+`libva-v4l2request` on the AVD (`decoding h264 via /dev/video12 [avd]`, `vaapi-copy`).
+
+The derivation now pins `hyprland 0.57.2-9.2` (package sha256 `bf3b3153…beab64`), and the `PKGS`
+input carries it in place of `-9.1`. The fix to #3854 (the new patch, its checksum, and its README
+note under its own heading) is prepared but not pushed.
+
+Later the same day: with Allan's go-ahead, #3854 was converted to a draft (the repository publishes
+a non-draft PR once CI is green, and the patch does nothing until #2739 lands), the fix was pushed
+as `106ab3c3`, and the description now says what the narrowed patch keeps and records the 9.2 test.
+
+### 9.67 The zero-hand-step 27.2 build, made (OMS-30, 2026-11-28)
+Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and logs):
+- **Stage 1:** aura `v1.0.0b17`'s `out/aura-raw.bin` wrapped with `tools/macho_boot_object.py`
+  (no `--execute-window`): `out/stage1.macho`, 1,753,088 B, one `AURORA-S1-CFG01` block, sha256
+  `51bbab87…cd5b`, pinned as `STAGE1_SHA256`. Recovery fills and pads it at enrollment.
+- **Installer:** the clone reset to `e0aa53fd` (the old tree's diff kept as `old-installer-tree.diff`)
+  and the 9.65 patch applied; `swift test` no failures, `Recovery/test-all.sh` 21 PASS. Engine
+  `v0.9.2-omarchy.20261128.dd74a03c9b7d`: two rebuilds identical, 17,916,827 B, sha256
+  `0efe9545…869d`, `engine_pin.py check` passes, `prepare-engine.py` reproduced it; the pin is in
+  the patch, which matches the Mac's tree exactly. Recovery app rebuilt (upstream's; manifest
+  `80bfcafe…700f`).
+- **Edge inputs:** `channel_set=omarchy-edge-12db5036adbe`. Every `EDGE_PINS` version is still
+  offered except `omarchy-hyprland-titlebars`: edge replaced `0.4.0-6` with `0.5.0-1`, which
+  requires `hyprland=0.57.2` and so takes the patched 9.2 (the patch changes no header). Pin moved;
+  not yet run on the Mac. Edge payload `omarchy-2026.11.28-…-edge-os-package.zip`, 3,687,569,343 B.
+- **Derivation, three failures before it passed:**
+  - "more than one kernel is installed": edge's image also ships `linux-aurora-headers`, whose
+    `-1` kept `/usr/lib/modules/7.3.0-1-1-ARCH`. The kernel build of 9.60 also made
+    `linux-aurora-headers 7.3.0.aurora1-1.1` (sha256 `f6495f24…b458`); it is now in `PKGS`, pinned
+    and held in `IgnorePkg`. The installed Mac still has edge's `-1` headers, which match no
+    installed kernel. A leftover module directory no package owns is now removed and logged.
+  - "the kernel's GPU driver does not admit the 32-core J616c's 26B123 image", though the string
+    is in `aurora.ko`: `module_has` piped the module into `grep -q` under `pipefail`, and grep
+    stopping at the first match killed `cat` on the 7 MB module (status 141). GNU grep does the same
+    with its output on `/dev/null`. It now counts matches; the Realtek firmware check too.
+  - Passed in 209 s: every check, `hyprland 0.57.2-9.2`, `linux-aurora` and headers `1.1`,
+    titlebars `0.5.0-1`, no `.pacnew`, root free 6.4 GB. Payload
+    `omarchy-2026.11.28-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`, 4,093,147,840 B,
+    sha256 `342e7bfb…21ab`; `mac-image-check payload edge` passes.
+- **Catalog, app and package** (`build-installer2.sh`): catalog signed and verified, 36 models,
+  the J616c's `installer_data-j616c.json` with `supported_fw: ["27.2"]`; app 2.3.21; package
+  `build/oms30/Omarchy-J616c-Developer.pkg`, 4,120,529,298 B, sha256
+  `21b0610dbc26d93c93351a38448dcf23034258188fc4b4b0c18e2e8180150001`. The 2.3.20 package of 9.58
+  is kept as `Omarchy-J616c-Developer-2.3.20.pkg`.
+- **First install attempt stopped at staging:** `destinationConflict("installer_data-j616c.json")`.
+  The app stages into `~/Library/Application Support/org.omarchy.installer.developer/staging/<evidence
+  revision>/` and refuses a file there that isn't the catalog's. This build kept 9.58's
+  `j616c-dev.20261128`, so the folder held the 2.3.20 build's metadata and payload. Moved aside to
+  `staging-old/j616c-dev.20261128-2.3.20`, with the app quit. `build-installer2.sh` now stamps
+  each build's revision with the minute; untested whether the catalog accepts that form.
+
+### 9.68 First boot stops: edge dropped SDDM (omarchy#20404); rebuilt on the day-before payload (OMS-30, 2026-11-29)
+- **The 2.3.21 install, zero hand steps up to first boot:** the app, Recovery's own enrollment of
+  the Mach-O Stage 1 (the step that failed on every earlier 27.2 attempt), Stage 2, the kernel,
+  encryption and kmscon all came up. Then `omarchy-mac-first-boot` stopped: "Omarchy could not
+  finish first boot: could not enable the display manager". Its log:
+  `Failed to enable unit: Unit sddm.service does not exist`.
+- **Cause:** omacom/omarchy#20404 (merged 2026-11-28 08:55 UTC) replaced SDDM with greetd's login
+  screen and Plymouth with Omarchy's own boot splash, so channel `omarchy-edge-12db5036adbe` has no
+  SDDM. `omarchy-mac-first-boot` (omarchy-mac-boot `20261123-1`, still on `main`) runs
+  `systemctl enable sddm.service` in `stage_provisioning()`. Every Mac installed from current edge
+  stops there. No issue or PR on omarchy-mac-pkgs mentions it yet; Allan raises it with the M team.
+  The new greeter and splash run on sway (wlroots 0.20), which may hit the same missing XRGB8888
+  on T6041 firmware 27 as Hyprland did (9.61); untested.
+- **Rebuilt on the 2026.11.27 edge payload** (channel `omarchy-edge-4853c75f5f99`, 9.58), which
+  predates #20404. The derivation upgraded only the pins (`mesa-aurora`/`vulkan-aurora` 20261127,
+  `omarchy-mac 0.2.8-1`, `speakersafetyd 3.0.0-1`, titlebars `0.5.0-1`, `libfprint-git` with
+  `libgusb`); the pins depend on `omarchy` unversioned, so Omarchy, SDDM and Plymouth stay at
+  that payload's. That payload carries 9.58's Recovery app (manifest `c580897c…b55c`, which also
+  knows `raw-ctxr`; its Mach-O path is upstream's). Payload
+  `omarchy-2026.11.27-…-j616c-dev-os-package.zip`, 4,143,893,071 B, sha256 `53ead0fc…92ae`,
+  passes `mac-image-check payload edge`. Catalog `j616c-dev.202611290018` (the minute-stamped
+  revision is accepted); app 2.3.22; package `Omarchy-J616c-Developer.pkg`, 4,170,757,602 B, sha256
+  `f9a8d8455dcee11c41871ad5858a637ef28c51415ac0c17f9ac152c13dd3faed`. 2.3.21's package kept as
+  `Omarchy-J616c-Developer-2.3.21.pkg`.
+- **Expected at the first `omarchy update`:** it brings #20404, whose migration enables greetd
+  and rebuilds the boot image with the new splash. Omarchy snapshots before updating, and Limine
+  lists the snapshots, so it can be rolled back.
+
+### 9.69 The 2.3.22 install reaches the desktop on 27.2; the first-boot fix sent as omarchy-mac-pkgs#209 (OMS-30, 2026-11-29)
+- **2.3.22 installed and on the desktop** (Allan, after removing the 2.3.21 install with
+  `remove-oms30-install.sh`). Checked over Tailscale (`clempe-apple-macbookpro-1`): kernel
+  `7.3.0-1-1.1-ARCH`, `aurora` admitted "Apple GFX 26B123 for T6041 (normalized loaded image,
+  32-core J616C)", 32 cores; `aquamarine 0.16.0-1.4` logged "XR24 not offered by the scanout
+  plane, using AR24" and `hyprland 0.57.2-9.2` no `mismatched format`; root on LUKS; no failed
+  units, no core dumps. `speakersafetyd 3.0.0-1` active, with the `j616-convolver` speaker sink.
+  `omarchy-hyprland-titlebars 0.5.0-1` installed (Omarchy loads it once a window floats).
+  `IgnorePkg = linux-aurora linux-aurora-headers aquamarine hyprland hyprpm
+  omarchy-hyprland-titlebars` and `/etc/omarchy-mac-boot/owner-boot-chain` in place. The ANE still
+  refuses its firmware (digest `9189fac9…`, 9.63). Allan to confirm no hand step was typed.
+- **The first-boot fix** (9.68's stop), on omacom/omarchy-mac-pkgs as draft #209 from
+  `allanclempe:mac-first-boot-greetd` (Scott asked for it): where `greetd.service` is installed,
+  `omarchy-mac-first-boot` runs `omarchy-system-login --reset` and enables greetd, else SDDM as
+  before; greetd gets SDDM's first-boot gate and omarchy-mac's display wait; the external displays
+  release before it. CI's Arch image, pinned runtime: omarchy-mac 147 ok, omarchy-mac-boot 310 ok,
+  integration 61 ok; the new cases fail when SDDM is hard-coded or greetd's gate is removed. Not yet
+  cold-booted: that needs a current-edge payload with this omarchy-mac-boot.
+- **Cold boot, then the first `omarchy update`** (2026-11-29): the 2.3.22 install cold-booted to the
+  desktop (00:39). `omarchy update` brought omarchy#20404 (`omarchy-dev` `4.0.0.r8446` →
+  `4.0.0.r8557`), installing `greetd 0.10.3-2.1`, `sway 1:1.12-4` and `wlroots0.20 0.20.2-1.2`; its
+  migration enabled greetd and disabled SDDM (`display-manager.service` → `greetd.service`) and
+  carried the autologin over (`initial_session` for `clempe`, `service = "omarchy-login"`). After
+  the reboot (00:42) greetd is active and signed Allan straight into Hyprland on seat0; no failed
+  units, no core dumps. The `IgnorePkg` holds kept `linux-aurora`/`-headers 1.1`,
+  `aquamarine 1.4`, `hyprland 9.2` and titlebars `0.5.0-1`. greetd's login screen therefore works
+  on the T6041 firmware-27 display through Omarchy's own migration. With Allan's confirmation of no
+  typed hand step, this is OMS-30's acceptance run on 27.2.
+- **Allan confirms zero hand steps** (2026-11-29): nothing typed outside the installer and setup
+  screens. OMS-30's acceptance run on 27.2 passes. AGENTS.md's status, hand-fix rows and installed-Mac
+  section now describe this install (ESP `nvme0n1p4` PARTUUID `e137146e-a21b-4886-9c40-b3b147beb20a`,
+  Boot `nvme0n1p5` PARTUUID `86be6da2-3349-4860-8f08-4a140735c657`, root LUKS `nvme0n1p6` PARTUUID
+  `562477b6-8933-4dd3-8347-c491da74f024`, copied from `lsblk`).
