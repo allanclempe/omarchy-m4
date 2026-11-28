@@ -1570,3 +1570,22 @@ Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and 
 - **Expected at the first `omarchy update`:** it brings #20404, whose migration enables greetd
   and rebuilds the boot image with the new splash. Omarchy snapshots before updating, and Limine
   lists the snapshots, so it can be rolled back.
+
+### 9.69 The 2.3.22 install reaches the desktop on 27.2; the first-boot fix sent as omarchy-mac-pkgs#209 (OMS-30, 2026-11-29)
+- **2.3.22 installed and on the desktop** (Allan, after removing the 2.3.21 install with
+  `remove-oms30-install.sh`). Checked over Tailscale (`clempe-apple-macbookpro-1`): kernel
+  `7.3.0-1-1.1-ARCH`, `aurora` admitted "Apple GFX 26B123 for T6041 (normalized loaded image,
+  32-core J616C)", 32 cores; `aquamarine 0.16.0-1.4` logged "XR24 not offered by the scanout
+  plane, using AR24" and `hyprland 0.57.2-9.2` no `mismatched format`; root on LUKS; no failed
+  units, no core dumps. `speakersafetyd 3.0.0-1` active, with the `j616-convolver` speaker sink.
+  `omarchy-hyprland-titlebars 0.5.0-1` installed (Omarchy loads it once a window floats).
+  `IgnorePkg = linux-aurora linux-aurora-headers aquamarine hyprland hyprpm
+  omarchy-hyprland-titlebars` and `/etc/omarchy-mac-boot/owner-boot-chain` in place. The ANE still
+  refuses its firmware (digest `9189fac9…`, 9.63). Allan to confirm no hand step was typed.
+- **The first-boot fix** (9.68's stop), on omacom/omarchy-mac-pkgs as draft #209 from
+  `allanclempe:mac-first-boot-greetd` (Scott asked for it): where `greetd.service` is installed,
+  `omarchy-mac-first-boot` runs `omarchy-system-login --reset` and enables greetd, else SDDM as
+  before; greetd gets SDDM's first-boot gate and omarchy-mac's display wait; the external displays
+  release before it. CI's Arch image, pinned runtime: omarchy-mac 147 ok, omarchy-mac-boot 310 ok,
+  integration 61 ok; the new cases fail when SDDM is hard-coded or greetd's gate is removed. Not yet
+  cold-booted: that needs a current-edge payload with this omarchy-mac-boot.
