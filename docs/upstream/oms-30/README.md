@@ -4,7 +4,7 @@ Drafts of the reports and pull requests from the J616c's macOS 27.2 bring-up (JO
 9.63). Each file names where it goes and needs Allan's go-ahead. aurora-silicon forbids AI
 attribution (its pre-PR checklist), so nothing sent there mentions it.
 
-Sent: 01 as aurora-silicon/linux#3496 (draft, 2026-11-28). The rest went to Allan's J616c thread on
+Sent: 01 as aurora-silicon/linux#3496 (draft) and 05 as omacom/omarchy-pkgs#3854 (2026-11-28). The rest went to Allan's J616c thread on
 the M team's Basecamp as one report, for the team to pick up.
 
 | Draft | Goes to | Kind |

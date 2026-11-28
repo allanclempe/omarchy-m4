@@ -1420,3 +1420,26 @@ initialized successfully", `/dev/kvm` present).
   hand-enrolled padded Mach-O Stage 1, the patched kernel, aquamarine and Hyprland with their
   `IgnorePkg` holds, and the `owner-boot-chain` marker. Owner setup's `kmscon --no-drm` edit was
   reverted after setup.
+
+### 9.64 The display fix rebuilt on current edge, and sent upstream (OMS-30, 2026-11-28)
+- **Upstream:** the GPU patch went to aurora-silicon/linux as a draft PR,
+  aurora-silicon/linux#3496 (branch `fix/t6041-26b123-32core` on the `allanclempe/linux` fork, one
+  commit on `main` `00fbe806`, the regenerated `patches/linux-t6041-26b123-32core.aurora-main.patch`).
+  It's a draft because Aurora's pre-PR checklist wants a run at the PR head, and ours is on omacom's
+  `3058cc5c`. Aurora's checklist forbids AI attribution (since 2026-11-21), so the PR carries
+  Allan's `Signed-off-by` only. The other drafts in `docs/upstream/oms-30/` went to Allan's J616c
+  Basecamp thread as one report.
+- **Rebuilt on current edge,** since edge's Hyprland moved to `-9`, which needs aquamarine's
+  `showsAdoptedPicture` (edge's `0.16.0-1.2`): `aquamarine 0.16.0-1.4` (edge's `-1.2` plus #2739's
+  `0005`, applied last with `--fuzz=0`; the library carries both the fallback message and
+  `showsAdoptedPicture`) and `hyprland 0.57.2-9.1` (edge's `-9` plus
+  `patches/hyprland-alpha-variant-buffer-present.patch`), built natively on the Mac;
+  `omarchy-hyprland-titlebars` moved to edge's `0.4.0-6`, which was built for `-9`. Hashes:
+  aquamarine `5d52ab0c…237b`, hyprland `e4740d67…6592`.
+- **Checked after a reboot (22:11):** desktop normal, typing normal, 0 failed units, 0 Hyprland crash
+  reports since boot. Hyprland's log has the fallback (`GBM: XR24 not offered by the scanout plane,
+  using AR24`) and no `ensureBufferPresent: no buffer or mismatched format`, which fired on every
+  commit before the Hyprland patch.
+- **Sent:** omacom/omarchy-pkgs#3854, "hyprland 0.57.2-10: keep the rendered frame when the scanout
+  buffer is the alpha variant" (the patch, its `prepare()` line with a comment, a README paragraph,
+  `pkgrel` 10), from the `allanclempe/omarchy-pkgs` fork.
