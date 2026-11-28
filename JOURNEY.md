@@ -1589,3 +1589,13 @@ Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and 
   release before it. CI's Arch image, pinned runtime: omarchy-mac 147 ok, omarchy-mac-boot 310 ok,
   integration 61 ok; the new cases fail when SDDM is hard-coded or greetd's gate is removed. Not yet
   cold-booted: that needs a current-edge payload with this omarchy-mac-boot.
+- **Cold boot, then the first `omarchy update`** (2026-11-29): the 2.3.22 install cold-booted to the
+  desktop (00:39). `omarchy update` brought omarchy#20404 (`omarchy-dev` `4.0.0.r8446` →
+  `4.0.0.r8557`), installing `greetd 0.10.3-2.1`, `sway 1:1.12-4` and `wlroots0.20 0.20.2-1.2`; its
+  migration enabled greetd and disabled SDDM (`display-manager.service` → `greetd.service`) and
+  carried the autologin over (`initial_session` for `clempe`, `service = "omarchy-login"`). After
+  the reboot (00:42) greetd is active and signed Allan straight into Hyprland on seat0; no failed
+  units, no core dumps. The `IgnorePkg` holds kept `linux-aurora`/`-headers 1.1`,
+  `aquamarine 1.4`, `hyprland 9.2` and titlebars `0.5.0-1`. greetd's login screen therefore works
+  on the T6041 firmware-27 display through Omarchy's own migration. With Allan's confirmation of no
+  typed hand step, this is OMS-30's acceptance run on 27.2.
