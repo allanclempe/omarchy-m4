@@ -22,7 +22,7 @@
 #     aquamarine 0.16.0-1.4 (edge's 1.2 plus omarchy-pkgs#2739's alpha-variant
 #     scanout fallback: on firmware 27 the T6041 primary plane offers no
 #     XRGB8888, and stock aquamarine makes Hyprland crash-loop); and hyprland
-#     0.57.2-9.1 (edge's 9 plus patches/hyprland-alpha-variant-buffer-present.patch,
+#     0.57.2-9.2 (edge's 9 plus patches/hyprland-alpha-variant-buffer-present.patch,
 #     omarchy-pkgs#3854, without which the fallback repeats stale frames);
 #   - runs owner setup's kmscon with --no-drm, which then draws through the
 #     kernel's AR24 framebuffer: its DRM backend asks for XRGB8888 and draws
@@ -101,7 +101,7 @@ declare -A EDGE_PINS=(
 declare -A PATCHED=(
   [linux-aurora]=7.3.0.aurora1-1.1
   [aquamarine]=0.16.0-1.4
-  [hyprland]=0.57.2-9.1
+  [hyprland]=0.57.2-9.2
 )
 HOLDS="linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars"
 # Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
@@ -130,7 +130,7 @@ declare -A PKG_SHA256=(
   [linux-aurora-7.3.0.aurora1-1.1-aarch64.pkg.tar.zst]=005928fe711a8f0d06ef97093a2c253ca4fbabe092194491a60aaccf1823b954
   # JOURNEY 9.64: built natively on the J616c from the edge recipes plus the patches.
   [aquamarine-0.16.0-1.4-aarch64.pkg.tar.xz]=5d52ab0ce1aa42e3210163885e2f32017e0c164a55cad6fe3d862db3d6dd237b
-  [hyprland-0.57.2-9.1-aarch64.pkg.tar.xz]=e4740d67c0cc51ff2eaf0f277bec31b16b782b5e668e9cf663edd99b561a6592
+  [hyprland-0.57.2-9.2-aarch64.pkg.tar.xz]=bf3b315315da783e3f6fccab0e348ae7e593c4cf0a1a2501426a9ed504beab64
 )
 QEMU_BINFMT=qemu-x86_64-static.conf
 

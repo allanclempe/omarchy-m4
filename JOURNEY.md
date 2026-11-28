@@ -1476,3 +1476,24 @@ initialized successfully", `/dev/kvm` present).
     reinstall), `omarchy-hyprland-titlebars 0.4.0-6`.
 
   Syntax and shellcheck as before. Not yet run.
+
+### 9.66 The Hyprland fix narrowed to the monitor's own buffers, and retested (OMS-30, 2026-11-28)
+A review of omacom/omarchy-pkgs#3854 (two reviewers, Claude Opus and Gemini Neon) found that the
+9.62 patch accepted any buffer whose format differed from the monitor's only by alpha, a client's
+direct-scanout ARGB8888 dmabuf included. On a plane that does offer XRGB8888, when `trySetFormat` or
+`handleDSleave` resets the monitor's format while a client's buffer is still in the output state,
+Hyprland would keep the client's buffer where it used to attach one from its swapchain, so "nothing
+changes where the plane offers the opaque format" was not quite true. The patch now relaxes the
+comparison only for buffers in the monitor's own swapchain (aquamarine's `CSwapchain::contains`,
+present in v0.16.0); every other buffer must match exactly, as before.
+
+`hyprland 0.57.2-9.2` (edge's `-9` plus the new patch, sha256 `2386c87e…cddcab0`) was built on the
+Mac and installed over `-9.1`. After a reboot, with `-9.2` running: typing in a terminal and a
+browser field on the internal panel shows no flicker, a 30 s 1080p60 test clip played full screen in
+mpv to the end, Hyprland's log has no `mismatched format` line, and there are no core dumps.
+The same run shows hardware video decoding working on 27.2: mpv used VA-API through
+`libva-v4l2request` on the AVD (`decoding h264 via /dev/video12 [avd]`, `vaapi-copy`).
+
+The derivation now pins `hyprland 0.57.2-9.2` (package sha256 `bf3b3153…beab64`), and the `PKGS`
+input carries it in place of `-9.1`. The fix to #3854 (the new patch, its checksum, and its README
+note under its own heading) is prepared but not pushed.
