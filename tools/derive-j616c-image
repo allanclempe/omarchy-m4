@@ -7,14 +7,26 @@
 # edge stack, [omarchy] first, as the image-builder writes it: Aurora's own
 # repository is not used, since its kernel lacks the 27.2 support. It:
 #   - installs and pins the exact [omarchy] edge builds it was made with
-#     (EDGE_PINS) and stops if the repo has moved on: linux-aurora 7.3 from
-#     omacom/linux-aurora 3058cc5c, which carries aurora-silicon/linux#1954
-#     (T6041 on 27.2 firmware) and #2233 (the ISP's computed noise filter,
-#     OMS-45), both checked in its modules; the Mesa that kernel requires; the
-#     boot scripts (aurora-scripts, omarchy-mac-boot); Touch ID (omarchy-mac
-#     with the J616c's xART guard, libfprint-git); audio (aurora-audio with the
-#     J616 graphs and speaker profile, alsa-ucm-conf-aurora, speakersafetyd); the
-#     VA-API bridge with the aurora alias (OMS-4);
+#     (EDGE_PINS) and stops if the repo has moved on: the Mesa the kernel
+#     requires; the boot scripts (aurora-scripts, omarchy-mac-boot); Touch ID
+#     (omarchy-mac with the J616c's xART guard, libfprint-git); audio
+#     (aurora-audio with the J616 graphs and speaker profile,
+#     alsa-ucm-conf-aurora, speakersafetyd); the VA-API bridge with the aurora
+#     alias (OMS-4); the titlebars plugin built for edge's Hyprland;
+#   - installs three patched builds from the PKGS input, each pinned by sha256,
+#     and holds them in pacman.conf's IgnorePkg (HOLDS) so omarchy update keeps
+#     them: linux-aurora 7.3.0.aurora1-1.1 (edge's, omacom/linux-aurora
+#     3058cc5c, which carries aurora-silicon/linux#1954 and #2233, plus
+#     patches/linux-t6041-26b123-32core.patch, without which the 32-core
+#     J616c's GPU never starts on 27.2; all three checked in its modules);
+#     aquamarine 0.16.0-1.4 (edge's 1.2 plus omarchy-pkgs#2739's alpha-variant
+#     scanout fallback: on firmware 27 the T6041 primary plane offers no
+#     XRGB8888, and stock aquamarine makes Hyprland crash-loop); and hyprland
+#     0.57.2-9.1 (edge's 9 plus patches/hyprland-alpha-variant-buffer-present.patch,
+#     omarchy-pkgs#3854, without which the fallback repeats stale frames);
+#   - runs owner setup's kmscon with --no-drm, which then draws through the
+#     kernel's AR24 framebuffer: its DRM backend asks for XRGB8888 and draws
+#     nothing on that plane (omacom/omarchy#20512 does the same on Snapdragon);
 #   - starts speakersafetyd for the J616 speaker card, which speakersafetyd's
 #     own rule doesn't list (tools/image/96-speakersafetyd-j616.rules, OMS-1);
 #   - installs linux-firmware-realtek from [core]: the image ships no linux-firmware
@@ -27,7 +39,7 @@
 #     user4k=on GRUB drop-in, and runs containerd under userpages 4k
 #     (tools/image/containerd-user4k.conf), since x86 libraries built for 4 KiB
 #     pages don't map on the 16 KiB kernel. Those three packages come from the
-#     PKGS input, each pinned by sha256;
+#     PKGS input too;
 #   - uses Stage 1 and Stage 2 built from aura v1.0.0b17 (STAGE1_COMMIT), which
 #     carry aura#265 (27.2 GPU and display hand-off on T6041) and the later M4
 #     27.2 fixes; edge's aura package predates #265. Stage 2 is installed at
@@ -41,24 +53,26 @@
 #     which every Omarchy ESP shares (OMS-12), and /boot from the partition
 #     after it rather than the Boot UUID every install shares (OMS-15);
 #   - lets the image's own hooks rebuild the UKI, then builds Stage 2 with the
-#     stock update-m1n1 and stages esp/aurora/stage1-j616c.bin (aura's raw
-#     Stage 1, which the installer enrolls raw as raw-ctxr, OMS-24) and
-#     esp/m1n1/boot-ctxr-j616c.bin;
+#     stock update-m1n1, and replaces the edge image's esp/aurora/stage1.macho
+#     with aura v1.0.0b17's Mach-O Stage 1. The J616c takes upstream's macho
+#     mode like every M4 Mac: Recovery pads it for the execute window and
+#     enrolls it with kmutil --compress. On 27.2, kmutil wraps a raw Stage 1 as
+#     an unpadded Mach-O object that arms no window for the OS (JOURNEY 9.59);
 #   - re-seals @factory and packages the payload with its installer_data.json.
 #
 # Run on an aarch64 Linux host with Docker and passwordless sudo:
-#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL RECOVERY_DIR STAGE1 STAGE2 PKGS OUTPUT_DIR
-# STAGE1 is aura's raw Stage 1 and STAGE2 its Stage 2, both built from aura
-# STAGE1_COMMIT with the aura PKGBUILD's flags (Stage 1: RELEASE=1 CHAINLOADING=1
-# USE_CLANG=1 BUILTIN_LOGO=aurora, build/aura.bin; Stage 2 adds ESP_STAGE2=1);
-# their sha256 must be STAGE1_SHA256 and STAGE2_SHA256.
-# PKGS is a directory holding the two packages omarchy-pkgs builds at
-# QEMU_PR_COMMIT (`bin/build --arch aarch64 --package qemu-user-static`, files
-# under build-output/edge/aarch64/) and Aurora's aurora-userpages; each must
-# match PKG_SHA256.
-# RECOVERY_DIR is a Recovery/build-recovery.sh output built from the branch with
-# the raw-ctxr boot mode (OMS-24); it replaces the edge image's Recovery app,
-# which doesn't know that mode.
+#   derive-j616c-image EDGE_OUT_DIR ROOTFS_TARBALL STAGE1 STAGE2 PKGS OUTPUT_DIR
+# STAGE1 is aura's Mach-O Stage 1, unpadded: build/aura.bin from aura
+# STAGE1_COMMIT with the aura PKGBUILD's Stage 1 flags (RELEASE=1 CHAINLOADING=1
+# USE_CLANG=1 BUILTIN_LOGO=aurora), wrapped by aura's own
+# `tools/macho_boot_object.py build/aura.bin OUT` (no --execute-window: Recovery
+# pads it). STAGE2 is aura's Stage 2 from the same commit (the same flags plus
+# ESP_STAGE2=1). Their sha256 must be STAGE1_SHA256 and STAGE2_SHA256.
+# PKGS is a directory holding every file PKG_SHA256 names: the two packages
+# omarchy-pkgs builds at QEMU_PR_COMMIT (`bin/build --arch aarch64 --package
+# qemu-user-static`), Aurora's aurora-userpages, and the three patched builds.
+# EDGE_OUT_DIR is built with the image-builder from the patched installer
+# (patches/j616c-installer.patch), so its Recovery app is that tree's.
 set -euo pipefail
 
 # The exact [omarchy] edge builds this image is made and tested with. The repo
@@ -66,28 +80,39 @@ set -euo pipefail
 # build when the repo has moved on, so a new kernel or Mesa never ships
 # untested. Bump these on purpose, and record why in JOURNEY.
 declare -A EDGE_PINS=(
-  [linux-aurora]=7.3.0.aurora1-1
-  [mesa-aurora]=1:26.3.0_devel.20261122.232644.e705eca833f-1
-  [vulkan-aurora]=1:26.3.0_devel.20261122.232644.e705eca833f-1
+  [mesa-aurora]=1:26.3.0_devel.20261127.234134.a6853addcd0-1
+  [vulkan-aurora]=1:26.3.0_devel.20261127.234134.a6853addcd0-1
   [aura]=1.0.0b13.r20261118-1
   [uboot-aurora]=2026.07.aurora9-1
   [aurora-scripts]=20261023-2
   [omarchy-mac-boot]=20261123-1
-  [omarchy-mac]=0.2.7-2
+  [omarchy-mac]=0.2.8-1
   [libfprint-git]=1:1.94.100.r10.g6f9479c-6
   [aurora-audio]=4.1.aurora3-6
   [alsa-ucm-conf-aurora]=10.aurora3-2
-  [speakersafetyd]=2.0.1-2
+  [speakersafetyd]=3.0.0-1
   [libva-v4l2_request-avd]=1.3.r11.r169.gc653eaa-2
+  [omarchy-hyprland-titlebars]=0.4.0-6
 )
+# The patched builds from PKGS, and the versions they must install as. Held in
+# IgnorePkg (with hyprpm, Hyprland's split package, and the titlebars plugin
+# built for this Hyprland), so omarchy update keeps them until edge carries
+# the fixes; drop each hold with its package.
+declare -A PATCHED=(
+  [linux-aurora]=7.3.0.aurora1-1.1
+  [aquamarine]=0.16.0-1.4
+  [hyprland]=0.57.2-9.1
+)
+HOLDS="linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars"
 # Realtek firmware for USB-C dongles: the r8152 Ethernet family (RTL8153B wants
 # rtl_nic/rtl8153b-2.fw), Realtek USB Wi-Fi and Bluetooth. The image ships no
 # linux-firmware split, since the Mac's own firmware comes from macOS (OMS-7).
 DONGLE_FIRMWARE=(core/linux-firmware-realtek)
 # Stage 1 and Stage 2 from aura v1.0.0b17, built on the Mac (JOURNEY 9.58):
-# aura-raw.bin 1,638,400 B and Stage 2 3,997,696 B.
+# Stage 2 3,997,696 B. Stage 1 is the Mach-O object wrapped from that build's
+# aura-raw.bin (sha256 93457a37…40be); record its sha256 after wrapping it.
 STAGE1_COMMIT=5a244b5bcbaf
-STAGE1_SHA256=93457a3710daf7c500de0e7e22c3842a85681c4e1aa7d736b9eb34701b1440be
+STAGE1_SHA256=
 STAGE2_SHA256=aef08d291be788366fd4bb53790f0f00ddebcfe86c470f90d953c46957cfa985
 STAGE2_PATH=/usr/local/lib/aura/m1n1-$STAGE1_COMMIT.bin
 # qemu-user-static from omacom/omarchy-pkgs#3505 (source build and 1002), #3602
@@ -101,6 +126,11 @@ declare -A PKG_SHA256=(
   [qemu-user-static-$QEMU_VERSION-aarch64.pkg.tar.zst]=544e83b4586d99a56a5875b0de1e559750a14ab49d7056bc01a03daa94456fca
   [qemu-user-static-binfmt-$QEMU_VERSION-aarch64.pkg.tar.zst]=693bd474721d3c1edc9b96e8677081c4081a932ee925cb3136c5884a8768ab43
   [aurora-userpages-7.3.0.aurora1-41-aarch64.pkg.tar.xz]=4188aeac66a586b210d97e5b35a2edf0ab250939d1221b59bef296db69cd5f68
+  # JOURNEY 9.60: omarchy-pkgs' linux-aurora PKGBUILD with the GPU patch, pkgrel 1.1.
+  [linux-aurora-7.3.0.aurora1-1.1-aarch64.pkg.tar.zst]=005928fe711a8f0d06ef97093a2c253ca4fbabe092194491a60aaccf1823b954
+  # JOURNEY 9.64: built natively on the J616c from the edge recipes plus the patches.
+  [aquamarine-0.16.0-1.4-aarch64.pkg.tar.xz]=5d52ab0ce1aa42e3210163885e2f32017e0c164a55cad6fe3d862db3d6dd237b
+  [hyprland-0.57.2-9.1-aarch64.pkg.tar.xz]=e4740d67c0cc51ff2eaf0f277bec31b16b782b5e668e9cf663edd99b561a6592
 )
 QEMU_BINFMT=qemu-x86_64-static.conf
 
@@ -108,10 +138,9 @@ log() { printf '[%4ss] %s\n' "$SECONDS" "$*"; }
 fail() { printf 'derive-j616c-image: %s\n' "$*" >&2; exit 1; }
 
 host() {
-  local edge=$1 rootfs=$2 recovery=$3 stage1=$4 stage2=$5 pkgs=$6 out=$7 image file
-  [[ -d $edge && -f $rootfs && -f $recovery/omarchy-recovery-app.json \
-    && -d "$recovery/Omarchy Installer.app" && -f $stage1 && -f $stage2 && -d $pkgs ]] ||
-    fail "usage: $0 EDGE_OUT ROOTFS RECOVERY_DIR STAGE1 STAGE2 PKGS OUT"
+  local edge=$1 rootfs=$2 stage1=$3 stage2=$4 pkgs=$5 out=$6 image file
+  [[ -d $edge && -f $rootfs && -f $stage1 && -f $stage2 && -d $pkgs ]] ||
+    fail "usage: $0 EDGE_OUT ROOTFS STAGE1 STAGE2 PKGS OUT"
   [[ -n $STAGE1_SHA256 && -n $STAGE2_SHA256 ]] ||
     fail "record the sha256 of Stage 1 and Stage 2 built from aura $STAGE1_COMMIT in STAGE1_SHA256 and STAGE2_SHA256 first"
   [[ $(sha256sum "$stage1" | cut -d' ' -f1) == "$STAGE1_SHA256" ]] || fail "$stage1 is not the pinned aura $STAGE1_COMMIT Stage 1"
@@ -129,8 +158,8 @@ host() {
   fi
   sudo docker run --rm --privileged --platform linux/arm64 \
     -v "$(cd "$(dirname "$0")" && pwd):/tools:ro" -v "$(cd "$edge" && pwd):/edge:ro" \
-    -v "$(cd "$recovery" && pwd):/recovery:ro" -v "$(cd "$out" && pwd):/out" -v /work \
-    -v "$(cd "$(dirname "$stage1")" && pwd)/$(basename "$stage1"):/stage1.bin:ro" \
+    -v "$(cd "$out" && pwd):/out" -v /work \
+    -v "$(cd "$(dirname "$stage1")" && pwd)/$(basename "$stage1"):/stage1.macho:ro" \
     -v "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2"):/stage2.bin:ro" \
     -v "$(cd "$pkgs" && pwd):/pkgs:ro" \
     "$image" /bin/bash /tools/derive-j616c-image --in-container
@@ -262,6 +291,36 @@ container() {
   in_chroot pacman -S --noconfirm --needed "${wanted[@]}" >>"$W/pacman.log" 2>&1 ||
     fail "could not install the pinned edge builds (pacman.log)"
 
+  log "installing the PKGS input: the patched kernel, aquamarine and Hyprland, QEMU and userpages"
+  in_chroot pacman -Qq qemu-user-static-binfmt >/dev/null 2>&1 ||
+    fail "the image has no qemu-user-static-binfmt to replace; recheck OMS-41"
+  install -d "$T/tmp/pkgs"
+  local file files=()
+  for file in "${!PKG_SHA256[@]}"; do
+    cp "/pkgs/$file" "$T/tmp/pkgs/"
+    files+=("/tmp/pkgs/$file")
+  done
+  in_chroot pacman -U --noconfirm "${files[@]}" >>"$W/pacman.log" 2>&1 ||
+    fail "could not install the PKGS input (pacman.log)"
+  rm -rf "$T/tmp/pkgs"
+  for pkg in "${!PATCHED[@]}"; do
+    [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg ${PATCHED[$pkg]}" ]] ||
+      fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not the patched ${PATCHED[$pkg]}"
+  done
+  # aquamarine's alpha-variant fallback (omarchy-pkgs#2739), and the API edge's Hyprland 9 calls.
+  local aq
+  aq=$(ls "$T"/usr/lib/libaquamarine.so.*.* 2>/dev/null | head -1)
+  [[ -n $aq ]] && grep -aqF "not offered by the scanout plane" "$aq" ||
+    fail "aquamarine lacks the alpha-variant scanout fallback (omarchy-pkgs#2739)"
+  grep -aqF showsAdoptedPicture "$aq" || fail "aquamarine lacks showsAdoptedPicture, which edge's Hyprland 9 calls"
+
+  log "owner setup: kmscon draws through the framebuffer"
+  local kmscon=$T/usr/share/omarchy/install/provisioning/kmscon.sh
+  [[ $(grep -c '^[[:space:]]*exec kmscon \\$' "$kmscon" 2>/dev/null) == 1 ]] ||
+    fail "${kmscon#$T} no longer has exactly one 'exec kmscon \\' line; recheck the --no-drm edit"
+  sed -i 's/^\([[:space:]]*\)exec kmscon \\$/\1exec kmscon --no-drm \\/' "$kmscon"
+  grep -q '^[[:space:]]*exec kmscon --no-drm \\$' "$kmscon" || fail "could not add --no-drm to ${kmscon#$T}"
+
   local kver
   kver=$(ls "$T/usr/lib/modules" | grep -- '-ARCH$' | sort -V | tail -1)
   [[ $kver == 7.3.* ]] || fail "unexpected kernel release $kver"
@@ -273,7 +332,9 @@ container() {
     fail "the kernel's ANE driver has no 27.2 (26B123) profile: it predates aurora-silicon/linux#1954"
   module_has "$kver" drivers/media/platform/apple/isp/apple-isp isp_setfile_snf_radial ||
     fail "the kernel's ISP driver has no computed noise filter: it predates aurora-silicon/linux#2233"
-  log "kernel $kver, with linux#1954 and #2233"
+  module_has "$kver" drivers/gpu/drm/asahi/aurora "26B123 for T6041 (normalized loaded image, 32-core J616C)" ||
+    fail "the kernel's GPU driver does not admit the 32-core J616c's 26B123 image (patches/linux-t6041-26b123-32core.patch)"
+  log "kernel $kver, with linux#1954, #2233 and the 32-core J616c's 26B123 GPU image"
 
   log "checking the audio stack and starting speakersafetyd on the J616"
   grep -q '^\[Speaker/' "$T/usr/share/speakersafetyd/apple/j616.conf" 2>/dev/null ||
@@ -302,17 +363,6 @@ container() {
 
   log "x86-64 containers: qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT, aurora-userpages, containerd under userpages 4k"
   [[ -f $T/usr/lib/systemd/system/containerd.service ]] || fail "the image lacks containerd; recheck OMS-41"
-  in_chroot pacman -Qq qemu-user-static-binfmt >/dev/null 2>&1 ||
-    fail "the image has no qemu-user-static-binfmt to replace; recheck OMS-41"
-  install -d "$T/tmp/pkgs"
-  local file files=()
-  for file in "${!PKG_SHA256[@]}"; do
-    cp "/pkgs/$file" "$T/tmp/pkgs/"
-    files+=("/tmp/pkgs/$file")
-  done
-  in_chroot pacman -U --noconfirm "${files[@]}" >>"$W/pacman.log" 2>&1 ||
-    fail "could not install the PKGS input (pacman.log)"
-  rm -rf "$T/tmp/pkgs"
   for pkg in qemu-user-static qemu-user-static-binfmt; do
     [[ $(in_chroot pacman -Q "$pkg" 2>/dev/null) == "$pkg $QEMU_VERSION" ]] ||
       fail "$pkg is installed as '$(in_chroot pacman -Q "$pkg" 2>&1)', not $QEMU_VERSION"
@@ -334,7 +384,7 @@ container() {
     fail "omarchy-mac-boot's setup no longer adds user4k=on; containerd's userpages 4k needs it"
 
   in_chroot pacman -Dk >>"$W/pacman.log" 2>&1 || fail "the package database has missing dependencies"
-  in_chroot pacman -Q "${!EDGE_PINS[@]}" "${DONGLE_FIRMWARE[@]#core/}" \
+  in_chroot pacman -Q "${!EDGE_PINS[@]}" "${!PATCHED[@]}" "${DONGLE_FIRMWARE[@]#core/}" \
     qemu-user-static qemu-user-static-binfmt aurora-userpages | sort | tee "$W/versions.txt"
   # And what got installed is exactly what was pinned.
   for pkg in "${!EDGE_PINS[@]}"; do
@@ -366,9 +416,14 @@ PY
     fail "omarchy-mac-boot no longer ships omarchy-mac-boot-ctxr, which keeps boot-ctxr.bin current"
   # Stock update-m1n1, not Aurora's bootchain wrapper: the ctxr hook defers to that one.
   ! grep -Fq AURORA_BOOTCHAIN "$T/usr/bin/update-m1n1" || fail "update-m1n1 is Aurora's bootchain wrapper, not aurora-scripts'"
+  # Hold the patched builds: omarchy update would replace them with edge's own.
+  # Omarchy's template has no IgnorePkg line, so add one under [options].
   local ignored
   ignored=$(in_chroot pacman-conf IgnorePkg | tr '\n' ' ') || fail "pacman-conf could not read IgnorePkg"
-  [[ -z $ignored ]] || fail "pacman ignores packages: $ignored"
+  [[ -z $ignored ]] || fail "pacman already ignores packages: $ignored"
+  sed -i "/^\[options\]/a IgnorePkg = $HOLDS" "$T/etc/pacman.conf"
+  ignored=$(in_chroot pacman-conf IgnorePkg | tr '\n' ' ')
+  [[ $ignored == "$HOLDS " ]] || fail "pacman's IgnorePkg is '$ignored', not the holds '$HOLDS'"
   # Omarchy's boot check accepts an M1N1= Stage 2 only when the boot loader package owns it
   # (omarchy-apple-silicon-boot-check: "M1N1 … is not owned by aura"), so with the pin every
   # omarchy update would stop. The marker leaves verification to the owner; update-verify
@@ -382,24 +437,22 @@ EOF
   echo "aura Stage 1 and Stage 2 $STAGE1_COMMIT $STAGE1_SHA256 $STAGE2_SHA256" >>"$W/versions.txt"
   echo "qemu-user-static from omarchy-pkgs $QEMU_PR_COMMIT (omacom/omarchy-pkgs#3505, #3602, #3603)" >>"$W/versions.txt"
 
-  log "Stage 2: boot.bin and the J616c's boot-ctxr.bin"
+  log "Stage 2: boot.bin, and boot-ctxr.bin for the J616c's Mach-O path"
   # As omarchy-mac-boot-ctxr builds boot-ctxr.bin on the Mac: update-m1n1 with its
   # defaults (every device tree), into the path it is given.
   in_chroot /usr/bin/update-m1n1 /boot/efi/m1n1/boot.bin >"$W/update-m1n1.log" 2>&1 ||
     fail "update-m1n1 failed (update-m1n1.log)"
   [[ -s $T/boot/efi/m1n1/boot.bin ]] || fail "no Stage 2 written"
   rm -f "$T/boot/efi/m1n1/"*.old
-  # The builder stages boot-ctxr.bin (other M4 Macs' Mach-O path) and boot-j700.bin
-  # (the MacBook Neo) as byte-identical copies of boot.bin, and mac-image-check payload
-  # holds them to that. The J616c's own boot-ctxr-j616c.bin is the same image.
+  # The builder stages boot-ctxr.bin (every M4 Mac's Mach-O path, the J616c's
+  # included) and boot-j700.bin (the MacBook Neo) as byte-identical copies of
+  # boot.bin, and mac-image-check payload holds them to that.
   local copy
   for copy in boot-ctxr.bin boot-j700.bin; do
     [[ -f $T/boot/efi/m1n1/$copy ]] || fail "the edge image has no m1n1/$copy"
-  done
-  for copy in boot-ctxr.bin boot-j700.bin boot-ctxr-j616c.bin; do
     install -m 0644 "$T/boot/efi/m1n1/boot.bin" "$T/boot/efi/m1n1/$copy"
   done
-  python3 - "$T/boot/efi/m1n1/boot-ctxr-j616c.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
+  python3 - "$T/boot/efi/m1n1/boot-ctxr.bin" "$T/usr/lib/modules/$kver/dtbs/t6041-j616c.dtb" \
     "$T/usr/lib/asahi-boot/u-boot-nodtb.bin" <<'PY' || fail "the J616c Stage 2 lacks its tree or U-Boot"
 import gzip, sys
 stage2 = open(sys.argv[1], "rb").read()
@@ -420,18 +473,22 @@ def contains(blob):
     return False
 raise SystemExit(0 if contains(dtb) and contains(uboot) else 1)
 PY
-  for p in boot.bin boot-ctxr-j616c.bin; do
+  for p in boot.bin boot-ctxr.bin; do
     cmp -s -n "$(stat -c %s /stage2.bin)" /stage2.bin "$T/boot/efi/m1n1/$p" || fail "m1n1/$p does not start with the aura $STAGE1_COMMIT Stage 2"
   done
-  if (($(stat -c %s "$T/boot/efi/m1n1/boot-ctxr-j616c.bin") > 16 * 1024 * 1024)); then
+  if (($(stat -c %s "$T/boot/efi/m1n1/boot-ctxr.bin") > 16 * 1024 * 1024)); then
     fail "the confined Stage 2 exceeds aura's 16 MiB slot"
   fi
 
-  log "Stage 1: aura's raw image"
-  # The J616c enrolls this raw image after `bputil -nc` (the installer's raw-ctxr
-  # mode, OMS-24). Its Mach-O boot object isn't staged: padded it reboots this
-  # chip silently, unpadded aura's Stage 2 refuses to start the OS (JOURNEY 9.30-9.31).
-  install -D -m 0644 /stage1.bin "$T/boot/efi/aurora/stage1-j616c.bin"
+  log "Stage 1: aura $STAGE1_COMMIT's Mach-O object"
+  # Every M4 Mac's Stage 1, the J616c's included: the engine fills its
+  # configuration block, and Recovery pads it for the execute window and enrolls
+  # it with kmutil --compress. Edge's aura package predates aura#265, so its
+  # object is replaced. mac-image-check payload checks the object (kcbz 0, one
+  # configuration block).
+  [[ -f $T/boot/efi/aurora/stage1.macho ]] || fail "the edge image has no esp/aurora/stage1.macho"
+  install -m 0644 /stage1.macho "$T/boot/efi/aurora/stage1.macho"
+  [[ $(grep -ac 'AURORA-S1-CFG01' /stage1.macho) == 1 ]] || fail "the Stage 1 object has no single configuration block"
 
   log "mounting /boot/efi and /boot from the install the Mac boots"
   # fstab stays as the image builder writes it (mac-image-check pins the line);
@@ -452,16 +509,7 @@ PY
   rm -f "$T/boot/efi/.builder"
   find "$T/etc" -name '*.pacnew' | tee "$W/pacnew.txt"
 
-  log "replacing the Recovery app with one that knows raw-ctxr"
-  local recovery_dir=$T/boot/efi/aurora/recovery
-  [[ -d $recovery_dir ]] || fail "the edge image carries no native Recovery app"
-  rm -rf -- "$recovery_dir" && mkdir -p "$recovery_dir"
-  cp -R "/recovery/Omarchy Installer.app" "$recovery_dir/"
-  install -m 0644 /recovery/omarchy-recovery-app.json "$recovery_dir/omarchy-recovery-app.json"
-  # A 30-byte literal: Swift inlines strings of 15 bytes or fewer, which then
-  # don't appear in the binary as one run of bytes.
-  grep -aq 'raw-ctxr/aura-raw.bin' "$recovery_dir/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery" ||
-    fail "the Recovery app does not know the raw-ctxr mode"
+  [[ -d $T/boot/efi/aurora/recovery ]] || fail "the edge image carries no native Recovery app"
 
   log "copying the ESP out"
   rm -rf "$W/payload/esp" && mkdir "$W/payload/esp"

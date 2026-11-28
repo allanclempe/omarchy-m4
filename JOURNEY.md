@@ -1443,3 +1443,36 @@ initialized successfully", `/dev/kvm` present).
 - **Sent:** omacom/omarchy-pkgs#3854, "hyprland 0.57.2-10: keep the rendered frame when the scanout
   buffer is the alpha variant" (the patch, its `prepare()` line with a comment, a README paragraph,
   `pkgrel` 10), from the `allanclempe/omarchy-pkgs` fork.
+
+### 9.65 The build for a zero-hand-step 27.2 reinstall (OMS-30, 2026-11-28)
+- **Installer patch: the J616c takes upstream's Mach-O path.** Upstream's engine picks the Mach-O
+  Stage 1 (`esp/aurora/stage1.macho`, padded by Recovery, enrolled with `kmutil --compress`) by chip,
+  for every execute-window chip, unless the board has a `BOARD_STAGE1` entry; there is no firmware
+  gate on that path. The patch's `j616cap` `BoardStage1` entry and its `raw-ctxr` routing
+  (`BOARD_CONFINED_RAW_STAGE1`, `confined_raw_stage1()`, the Recovery staging row, the Recovery
+  app's `rawCtxr` mode, and 9.58's `mac-image-check` exception) are gone; those files are upstream's
+  again, so the Recovery app is unchanged. Kept: the J616c's admission, the 27.2-only firmware entry
+  (`IPSW("27.2", …)` naming only `j616cap`, its minimum 27.2) and the camera tuning collection. The
+  patch went from 21 files to 11 (+322/-40). `test/all` (77, 491, 327, 36; upstream's own tests that
+  send `j616cap` down the Mach-O path pass again) and `image-builder/test/all` pass. Engine renamed
+  `v0.9.2-omarchy.20261128.dd74a03c9b7d`; its archive size and digest are the previous build's
+  until it is rebuilt on macOS.
+- **Derivation:**
+  - inputs are now `EDGE_OUT ROOTFS STAGE1 STAGE2 PKGS OUT`: no Recovery input, since the edge
+    payload is built from the patched tree;
+  - `STAGE1` is aura `v1.0.0b17`'s Mach-O object, wrapped unpadded from `aura-raw.bin` with aura's
+    `tools/macho_boot_object.py`, replacing edge's `esp/aurora/stage1.macho`; its sha256 is recorded
+    after wrapping;
+  - Stage 2 goes to `boot.bin`, `boot-ctxr.bin` and `boot-j700.bin` only;
+  - `PKGS` adds the three patched builds (`linux-aurora 7.3.0.aurora1-1.1`, `aquamarine
+    0.16.0-1.4`, `hyprland 0.57.2-9.1`), installed right after the edge pins and checked:
+    `aurora.ko` admits the 32-core 26B123 image; `libaquamarine` has the fallback and
+    `showsAdoptedPicture`;
+  - `IgnorePkg = linux-aurora aquamarine hyprland hyprpm omarchy-hyprland-titlebars`;
+  - `kmscon --no-drm` in the image's `kmscon.sh` (exactly one `exec kmscon \` line, checked; tested
+    on a copy of the Mac's file);
+  - `EDGE_PINS` moved to edge's current builds: `mesa-aurora`/`vulkan-aurora` 20261127,
+    `omarchy-mac 0.2.8-1`, `speakersafetyd 3.0.0-1` (a major version; speakers to be checked on the
+    reinstall), `omarchy-hyprland-titlebars 0.4.0-6`.
+
+  Syntax and shellcheck as before. Not yet run.
