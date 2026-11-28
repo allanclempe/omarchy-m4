@@ -1501,3 +1501,38 @@ note under its own heading) is prepared but not pushed.
 Later the same day: with Allan's go-ahead, #3854 was converted to a draft (the repository publishes
 a non-draft PR once CI is green, and the patch does nothing until #2739 lands), the fix was pushed
 as `106ab3c3`, and the description now says what the narrowed patch keeps and records the 9.2 test.
+
+### 9.67 The zero-hand-step 27.2 build, made (OMS-30, 2026-11-28)
+Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and logs):
+- **Stage 1:** aura `v1.0.0b17`'s `out/aura-raw.bin` wrapped with `tools/macho_boot_object.py`
+  (no `--execute-window`): `out/stage1.macho`, 1,753,088 B, one `AURORA-S1-CFG01` block, sha256
+  `51bbab87…cd5b`, pinned as `STAGE1_SHA256`. Recovery fills and pads it at enrollment.
+- **Installer:** the clone reset to `e0aa53fd` (the old tree's diff kept as `old-installer-tree.diff`)
+  and the 9.65 patch applied; `swift test` no failures, `Recovery/test-all.sh` 21 PASS. Engine
+  `v0.9.2-omarchy.20261128.dd74a03c9b7d`: two rebuilds identical, 17,916,827 B, sha256
+  `0efe9545…869d`, `engine_pin.py check` passes, `prepare-engine.py` reproduced it; the pin is in
+  the patch, which matches the Mac's tree exactly. Recovery app rebuilt (upstream's; manifest
+  `80bfcafe…700f`).
+- **Edge inputs:** `channel_set=omarchy-edge-12db5036adbe`. Every `EDGE_PINS` version is still
+  offered except `omarchy-hyprland-titlebars`: edge replaced `0.4.0-6` with `0.5.0-1`, which
+  requires `hyprland=0.57.2` and so takes the patched 9.2 (the patch changes no header). Pin moved;
+  not yet run on the Mac. Edge payload `omarchy-2026.11.28-…-edge-os-package.zip`, 3,687,569,343 B.
+- **Derivation, three failures before it passed:**
+  - "more than one kernel is installed": edge's image also ships `linux-aurora-headers`, whose
+    `-1` kept `/usr/lib/modules/7.3.0-1-1-ARCH`. The kernel build of 9.60 also made
+    `linux-aurora-headers 7.3.0.aurora1-1.1` (sha256 `f6495f24…b458`); it is now in `PKGS`, pinned
+    and held in `IgnorePkg`. The installed Mac still has edge's `-1` headers, which match no
+    installed kernel. A leftover module directory no package owns is now removed and logged.
+  - "the kernel's GPU driver does not admit the 32-core J616c's 26B123 image", though the string
+    is in `aurora.ko`: `module_has` piped the module into `grep -q` under `pipefail`, and grep
+    stopping at the first match killed `cat` on the 7 MB module (status 141). GNU grep does the same
+    with its output on `/dev/null`. It now counts matches; the Realtek firmware check too.
+  - Passed in 209 s: every check, `hyprland 0.57.2-9.2`, `linux-aurora` and headers `1.1`,
+    titlebars `0.5.0-1`, no `.pacnew`, root free 6.4 GB. Payload
+    `omarchy-2026.11.28-aarch64-apple-silicon-mac-edge-j616c-dev-os-package.zip`, 4,093,147,840 B,
+    sha256 `342e7bfb…21ab`; `mac-image-check payload edge` passes.
+- **Catalog, app and package** (`build-installer2.sh`): catalog signed and verified, 36 models,
+  the J616c's `installer_data-j616c.json` with `supported_fw: ["27.2"]`; app 2.3.21; package
+  `build/oms30/Omarchy-J616c-Developer.pkg`, 4,120,529,298 B, sha256
+  `21b0610dbc26d93c93351a38448dcf23034258188fc4b4b0c18e2e8180150001`. The 2.3.20 package of 9.58
+  is kept as `Omarchy-J616c-Developer-2.3.20.pkg`.
