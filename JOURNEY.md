@@ -1599,3 +1599,8 @@ Built on the Mac's macOS 27.2 side, outputs in `build/oms30/` (`*2` folders and 
   `aquamarine 1.4`, `hyprland 9.2` and titlebars `0.5.0-1`. greetd's login screen therefore works
   on the T6041 firmware-27 display through Omarchy's own migration. With Allan's confirmation of no
   typed hand step, this is OMS-30's acceptance run on 27.2.
+- **Allan confirms zero hand steps** (2026-11-29): nothing typed outside the installer and setup
+  screens. OMS-30's acceptance run on 27.2 passes. AGENTS.md's status, hand-fix rows and installed-Mac
+  section now describe this install (ESP `nvme0n1p4` PARTUUID `e137146e-a21b-4886-9c40-b3b147beb20a`,
+  Boot `nvme0n1p5` PARTUUID `86be6da2-3349-4860-8f08-4a140735c657`, root LUKS `nvme0n1p6` PARTUUID
+  `562477b6-8933-4dd3-8347-c491da74f024`, copied from `lsblk`).
